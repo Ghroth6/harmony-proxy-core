@@ -26,3 +26,6 @@ test/config/cache*
 /output
 .vscode/
 .fleet/
+
+# Repository-owned machine data, evidence and generated files.
+/local/
