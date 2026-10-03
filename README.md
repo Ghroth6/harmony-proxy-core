@@ -1,3 +1,11 @@
+# harmony-proxy-core：Mihomo 的 OHOS 适配分支
+
+本仓直接派生自 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，用于维护 OHOS 原生核心所需的最小适配。当前程序代码仍为选定的官方基线，移植设计已记录，OHOS 实现、原生库构建和设备验收尚未完成。
+
+工程集成与验证步骤见 [clashbox-meta](https://github.com/Ghroth6/clashbox-meta)（私有，需权限）；标准工作空间中的协调仓位于 `../../meta`。自动化协作入口见 [AGENTS.md](AGENTS.md)。以下保留上游功能、文档和许可说明；上游功能列表不代表已在 OHOS 验证。
+
+---
+
 <h1 align="center">
   <img src="Meta.png" alt="Meta Kennel" width="200">
   <br>Meta Kernel<br>
