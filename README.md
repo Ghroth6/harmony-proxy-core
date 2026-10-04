@@ -22,6 +22,10 @@ URLTest、连接创建和 provider 初始化通过可注销订阅发布事件。
 
 工程集成与验证步骤见 [clashbox-meta](https://github.com/Ghroth6/clashbox-meta)（私有，需权限）；标准工作空间中的协调仓位于 `../../meta`。自动化协作入口见 [AGENTS.md](AGENTS.md)。以下保留上游功能、文档和许可说明；上游功能列表不代表已在 OHOS 验证。
 
+配置替换可通过 `executor.CancelConfigTasks` 先关闭旧 provider 与测速准入，再用 `RetireConfig(ctx)` 等待任务和当前可达节点池收尾；`ApplyConfigContext` 只有退休成功才发布新配置。同对象复用按身份判断，已取消对象不可重新采用，超时保留实际等待/关闭记录。Fetcher、健康检查、规则通知及 URLTest 有取消与完成屏障；资源、元信息、ETag、健康结果和地理库写入受所属配置的提交保护。旧无 context 入口继续保留包装。
+
+本批仍未覆盖失败候选构造资源、provider 历次刷新后已退出当前节点集的池，以及全部协议内部定时任务的完成屏障。KcpTun 与 TUIC 池有真实关闭回归；QUIC 依赖不完整传播底层 UDP Close 错误，不能据此证明系统句柄已全部释放。详细剩余项由协调仓设计与配置退休检查点记录。
+
 ---
 
 <h1 align="center">
