@@ -13,8 +13,11 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/component/forwarding"
+	"github.com/metacubex/mihomo/component/geodata/router"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/listener/inner"
+	"github.com/oschwald/maxminddb-golang"
+	"google.golang.org/protobuf/proto"
 )
 
 func downloadNetwork(t *testing.T) {
@@ -68,6 +71,7 @@ func TestInitialDownloadCancellationPreservesTargetAndRecovers(t *testing.T) {
 				}
 			}
 			started := make(chan struct{})
+			valid := geoIPDownloadFixture(t)
 			var requests atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if requests.Add(1) == 1 {
@@ -78,11 +82,11 @@ func TestInitialDownloadCancellationPreservesTargetAndRecovers(t *testing.T) {
 					<-r.Context().Done()
 					return
 				}
-				_, _ = w.Write([]byte("new"))
+				_, _ = w.Write(valid)
 			}))
 			defer server.Close()
 			done := make(chan error, 1)
-			go func() { done <- downloadToPath(server.URL, target) }()
+			go func() { done <- downloadToPath(server.URL, target, validateGeoIPDownload) }()
 			select {
 			case <-started:
 			case <-time.After(time.Second):
@@ -114,10 +118,10 @@ func TestInitialDownloadCancellationPreservesTargetAndRecovers(t *testing.T) {
 			if err := forwarding.ResumeManagementNetwork(); err != nil {
 				t.Fatal(err)
 			}
-			if err := downloadToPath(server.URL, target); err != nil {
+			if err := downloadToPath(server.URL, target, validateGeoIPDownload); err != nil {
 				t.Fatal(err)
 			}
-			assertDownloadTarget(t, target, "new", true)
+			assertDownloadTarget(t, target, string(valid), true)
 		})
 	}
 }
@@ -138,7 +142,7 @@ func TestInitialDownloadRejectsHTTPFailureAndTruncatedBody(t *testing.T) {
 				_, _ = w.Write([]byte("invalid or incomplete"))
 			}))
 			defer server.Close()
-			if err := downloadToPath(server.URL, target); err == nil {
+			if err := downloadToPath(server.URL, target, validateGeoSiteDownload); err == nil {
 				t.Fatal("failed response replaced target")
 			}
 			assertDownloadTarget(t, target, "original", true)
@@ -156,9 +160,10 @@ func TestInitialDownloadFailedPublishPreservesTarget(t *testing.T) {
 	if err := os.WriteFile(child, []byte("original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("new")) }))
+	valid := geoIPDownloadFixture(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(valid) }))
 	defer server.Close()
-	if err := downloadToPath(server.URL, target); err == nil {
+	if err := downloadToPath(server.URL, target, validateGeoIPDownload); err == nil {
 		t.Fatal("unexpected successful replacement of directory")
 	}
 	assertDownloadTarget(t, child, "original", true)
@@ -213,5 +218,136 @@ func TestGeodataInitializersPreserveFailedReplacement(t *testing.T) {
 			}
 			assertDownloadTarget(t, target, "previous invalid cache", true)
 		})
+	}
+}
+
+func geoIPDownloadFixture(t *testing.T) []byte {
+	t.Helper()
+	b, err := proto.Marshal(&router.GeoIPList{Entry: []*router.GeoIP{{CountryCode: "CN", Cidr: []*router.CIDR{{Ip: []byte{10, 0, 0, 0}, Prefix: 8}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func geoSiteDownloadFixture(t *testing.T) []byte {
+	t.Helper()
+	b, err := proto.Marshal(&router.GeoSiteList{Entry: []*router.GeoSite{{CountryCode: "CN", Domain: []*router.Domain{{Type: router.Domain_Full, Value: "example.invalid"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func mmdbDownloadFixture(t *testing.T) []byte {
+	t.Helper()
+	// A synthetic, empty IPv4 tree with one node and both branches marked
+	// absent. No third-party database, network access or binary fixture is used.
+	b := []byte{0, 0, 1, 0, 0, 1}
+	b = append(b, make([]byte, 16)...)
+	b = append(b, []byte("\xab\xcd\xefMaxMind.com")...)
+	b = append(b, 0xe7) // map with seven metadata entries
+	str := func(value string) { b = append(b, byte(0x40|len(value))); b = append(b, value...) }
+	number := func(key string, value byte) { str(key); b = append(b, 0xc1, value) }
+	number("node_count", 1)
+	number("record_size", 24)
+	number("ip_version", 4)
+	number("binary_format_major_version", 2)
+	number("binary_format_minor_version", 0)
+	str("database_type")
+	str("SyntheticTest")
+	str("description")
+	b = append(b, 0xe1)
+	str("en")
+	str("Synthetic empty database")
+	r, err := maxminddb.FromBytes(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := r.Verify(); err != nil {
+		t.Fatal("invalid MMDB test fixture:", err)
+	}
+	return b
+}
+
+func TestGeodataInitializersRejectInvalid200ThenPublishValidCandidate(t *testing.T) {
+	downloadNetwork(t)
+	oldHome := C.Path.HomeDir()
+	oldGeoSiteURL, oldGeoIPURL, oldMMDBURL, oldASNURL := geoSiteUrl, geoIpUrl, mmdbUrl, asnUrl
+	oldSite, oldIP, oldASN, oldMode, oldLoader := initGeoSite, initGeoIP, initASN, geoMode, geoLoaderName
+	defer func() {
+		C.SetHomeDir(oldHome)
+		geoSiteUrl, geoIpUrl, mmdbUrl, asnUrl = oldGeoSiteURL, oldGeoIPURL, oldMMDBURL, oldASNURL
+		initGeoSite, initGeoIP, initASN, geoMode, geoLoaderName = oldSite, oldIP, oldASN, oldMode, oldLoader
+		ClearGeoSiteCache()
+		ClearGeoIPCache()
+	}()
+	geoLoaderName = "standard"
+	for _, name := range []string{"GeoSite", "GeoIP", "MMDB", "ASN"} {
+		for _, exists := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cached=%t", name, exists), func(t *testing.T) {
+				C.SetHomeDir(t.TempDir())
+				initGeoSite, initGeoIP, initASN = false, 0, false
+				ClearGeoSiteCache()
+				ClearGeoIPCache()
+				var target string
+				var initialize func() error
+				var valid []byte
+				switch name {
+				case "GeoSite":
+					target, initialize, valid = C.Path.GeoSite(), InitGeoSite, geoSiteDownloadFixture(t)
+				case "GeoIP":
+					geoMode = true
+					target, initialize, valid = C.Path.GeoIP(), InitGeoIP, geoIPDownloadFixture(t)
+				case "MMDB":
+					geoMode = false
+					target, initialize, valid = C.Path.MMDB(), InitGeoIP, mmdbDownloadFixture(t)
+				case "ASN":
+					target, initialize, valid = C.Path.ASN(), InitASN, mmdbDownloadFixture(t)
+				}
+				old := "original invalid cache"
+				if exists {
+					if err := os.WriteFile(target, []byte(old), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var serveValid atomic.Bool
+				var requests atomic.Int32
+				invalid := []byte("<html>invalid geodata</html>")
+				if name == "MMDB" || name == "ASN" {
+					// Metadata still decodes, but the tree points outside the data
+					// section. Opening alone must not validate this candidate.
+					invalid = append([]byte(nil), valid...)
+					invalid[0], invalid[1], invalid[2] = 0xff, 0xff, 0xff
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					requests.Add(1)
+					if serveValid.Load() {
+						_, _ = w.Write(valid)
+					} else {
+						_, _ = w.Write(invalid)
+					}
+				}))
+				defer server.Close()
+				geoSiteUrl, geoIpUrl, mmdbUrl, asnUrl = server.URL, server.URL, server.URL, server.URL
+				if err := initialize(); err == nil {
+					t.Fatal("HTTP 200 invalid content was treated as initialized")
+				}
+				assertDownloadTarget(t, target, old, exists)
+				serveValid.Store(true)
+				if err := initialize(); err != nil {
+					t.Fatalf("valid retry failed: %v", err)
+				}
+				assertDownloadTarget(t, target, string(valid), true)
+				before := requests.Load()
+				if err := initialize(); err != nil {
+					t.Fatal(err)
+				}
+				if requests.Load() != before {
+					t.Fatal("successful initialization was not retained")
+				}
+			})
+		}
 	}
 }

@@ -12,12 +12,14 @@ import (
 
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/component/forwarding"
+	"github.com/metacubex/mihomo/component/geodata/router"
 	mihomoHttp "github.com/metacubex/mihomo/component/http"
 	"github.com/metacubex/mihomo/component/mmdb"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/metacubex/http"
+	"github.com/oschwald/maxminddb-golang"
 )
 
 var (
@@ -71,13 +73,13 @@ func SetASNUrl(url string) {
 	asnUrl = url
 }
 
-func downloadToPath(url string, path string) (err error) {
+func downloadToPath(url, path string, validate func([]byte) error) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*90)
 	defer cancel()
-	return downloadToPathContext(ctx, url, path)
+	return downloadToPathContext(ctx, url, path, validate)
 }
 
-func downloadToPathContext(ctx context.Context, url, path string) (err error) {
+func downloadToPathContext(ctx context.Context, url, path string, validate func([]byte) error) (err error) {
 	ctx, finish, err := forwarding.AcquireManagementNetwork(ctx)
 	if err != nil {
 		return err
@@ -129,6 +131,13 @@ func downloadToPathContext(ctx context.Context, url, path string) (err error) {
 	if closeErr != nil {
 		return closeErr
 	}
+	data, err := os.ReadFile(tempPath)
+	if err != nil {
+		return err
+	}
+	if err := validate(data); err != nil {
+		return fmt.Errorf("invalid downloaded geodata: %w", err)
+	}
 	return forwarding.CommitManagementNetwork(ctx, func() error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -137,13 +146,54 @@ func downloadToPathContext(ctx context.Context, url, path string) (err error) {
 	})
 }
 
+// Validate the candidate bytes through the standard decoder, without reading
+// the published path or invoking Init* again. Failed candidates never replace
+// even a previous invalid cache, so a later retry has a recoverable target.
+func validateGeoIPDownload(data []byte) error {
+	loader, err := GetGeoDataLoader("standard")
+	if err != nil {
+		return err
+	}
+	cidrs, err := loader.LoadIPByBytes(data, "cn")
+	if err != nil {
+		return err
+	}
+	_, err = router.NewGeoIPMatcher(cidrs)
+	return err
+}
+
+func validateGeoSiteDownload(data []byte) error {
+	loader, err := GetGeoDataLoader("standard")
+	if err != nil {
+		return err
+	}
+	domains, err := loader.LoadSiteByBytes(data, "cn")
+	if err != nil {
+		return err
+	}
+	if geoSiteMatcher == "mph" {
+		_, err = router.NewMphMatcherGroup(domains)
+	} else {
+		_, err = router.NewSuccinctMatcherGroup(domains)
+	}
+	return err
+}
+
+func validateMMDBDownload(data []byte) error {
+	reader, err := maxminddb.FromBytes(data)
+	if err != nil {
+		return err
+	}
+	return errors.Join(reader.Verify(), reader.Close())
+}
+
 func InitGeoSite() error {
 	geoSiteEnable.Store(true)
 	initGeoSiteMutex.Lock()
 	defer initGeoSiteMutex.Unlock()
 	if _, err := os.Stat(C.Path.GeoSite()); os.IsNotExist(err) {
 		log.Infoln("Can't find GeoSite.dat, start download")
-		if err := downloadToPath(GeoSiteUrl(), C.Path.GeoSite()); err != nil {
+		if err := downloadToPath(GeoSiteUrl(), C.Path.GeoSite(), validateGeoSiteDownload); err != nil {
 			return fmt.Errorf("can't download GeoSite.dat: %s", err.Error())
 		}
 		log.Infoln("Download GeoSite.dat finish")
@@ -152,7 +202,7 @@ func InitGeoSite() error {
 	if !initGeoSite {
 		if err := Verify(C.GeositeName); err != nil {
 			log.Warnln("GeoSite.dat invalid, download replacement: %s", err)
-			if err := downloadToPath(GeoSiteUrl(), C.Path.GeoSite()); err != nil {
+			if err := downloadToPath(GeoSiteUrl(), C.Path.GeoSite(), validateGeoSiteDownload); err != nil {
 				return fmt.Errorf("can't download GeoSite.dat: %s", err.Error())
 			}
 		}
@@ -168,7 +218,7 @@ func InitGeoIP() error {
 	if GeodataMode() {
 		if _, err := os.Stat(C.Path.GeoIP()); os.IsNotExist(err) {
 			log.Infoln("Can't find GeoIP.dat, start download")
-			if err := downloadToPath(GeoIpUrl(), C.Path.GeoIP()); err != nil {
+			if err := downloadToPath(GeoIpUrl(), C.Path.GeoIP(), validateGeoIPDownload); err != nil {
 				return fmt.Errorf("can't download GeoIP.dat: %s", err.Error())
 			}
 			log.Infoln("Download GeoIP.dat finish")
@@ -178,7 +228,7 @@ func InitGeoIP() error {
 		if initGeoIP != 1 {
 			if err := Verify(C.GeoipName); err != nil {
 				log.Warnln("GeoIP.dat invalid, download replacement: %s", err)
-				if err := downloadToPath(GeoIpUrl(), C.Path.GeoIP()); err != nil {
+				if err := downloadToPath(GeoIpUrl(), C.Path.GeoIP(), validateGeoIPDownload); err != nil {
 					return fmt.Errorf("can't download GeoIP.dat: %s", err.Error())
 				}
 			}
@@ -189,7 +239,7 @@ func InitGeoIP() error {
 
 	if _, err := os.Stat(C.Path.MMDB()); os.IsNotExist(err) {
 		log.Infoln("Can't find MMDB, start download")
-		if err := downloadToPath(MmdbUrl(), C.Path.MMDB()); err != nil {
+		if err := downloadToPath(MmdbUrl(), C.Path.MMDB(), validateMMDBDownload); err != nil {
 			return fmt.Errorf("can't download MMDB: %s", err.Error())
 		}
 	}
@@ -197,7 +247,7 @@ func InitGeoIP() error {
 	if initGeoIP != 2 {
 		if !mmdb.Verify(C.Path.MMDB()) {
 			log.Warnln("MMDB invalid, download replacement")
-			if err := downloadToPath(MmdbUrl(), C.Path.MMDB()); err != nil {
+			if err := downloadToPath(MmdbUrl(), C.Path.MMDB(), validateMMDBDownload); err != nil {
 				return fmt.Errorf("can't download MMDB: %s", err.Error())
 			}
 		}
@@ -212,7 +262,7 @@ func InitASN() error {
 	defer initASNMutex.Unlock()
 	if _, err := os.Stat(C.Path.ASN()); os.IsNotExist(err) {
 		log.Infoln("Can't find ASN.mmdb, start download")
-		if err := downloadToPath(ASNUrl(), C.Path.ASN()); err != nil {
+		if err := downloadToPath(ASNUrl(), C.Path.ASN(), validateMMDBDownload); err != nil {
 			return fmt.Errorf("can't download ASN.mmdb: %s", err.Error())
 		}
 		log.Infoln("Download ASN.mmdb finish")
@@ -221,7 +271,7 @@ func InitASN() error {
 	if !initASN {
 		if !mmdb.Verify(C.Path.ASN()) {
 			log.Warnln("ASN invalid, download replacement")
-			if err := downloadToPath(ASNUrl(), C.Path.ASN()); err != nil {
+			if err := downloadToPath(ASNUrl(), C.Path.ASN(), validateMMDBDownload); err != nil {
 				return fmt.Errorf("can't download ASN: %s", err.Error())
 			}
 		}
