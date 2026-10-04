@@ -59,6 +59,22 @@ type tcpTracker struct {
 	manager *Manager
 
 	pushToManager bool `json:"-"`
+	proxyTraffic  bool
+}
+
+// Classify the established outbound, never its display name or a group's
+// current selection. Control, local, group and unknown types are not proxies.
+func proxyEgress(kind C.AdapterType) bool {
+	switch kind {
+	case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http,
+		C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard,
+		C.Tuic, C.Ssh, C.Mieru, C.AnyTLS, C.Sudoku, C.Masque,
+		C.TrustTunnel, C.ShadowQuic, C.OpenVPN, C.Tailscale, C.ZeroTier,
+		C.EasyTier, C.GostRelay:
+		return true
+	default:
+		return false
+	}
 }
 
 func (tt *tcpTracker) ID() string {
@@ -76,7 +92,7 @@ func (tt *tcpTracker) Read(b []byte) (int, error) {
 	}
 	download := int64(n)
 	if tt.pushToManager {
-		tt.manager.PushDownloaded(download)
+		tt.manager.recordTraffic(0, download, tt.proxyTraffic)
 	}
 	tt.DownloadTotal.Add(download)
 	return n, err
@@ -92,7 +108,7 @@ func (tt *tcpTracker) ReadBuffer(buffer *buf.Buffer) (err error) {
 	}
 	download := int64(buffer.Len())
 	if tt.pushToManager {
-		tt.manager.PushDownloaded(download)
+		tt.manager.recordTraffic(0, download, tt.proxyTraffic)
 	}
 	tt.DownloadTotal.Add(download)
 	return
@@ -104,7 +120,7 @@ func (tt *tcpTracker) UnwrapReader() (io.Reader, []N.CountFunc) {
 			tt.markActivity()
 		}
 		if tt.pushToManager {
-			tt.manager.PushDownloaded(download)
+			tt.manager.recordTraffic(0, download, tt.proxyTraffic)
 		}
 		tt.DownloadTotal.Add(download)
 	}}
@@ -117,7 +133,7 @@ func (tt *tcpTracker) Write(b []byte) (int, error) {
 	}
 	upload := int64(n)
 	if tt.pushToManager {
-		tt.manager.PushUploaded(upload)
+		tt.manager.recordTraffic(upload, 0, tt.proxyTraffic)
 	}
 	tt.UploadTotal.Add(upload)
 	return n, err
@@ -132,7 +148,7 @@ func (tt *tcpTracker) WriteBuffer(buffer *buf.Buffer) (err error) {
 		tt.markActivity()
 	}
 	if tt.pushToManager {
-		tt.manager.PushUploaded(upload)
+		tt.manager.recordTraffic(upload, 0, tt.proxyTraffic)
 	}
 	tt.UploadTotal.Add(upload)
 	return
@@ -144,7 +160,7 @@ func (tt *tcpTracker) UnwrapWriter() (io.Writer, []N.CountFunc) {
 			tt.markActivity()
 		}
 		if tt.pushToManager {
-			tt.manager.PushUploaded(upload)
+			tt.manager.recordTraffic(upload, 0, tt.proxyTraffic)
 		}
 		tt.UploadTotal.Add(upload)
 	}}
@@ -176,15 +192,11 @@ func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.R
 			DownloadTotal: atomic.NewInt64(downloadTotal),
 		},
 		pushToManager: pushToManager,
+		proxyTraffic:  proxyEgress(conn.EgressType()),
 	}
 
 	if pushToManager {
-		if uploadTotal > 0 {
-			manager.PushUploaded(uploadTotal)
-		}
-		if downloadTotal > 0 {
-			manager.PushDownloaded(downloadTotal)
-		}
+		manager.recordTraffic(uploadTotal, downloadTotal, t.proxyTraffic)
 	}
 
 	if rule != nil {
@@ -202,6 +214,7 @@ type udpTracker struct {
 	manager *Manager
 
 	pushToManager bool `json:"-"`
+	proxyTraffic  bool
 }
 
 func (ut *udpTracker) ID() string {
@@ -219,7 +232,7 @@ func (ut *udpTracker) ReadFrom(b []byte) (int, net.Addr, error) {
 	}
 	download := int64(n)
 	if ut.pushToManager {
-		ut.manager.PushDownloaded(download)
+		ut.manager.recordTraffic(0, download, ut.proxyTraffic)
 	}
 	ut.DownloadTotal.Add(download)
 	return n, addr, err
@@ -232,7 +245,7 @@ func (ut *udpTracker) WaitReadFrom() (data []byte, put func(), addr net.Addr, er
 	}
 	download := int64(len(data))
 	if ut.pushToManager {
-		ut.manager.PushDownloaded(download)
+		ut.manager.recordTraffic(0, download, ut.proxyTraffic)
 	}
 	ut.DownloadTotal.Add(download)
 	return
@@ -245,7 +258,7 @@ func (ut *udpTracker) WriteTo(b []byte, addr net.Addr) (int, error) {
 	}
 	upload := int64(n)
 	if ut.pushToManager {
-		ut.manager.PushUploaded(upload)
+		ut.manager.recordTraffic(upload, 0, ut.proxyTraffic)
 	}
 	ut.UploadTotal.Add(upload)
 	return n, err
@@ -277,15 +290,11 @@ func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, ru
 			DownloadTotal: atomic.NewInt64(downloadTotal),
 		},
 		pushToManager: pushToManager,
+		proxyTraffic:  proxyEgress(conn.EgressType()),
 	}
 
 	if pushToManager {
-		if uploadTotal > 0 {
-			manager.PushUploaded(uploadTotal)
-		}
-		if downloadTotal > 0 {
-			manager.PushDownloaded(downloadTotal)
-		}
+		manager.recordTraffic(uploadTotal, downloadTotal, ut.proxyTraffic)
 	}
 
 	if rule != nil {

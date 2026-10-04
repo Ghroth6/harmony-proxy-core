@@ -29,6 +29,7 @@ type activityConn struct {
 func (*activityConn) Chains() C.Chain           { return C.Chain{"test"} }
 func (*activityConn) ProviderChains() C.Chain   { return nil }
 func (*activityConn) RemoteDestination() string { return "test:443" }
+func (*activityConn) EgressType() C.AdapterType { return C.Direct }
 func (*activityConn) Close() error              { return nil }
 func (c *activityConn) Read(b []byte) (int, error) {
 	if c.read != nil {
@@ -54,6 +55,7 @@ type activityPacketConn struct {
 func (*activityPacketConn) Chains() C.Chain           { return C.Chain{"test"} }
 func (*activityPacketConn) ProviderChains() C.Chain   { return nil }
 func (*activityPacketConn) RemoteDestination() string { return "test:53" }
+func (*activityPacketConn) EgressType() C.AdapterType { return C.Direct }
 func (*activityPacketConn) Close() error              { return nil }
 func (c *activityPacketConn) ReadFrom([]byte) (int, net.Addr, error) {
 	return c.n, &net.UDPAddr{}, c.err

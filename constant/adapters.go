@@ -72,6 +72,9 @@ type Connection interface {
 	ProviderChains() Chain
 	AppendToChains(adapter ProxyAdapter)
 	RemoteDestination() string
+	// EgressType is the outbound that created this connection. Appending a
+	// selection group or changing its selection must not change this value.
+	EgressType() AdapterType
 }
 
 type Chain []string

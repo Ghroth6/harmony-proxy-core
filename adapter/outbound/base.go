@@ -227,7 +227,10 @@ type conn struct {
 	chain       C.Chain
 	pdChain     C.Chain
 	adapterAddr string
+	egressType  C.AdapterType
 }
+
+func (c *conn) EgressType() C.AdapterType { return c.egressType }
 
 func (c *conn) RemoteDestination() string {
 	if remoteAddr := c.RemoteAddr(); remoteAddr != nil {
@@ -290,7 +293,7 @@ func NewConn(c net.Conn, a C.ProxyAdapter) C.Conn {
 	default:
 		c = N.NewDeadlineConn(c) // most conn from outbound can't handle readDeadline correctly
 	}
-	cc := &conn{N.NewExtendedConn(c), nil, nil, a.Addr()}
+	cc := &conn{ExtendedConn: N.NewExtendedConn(c), adapterAddr: a.Addr(), egressType: a.Type()}
 	cc.AppendToChains(a)
 	return cc
 }
@@ -303,7 +306,10 @@ type packetConn struct {
 	connID      string
 	adapterAddr string
 	resolveUDP  func(ctx context.Context, metadata *C.Metadata) error
+	egressType  C.AdapterType
 }
+
+func (c *packetConn) EgressType() C.AdapterType { return c.egressType }
 
 func (c *packetConn) ResolveUDP(ctx context.Context, metadata *C.Metadata) error {
 	return c.resolveUDP(ctx, metadata)
@@ -361,7 +367,10 @@ func NewPacketConn(pc net.PacketConn, a ProxyAdapter) C.PacketConn {
 	default:
 		epc = N.NewDeadlineEnhancePacketConn(epc) // most conn from outbound can't handle readDeadline correctly
 	}
-	cpc := &packetConn{epc, nil, nil, a.Name(), utils.NewUUIDV4().String(), a.Addr(), a.ResolveUDP}
+	cpc := &packetConn{
+		EnhancePacketConn: epc, adapterName: a.Name(), connID: utils.NewUUIDV4().String(),
+		adapterAddr: a.Addr(), resolveUDP: a.ResolveUDP, egressType: a.Type(),
+	}
 	cpc.AppendToChains(a)
 	return cpc
 }
