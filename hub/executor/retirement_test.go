@@ -13,6 +13,7 @@ import (
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outbound"
 	AP "github.com/metacubex/mihomo/adapter/provider"
+	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/resource"
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
@@ -71,6 +72,36 @@ func retirementFixture(t *testing.T) *config.Config {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func TestConfigPublicationTransfersCandidateOwnership(t *testing.T) {
+	next := retirementFixture(t)
+	runtimeCopy := *next
+	if err := ApplyConfigContext(context.Background(), &runtimeCopy, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := next.Discard(context.Background()); !errors.Is(err, configresources.ErrTransferred) {
+		t.Fatalf("published candidate Discard = %v", err)
+	}
+	if err := ApplyConfigContext(context.Background(), next, false); err != nil {
+		t.Fatalf("same-object reapply: %v", err)
+	}
+}
+
+func TestDiscardedCandidateRejectedBeforeRetiringActiveConfiguration(t *testing.T) {
+	next := retirementFixture(t)
+	if err := next.Discard(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a := &retirementAdapter{Base: outbound.NewBase(outbound.BaseOption{Name: "active", Type: C.Direct})}
+	p := &retirementProvider{name: "active", proxies: []C.Proxy{adapter.NewProxy(a)}, done: make(chan struct{})}
+	tunnel.UpdateProxies(map[string]C.Proxy{"active": p.proxies[0]}, map[string]P.ProxyProvider{"active": p})
+	if err := ApplyConfigContext(context.Background(), next, false); !errors.Is(err, configresources.ErrCleanupStarted) {
+		t.Fatalf("Apply discarded candidate = %v", err)
+	}
+	if p.cancelled.Load() || a.calls.Load() != 0 || tunnel.Providers()["active"] != p {
+		t.Fatal("rejected candidate retired active configuration")
+	}
 }
 
 func TestConfigRetirementCancelsAllBeforeWaitAndBlocksPublication(t *testing.T) {

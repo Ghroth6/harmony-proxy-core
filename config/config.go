@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"github.com/metacubex/mihomo/component/age"
 	"github.com/metacubex/mihomo/component/auth"
 	"github.com/metacubex/mihomo/component/cidr"
+	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/fakeip"
 	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/component/process"
@@ -211,6 +213,9 @@ type Config struct {
 	Tunnels       []LC.Tunnel
 	Sniffer       *sniffer.Config
 	TLS           *TLS
+
+	// A pointer preserves ownership across shallow runtime copies of a candidate.
+	candidateResources *configresources.Set
 }
 
 type RawCors struct {
@@ -621,8 +626,15 @@ func UnmarshalRawConfig(buf []byte) (*RawConfig, error) {
 	return rawCfg, nil
 }
 
-func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
-	config := &Config{}
+func ParseRawConfig(rawCfg *RawConfig) (_ *Config, err error) {
+	config := &Config{candidateResources: &configresources.Set{}}
+	defer func() {
+		if err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err = errors.Join(err, config.Discard(ctx))
+		}
+	}()
 	log.Infoln("Start initial configuration in progress") //Segment finished in xxm
 	startTime := time.Now()
 
@@ -674,7 +686,7 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	}
 	config.TLS = tlsCfg
 
-	proxies, providers, err := parseProxies(rawCfg)
+	proxies, providers, err := parseProxiesInto(rawCfg, config.candidateResources)
 	if err != nil {
 		return nil, err
 	}
@@ -689,7 +701,7 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 
 	log.Infoln("Geodata Loader mode: %s", geodata.LoaderName())
 	log.Infoln("Geosite Matcher implementation: %s", geodata.SiteMatcherName())
-	ruleProviders, err := parseRuleProviders(rawCfg)
+	ruleProviders, err := parseRuleProviders(rawCfg, config.candidateResources)
 	if err != nil {
 		return nil, err
 	}
@@ -877,6 +889,18 @@ func parseTLS(cfg *RawConfig) (*TLS, error) {
 }
 
 func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[string]P.ProxyProvider, err error) {
+	owned := &configresources.Set{}
+	defer func() {
+		if err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err = errors.Join(err, owned.Close(ctx))
+		}
+	}()
+	return parseProxiesInto(cfg, owned)
+}
+
+func parseProxiesInto(cfg *RawConfig, owned *configresources.Set) (proxies map[string]C.Proxy, providersMap map[string]P.ProxyProvider, err error) {
 	proxies = make(map[string]C.Proxy)
 	providersMap = make(map[string]P.ProxyProvider)
 	proxiesConfig := cfg.Proxy
@@ -895,6 +919,9 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	proxies["COMPATIBLE"] = adapter.NewProxy(outbound.NewCompatible())
 	proxies["PASS"] = adapter.NewProxy(outbound.NewPass())
 	proxies["PASS-RULE"] = adapter.NewProxy(outbound.NewPassRule())
+	for _, proxy := range proxies {
+		owned.AddProxy(proxy)
+	}
 	proxyList = append(proxyList, "DIRECT", "REJECT")
 
 	// parse proxy
@@ -903,6 +930,8 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 		if err != nil {
 			return nil, nil, fmt.Errorf("proxy %d: %w", idx, err)
 		}
+		// Adopt before duplicate-name validation: this object is not yet in the map.
+		owned.AddProxy(proxy)
 
 		if _, exist := proxies[proxy.Name()]; exist {
 			return nil, nil, fmt.Errorf("proxy %s is the duplicate name", proxy.Name())
@@ -942,6 +971,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 		}
 
 		providersMap[name] = pd
+		ownProvider(owned, pd)
 		AllProviders = append(AllProviders, name)
 	}
 
@@ -951,9 +981,14 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	// parse proxy group
 	for idx, mapping := range groupsConfig {
 		group, err := outboundgroup.ParseProxyGroup(mapping, proxies, providersMap, AllProxies, AllProviders)
+		// Group parsing may construct a compatible provider before a later error.
+		for _, pd := range providersMap {
+			ownProvider(owned, pd)
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("proxy group[%d]: %w", idx, err)
 		}
+		owned.AddAdapter(group)
 
 		groupName := group.Name()
 		if _, exist := proxies[groupName]; exist {
@@ -961,6 +996,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 		}
 
 		proxies[groupName] = adapter.NewProxy(group)
+		owned.AddProxy(proxies[groupName])
 	}
 
 	var ps []C.Proxy
@@ -973,6 +1009,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	hc := provider.NewHealthCheck(ps, "", 5000, 0, true, nil)
 	pd, _ := provider.NewCompatibleProvider(provider.ReservedName, ps, hc)
 	providersMap[provider.ReservedName] = pd
+	ownProvider(owned, pd)
 
 	if !hasGlobal {
 		global, err := outboundgroup.NewSelector(
@@ -987,6 +1024,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 			return nil, nil, fmt.Errorf("new GLOBAL proxy group error: %w", err)
 		}
 		proxies["GLOBAL"] = adapter.NewProxy(global)
+		owned.AddProxy(proxies["GLOBAL"])
 	}
 
 	// validate dialer-proxy references
@@ -1016,7 +1054,7 @@ func parseListeners(cfg *RawConfig) (listeners map[string]C.InboundListener, err
 	return
 }
 
-func parseRuleProviders(cfg *RawConfig) (ruleProviders map[string]P.RuleProvider, err error) {
+func parseRuleProviders(cfg *RawConfig, owned *configresources.Set) (ruleProviders map[string]P.RuleProvider, err error) {
 	RP.SetTunnel(T.Tunnel)
 	ruleProviders = map[string]P.RuleProvider{}
 	// parse rule provider
@@ -1027,6 +1065,7 @@ func parseRuleProviders(cfg *RawConfig) (ruleProviders map[string]P.RuleProvider
 		}
 
 		ruleProviders[name] = rp
+		owned.AddProvider(rp)
 	}
 	return
 }

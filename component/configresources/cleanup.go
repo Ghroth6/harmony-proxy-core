@@ -23,16 +23,22 @@ type testOwner interface {
 	WaitURLTests(context.Context) error
 }
 
+var (
+	ErrTransferred    = errors.New("candidate ownership has been transferred")
+	ErrCleanupStarted = errors.New("candidate cleanup has already started")
+)
+
 // Set's zero value is ready for use. Registration is allowed only before Close.
 // AddProxy and AddProvider do not recursively adopt borrowed group members or
 // provider nodes: the constructor must register objects it actually owns.
 type Set struct {
-	mu        sync.Mutex
-	proxies   map[C.Proxy]struct{}
-	adapters  map[C.ProxyAdapter]struct{}
-	providers map[P.Provider]struct{}
-	done      chan struct{}
-	err       error
+	mu          sync.Mutex
+	proxies     map[C.Proxy]struct{}
+	adapters    map[C.ProxyAdapter]struct{}
+	providers   map[P.Provider]struct{}
+	done        chan struct{}
+	err         error
+	transferred bool
 }
 
 func (s *Set) AddProxy(p C.Proxy) {
@@ -83,9 +89,40 @@ func (s *Set) AddProvider(p P.Provider) {
 }
 
 func (s *Set) checkOpen() {
-	if s.done != nil {
-		panic("registering a resource after candidate cleanup started")
+	if s.done != nil || s.transferred {
+		panic("registering a resource after candidate ownership ended")
 	}
+}
+
+// CheckTransfer rejects a discarded candidate before the caller retires its
+// active configuration. Transfer checks again at the actual publication point.
+func (s *Set) CheckTransfer() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done != nil {
+		return ErrCleanupStarted
+	}
+	return nil
+}
+
+// Transfer hands ownership to the runtime without closing anything. It drops
+// candidate-only references so later provider refreshes retain their existing
+// lifetime behavior. Reapplying the same published object is allowed.
+func (s *Set) Transfer() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done != nil {
+		return ErrCleanupStarted
+	}
+	s.transferred = true
+	s.proxies, s.adapters, s.providers = nil, nil, nil
+	return nil
 }
 
 // Close starts cleanup once and waits up to ctx's deadline. Cleanup itself is
@@ -96,6 +133,10 @@ func (s *Set) Close(ctx context.Context) error {
 		return nil
 	}
 	s.mu.Lock()
+	if s.transferred {
+		s.mu.Unlock()
+		return ErrTransferred
+	}
 	if s.done == nil {
 		s.done = make(chan struct{})
 		go s.cleanup()

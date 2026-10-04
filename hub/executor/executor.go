@@ -101,11 +101,17 @@ func ApplyConfigContext(ctx context.Context, cfg *config.Config, force bool) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := cfg.CheckCandidate(); err != nil {
+		return err
+	}
 	reused := providerSet(&config.Config{Providers: tunnel.Providers(), RuleProviders: tunnel.RuleProviders()})
 	if err := retireConfigLocked(ctx, cfg); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := cfg.TransferToRuntime(); err != nil {
 		return err
 	}
 	generation := configGeneration.Add(1)

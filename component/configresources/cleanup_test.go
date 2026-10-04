@@ -148,3 +148,47 @@ func TestWaitCleanupOmitsOrdinaryParseErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCandidateTransferDropsReferencesAndCannotBeDiscarded(t *testing.T) {
+	a := &ownedAdapter{}
+	p := &ownedProvider{cancelled: make(chan struct{})}
+	var set Set
+	set.AddAdapter(a)
+	set.AddProvider(p)
+	if err := set.CheckTransfer(); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.Transfer(); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.Transfer(); err != nil {
+		t.Fatal(err)
+	}
+	if set.adapters != nil || set.proxies != nil || set.providers != nil {
+		t.Fatal("candidate retained runtime objects")
+	}
+	if err := set.Close(context.Background()); !errors.Is(err, ErrTransferred) {
+		t.Fatal(err)
+	}
+	select {
+	case <-p.cancelled:
+		t.Fatal("transferred provider cancelled")
+	default:
+	}
+	if a.closed.Load() != 0 {
+		t.Fatal("transferred adapter closed")
+	}
+}
+
+func TestDiscardedCandidateCannotTransfer(t *testing.T) {
+	var set Set
+	if err := set.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.CheckTransfer(); !errors.Is(err, ErrCleanupStarted) {
+		t.Fatal(err)
+	}
+	if err := set.Transfer(); !errors.Is(err, ErrCleanupStarted) {
+		t.Fatal(err)
+	}
+}
