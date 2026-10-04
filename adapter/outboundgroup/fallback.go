@@ -19,7 +19,6 @@ type Fallback struct {
 	*GroupBase
 	disableUDP     bool
 	testUrl        string
-	selected       string
 	expectedStatus string
 }
 
@@ -89,7 +88,7 @@ func (f *Fallback) MarshalJSON() ([]byte, error) {
 		"all":            all,
 		"testUrl":        f.testUrl,
 		"expectedStatus": f.expectedStatus,
-		"fixed":          f.selected,
+		"fixed":          f.selectedName(),
 		"hidden":         f.Hidden(),
 		"icon":           f.Icon(),
 		"emptyFallback":  f.EmptyFallback().Name(),
@@ -104,17 +103,31 @@ func (f *Fallback) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 
 func (f *Fallback) findAliveProxy(touch bool) C.Proxy {
 	proxies := f.GetProxies(touch)
+	selected := f.selection.Load()
+	if selected != nil && selected.qualified {
+		if proxy := selected.resolve(proxies); proxy != nil {
+			if proxy.AliveForTestUrl(f.testUrl) {
+				return proxy
+			}
+			f.selection.CompareAndSwap(selected, nil)
+		}
+		// A missing object can be a refresh between the group and provider
+		// observations. Like legacy missing names, retain the preference; only
+		// a confirmed unhealthy target clears it.
+		selected = nil
+	}
 	for _, proxy := range proxies {
-		if len(f.selected) == 0 {
+		if selected == nil {
 			if proxy.AliveForTestUrl(f.testUrl) {
 				return proxy
 			}
 		} else {
-			if proxy.Name() == f.selected {
+			if proxy.Name() == selected.name {
 				if proxy.AliveForTestUrl(f.testUrl) {
 					return proxy
 				} else {
-					f.selected = ""
+					f.selection.CompareAndSwap(selected, nil)
+					selected = nil
 				}
 			}
 		}
@@ -136,7 +149,12 @@ func (f *Fallback) Set(name string) error {
 		return errors.New("proxy not exist")
 	}
 
-	f.selected = name
+	f.setLegacySelection(name)
+	f.checkSelected(p)
+	return nil
+}
+
+func (f *Fallback) checkSelected(p C.Proxy) {
 	if !p.AliveForTestUrl(f.testUrl) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
 		defer cancel()
@@ -144,11 +162,20 @@ func (f *Fallback) Set(name string) error {
 		_, _ = p.URLTest(ctx, f.testUrl, expectedStatus)
 	}
 
+}
+
+func (f *Fallback) SetIdentity(proxy C.Proxy, provider P.ProxyProvider) error {
+	if err := f.setIdentity(proxy, provider); err != nil {
+		return err
+	}
+	f.checkSelected(proxy)
 	return nil
 }
 
+func (f *Fallback) SelectedProxy() C.Proxy { return f.findAliveProxy(false) }
+
 func (f *Fallback) ForceSet(name string) {
-	f.selected = name
+	f.setLegacySelection(name)
 }
 
 func (f *Fallback) Providers() []P.ProxyProvider {

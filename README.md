@@ -10,7 +10,9 @@ URLTest、连接创建和 provider 初始化通过可注销订阅发布事件。
 
 `platformnetwork.Publish` 校验并原子发布完整的网络快照，包含代际、DNS、接口地址/前缀和路由；非法或过期快照不替换现状。OHOS 在首个快照到达前按离线处理，离线不回落到原生接口或隐式公共系统 DNS。接口索引只能使用实测值，未知为零，不能用 NetworkID 代替。
 
-完整宿主入口为 `scripts/test-interfaces.ps1`（Go 1.24.5，干净工作区；`-ModuleCache` 指定已有依赖缓存）。它离线运行九个接口包和独立进程的 OHOS 初始状态测试，将源码哈希、日志与结果写入本仓 `local/`，不修改上游 go.mod/go.sum。`scripts/test-statistic.ps1` 仍可单独验证统计包。Windows 上启用 ohos build tag 不等于 OHOS 二进制或真机验证；两入口均未启用 race detector。
+选择组新增 `SetIdentity(proxy, provider)`：静态节点绑定对象，订阅节点绑定 provider 与节点名称，同 provider 刷新保留身份，其他 provider 新增同名节点不能接管选择。Selector 的目标失效时拒绝连接；URLTest/Fallback 保留健康判断及自动切换策略。`SelectedProxy()` 返回实际选择对象；旧 `Set`/`ForceSet`（包括空值）恢复原裸名语义并清除身份绑定。
+
+完整宿主入口为 `scripts/test-interfaces.ps1`（Go 1.24.5，干净工作区；`-ModuleCache` 指定已有依赖缓存）。它离线运行接口包（包括 outboundgroup 选择回归）和独立进程的 OHOS 初始状态测试，将源码哈希、日志与结果写入本仓 `local/`，不修改上游 go.mod/go.sum。`scripts/test-statistic.ps1` 仍可单独验证统计包。Windows 上启用 ohos build tag 不等于 OHOS 二进制或真机验证；两入口均未启用 race detector。
 
 工程集成与验证步骤见 [clashbox-meta](https://github.com/Ghroth6/clashbox-meta)（私有，需权限）；标准工作空间中的协调仓位于 `../../meta`。自动化协作入口见 [AGENTS.md](AGENTS.md)。以下保留上游功能、文档和许可说明；上游功能列表不代表已在 OHOS 验证。
 

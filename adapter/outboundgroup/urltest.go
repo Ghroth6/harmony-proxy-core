@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/callback"
@@ -20,12 +21,12 @@ type URLTestOption struct {
 
 type URLTest struct {
 	*GroupBase
-	selected       string
 	testUrl        string
 	expectedStatus string
 	tolerance      uint16
 	disableUDP     bool
 	fastNode       C.Proxy
+	fastMu         sync.Mutex
 	fastSingle     *singledo.Single[C.Proxy]
 }
 
@@ -49,9 +50,19 @@ func (u *URLTest) Set(name string) error {
 }
 
 func (u *URLTest) ForceSet(name string) {
-	u.selected = name
+	u.setLegacySelection(name)
 	u.fastSingle.Reset()
 }
+
+func (u *URLTest) SetIdentity(proxy C.Proxy, provider P.ProxyProvider) error {
+	if err := u.setIdentity(proxy, provider); err != nil {
+		return err
+	}
+	u.fastSingle.Reset()
+	return nil
+}
+
+func (u *URLTest) SelectedProxy() C.Proxy { return u.fast(false) }
 
 // DialContext implements C.ProxyAdapter
 func (u *URLTest) DialContext(ctx context.Context, metadata *C.Metadata) (c C.Conn, err error) {
@@ -101,14 +112,28 @@ func (u *URLTest) healthCheck() {
 }
 
 func (u *URLTest) fast(touch bool) C.Proxy {
+	// Single.Reset may detach an in-flight call. Serialize the fastNode state
+	// across both cached automatic choices and uncached identity preferences.
+	u.fastMu.Lock()
+	defer u.fastMu.Unlock()
+	// Resolve qualified preferences outside the timed cache: refreshes may replace
+	// their objects or introduce another provider with the same display name.
+	if selected := u.selection.Load(); selected != nil && selected.qualified {
+		if proxy := selected.resolve(u.GetProxies(touch)); proxy != nil && proxy.AliveForTestUrl(u.testUrl) {
+			u.fastNode = proxy
+			return proxy
+		}
+		u.fastSingle.Reset()
+	}
 	elm, _, shared := u.fastSingle.Do(func() (C.Proxy, error) {
 		proxies := u.GetProxies(touch)
-		if u.selected != "" {
+		selected := u.selection.Load()
+		if selected != nil && !selected.qualified {
 			for _, proxy := range proxies {
 				if !proxy.AliveForTestUrl(u.testUrl) {
 					continue
 				}
-				if proxy.Name() == u.selected {
+				if proxy.Name() == selected.name {
 					u.fastNode = proxy
 					return proxy, nil
 				}
@@ -120,7 +145,7 @@ func (u *URLTest) fast(touch bool) C.Proxy {
 		fastNotExist := true
 
 		for _, proxy := range proxies[1:] {
-			if u.fastNode != nil && proxy.Name() == u.fastNode.Name() {
+			if proxy == u.fastNode {
 				fastNotExist = false
 			}
 
@@ -173,7 +198,7 @@ func (u *URLTest) MarshalJSON() ([]byte, error) {
 		"all":            all,
 		"testUrl":        u.testUrl,
 		"expectedStatus": u.expectedStatus,
-		"fixed":          u.selected,
+		"fixed":          u.selectedName(),
 		"hidden":         u.Hidden(),
 		"icon":           u.Icon(),
 		"emptyFallback":  u.EmptyFallback().Name(),

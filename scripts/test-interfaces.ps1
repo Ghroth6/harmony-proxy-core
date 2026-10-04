@@ -15,7 +15,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect core working tree' }
 if ($dirty.Count -ne 0) { throw 'Commit changes first: interface validation requires a clean core working tree' }
 
 $packages = @(
-  'common/event', 'adapter', 'tunnel/statistic', 'adapter/outbound',
+  'common/event', 'adapter', 'tunnel/statistic', 'adapter/outbound', 'adapter/outboundgroup',
   'hub/executor', 'component/platformnetwork', 'component/iface',
   'component/dialer', 'dns'
 )
@@ -35,7 +35,7 @@ replace github.com/metacubex/mihomo => ../..
 '@ | Set-Content -LiteralPath (Join-Path $stage 'go.mod') -Encoding utf8NoBOM
 Copy-Item -LiteralPath (Join-Path $core 'go.sum') -Destination (Join-Path $stage 'go.sum')
 
-# Include all tracked core Go sources, covering the nine packages and their
+# Include all tracked core Go sources, covering the selected packages and their
 # internal dependencies, notably constant.Connection and outbound constructors.
 $files = @(git -C $core -c core.quotePath=false ls-files -- '*.go' 'go.mod' 'go.sum' 'README.md' 'scripts/test-interfaces.ps1')
 if ($LASTEXITCODE -ne 0 -or $files.Count -eq 0) { throw 'Cannot enumerate tracked source inputs' }

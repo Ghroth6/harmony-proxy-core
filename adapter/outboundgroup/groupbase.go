@@ -34,6 +34,7 @@ type GroupBase struct {
 	testTimeout       int
 	maxFailedTimes    int
 	emptyFallback     C.Proxy
+	selection         selectionState
 
 	// for GetProxies
 	getProxiesMutex  sync.Mutex

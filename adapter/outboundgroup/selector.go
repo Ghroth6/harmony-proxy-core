@@ -16,7 +16,6 @@ type SelectorOption struct {
 type Selector struct {
 	*GroupBase
 	disableUDP bool
-	selected   string
 	testUrl    string
 }
 
@@ -83,7 +82,7 @@ func (s *Selector) Now() string {
 func (s *Selector) Set(name string) error {
 	for _, proxy := range s.GetProxies(false) {
 		if proxy.Name() == name {
-			s.selected = name
+			s.setLegacySelection(name)
 			return nil
 		}
 	}
@@ -92,8 +91,14 @@ func (s *Selector) Set(name string) error {
 }
 
 func (s *Selector) ForceSet(name string) {
-	s.selected = name
+	s.setLegacySelection(name)
 }
+
+func (s *Selector) SetIdentity(proxy C.Proxy, provider P.ProxyProvider) error {
+	return s.setIdentity(proxy, provider)
+}
+
+func (s *Selector) SelectedProxy() C.Proxy { return s.selectedProxy(false) }
 
 // Unwrap implements C.ProxyAdapter
 func (s *Selector) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
@@ -102,10 +107,12 @@ func (s *Selector) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 
 func (s *Selector) selectedProxy(touch bool) C.Proxy {
 	proxies := s.GetProxies(touch)
-	for _, proxy := range proxies {
-		if proxy.Name() == s.selected {
-			return proxy
-		}
+	selected := s.selection.Load()
+	if proxy := selected.resolve(proxies); proxy != nil {
+		return proxy
+	}
+	if selected != nil && selected.qualified {
+		return unavailableProxy
 	}
 
 	return proxies[0]
@@ -120,7 +127,7 @@ func (s *Selector) Proxies() []C.Proxy {
 }
 
 func NewSelector(option GroupCommonOption, selectorOption SelectorOption, emptyFallback C.Proxy, providers []P.ProxyProvider) (*Selector, error) {
-	return &Selector{
+	selector := &Selector{
 		GroupBase: NewGroupBase(GroupBaseOption{
 			Name:           option.Name,
 			Type:           C.Selector,
@@ -134,8 +141,9 @@ func NewSelector(option GroupCommonOption, selectorOption SelectorOption, emptyF
 			EmptyFallback:  emptyFallback,
 			Providers:      providers,
 		}),
-		selected:   selectorOption.DefaultSelected,
 		disableUDP: option.DisableUDP,
 		testUrl:    option.URL,
-	}, nil
+	}
+	selector.setLegacySelection(selectorOption.DefaultSelected)
+	return selector, nil
 }
