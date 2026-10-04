@@ -26,6 +26,7 @@ type testOwner interface {
 var (
 	ErrTransferred    = errors.New("candidate ownership has been transferred")
 	ErrCleanupStarted = errors.New("candidate cleanup has already started")
+	ErrRetired        = errors.New("candidate runtime ownership has been retired")
 )
 
 // Set's zero value is ready for use. Registration is allowed only before Close.
@@ -39,6 +40,7 @@ type Set struct {
 	done        chan struct{}
 	err         error
 	transferred bool
+	retired     bool
 }
 
 func (s *Set) AddProxy(p C.Proxy) {
@@ -94,7 +96,7 @@ func (s *Set) checkOpen() {
 	}
 }
 
-// CheckTransfer rejects a discarded candidate before the caller retires its
+// CheckTransfer rejects a discarded or retired candidate before the caller retires its
 // active configuration. Transfer checks again at the actual publication point.
 func (s *Set) CheckTransfer() error {
 	if s == nil {
@@ -102,6 +104,9 @@ func (s *Set) CheckTransfer() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired {
+		return ErrRetired
+	}
 	if s.done != nil {
 		return ErrCleanupStarted
 	}
@@ -110,19 +115,36 @@ func (s *Set) CheckTransfer() error {
 
 // Transfer hands ownership to the runtime without closing anything. It drops
 // candidate-only references so later provider refreshes retain their existing
-// lifetime behavior. Reapplying the same published object is allowed.
+// lifetime behavior. Reapplying the current published object is allowed.
 func (s *Set) Transfer() error {
 	if s == nil {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired {
+		return ErrRetired
+	}
 	if s.done != nil {
 		return ErrCleanupStarted
 	}
 	s.transferred = true
 	s.proxies, s.adapters, s.providers = nil, nil, nil
 	return nil
+}
+
+// Retire permanently invalidates a published candidate when the runtime starts
+// replacing or retiring it. The state is shared by every shallow Config copy;
+// no historical global registry is needed to reject reuse of a closed candidate.
+func (s *Set) Retire() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.transferred {
+		s.retired = true
+	}
 }
 
 // Close starts cleanup once and waits up to ctx's deadline. Cleanup itself is

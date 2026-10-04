@@ -17,7 +17,7 @@ func (c *Config) Discard(ctx context.Context) error {
 	return c.candidateResources.Close(ctx)
 }
 
-// CheckCandidate rejects a previously discarded candidate before active
+// CheckCandidate rejects a discarded or retired candidate before active
 // resources are retired. Config literals have no parser-owned resources.
 func (c *Config) CheckCandidate() error {
 	return c.candidateResources.CheckTransfer()
@@ -27,6 +27,19 @@ func (c *Config) CheckCandidate() error {
 // After this succeeds Discard is forbidden; runtime retirement owns cleanup.
 func (c *Config) TransferToRuntime() error {
 	return c.candidateResources.Transfer()
+}
+
+// SharesCandidate identifies shallow copies of the same parsed candidate.
+func (c *Config) SharesCandidate(other *Config) bool {
+	return c != nil && other != nil && c.candidateResources != nil && c.candidateResources == other.candidateResources
+}
+
+// RetireCandidate prevents publication after runtime retirement starts. It does
+// not close resources: executor still owns cancellation, waiting and closing.
+func (c *Config) RetireCandidate() {
+	if c != nil {
+		c.candidateResources.Retire()
+	}
 }
 
 // WaitCleanup continues any retained candidate cleanup in a parse/apply error.

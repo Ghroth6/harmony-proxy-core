@@ -53,6 +53,10 @@ type configRetirement struct {
 // succeed; a failed attempt is neither a rollback nor permission to restart it.
 var retiringConfig *configRetirement
 
+// Only the current parsed candidate is retained. Retired state lives in that
+// candidate's shared ownership token, not in an ever-growing identity history.
+var appliedCandidate *config.Config
+
 func providerSet(cfg *config.Config) map[P.Provider]struct{} {
 	set := make(map[P.Provider]struct{})
 	if cfg != nil {
@@ -76,6 +80,11 @@ func CancelConfigTasks(next *config.Config) error {
 }
 
 func cancelConfigTasksLocked(next *config.Config) error {
+	if next != nil {
+		if err := next.CheckCandidate(); err != nil {
+			return err
+		}
+	}
 	keep := providerSet(next)
 	if retiringConfig == nil {
 		retiringConfig = &configRetirement{
@@ -88,6 +97,10 @@ func cancelConfigTasksLocked(next *config.Config) error {
 		if _, reused := keep[p]; reused {
 			return fmt.Errorf("configuration reuses retired provider %q", p.Name())
 		}
+	}
+	if appliedCandidate != nil && !appliedCandidate.SharesCandidate(next) {
+		appliedCandidate.RetireCandidate()
+		appliedCandidate = nil
 	}
 	// Refuse new internal traffic before any old adapter is cancelled/closed.
 	// A parse-time download must not route through a retired proxy map.

@@ -114,6 +114,7 @@ func ApplyConfigContext(ctx context.Context, cfg *config.Config, force bool) err
 	if err := cfg.TransferToRuntime(); err != nil {
 		return err
 	}
+	appliedCandidate = cfg
 	generation := configGeneration.Add(1)
 	log.SetLevel(cfg.General.LogLevel)
 

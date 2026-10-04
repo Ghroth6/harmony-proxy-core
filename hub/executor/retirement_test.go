@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -59,12 +60,15 @@ func retirementFixture(t *testing.T) *config.Config {
 	t.Helper()
 	oldProxies, oldProviders, oldRules := tunnel.Proxies(), tunnel.Providers(), tunnel.RuleProviders()
 	oldInner := inner.GetTunnel()
+	oldCandidate := appliedCandidate
+	appliedCandidate = nil
 	retiringConfig = nil
 	t.Cleanup(func() {
 		tunnel.UpdateProxies(oldProxies, oldProviders)
 		tunnel.UpdateRules(nil, nil, oldRules)
 		inner.New(oldInner)
 		retiringConfig = nil
+		appliedCandidate = oldCandidate
 		tunnel.OnRunning()
 	})
 	cfg, err := ParseWithBytes([]byte("mode: direct\ndns:\n  enable: false\n"))
@@ -102,6 +106,106 @@ func TestDiscardedCandidateRejectedBeforeRetiringActiveConfiguration(t *testing.
 	if p.cancelled.Load() || a.calls.Load() != 0 || tunnel.Providers()["active"] != p {
 		t.Fatal("rejected candidate retired active configuration")
 	}
+}
+
+func TestRetiredParsedCandidateCannotReplaceCurrentConfiguration(t *testing.T) {
+	next := retirementFixture(t)
+	before := anyTLSIdleRoutines()
+	first, err := ParseWithBytes([]byte("proxies:\n  - name: owned\n    type: anytls\n    server: 127.0.0.1\n    port: 443\n    password: retirement-test\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyOfFirst := *first
+	if err := ApplyConfigContext(context.Background(), first, false); err != nil {
+		t.Fatal(err)
+	}
+	if anyTLSIdleRoutines() != before+1 {
+		t.Fatal("first configuration did not create its real AnyTLS idle routine")
+	}
+	if err := ApplyConfigContext(context.Background(), &copyOfFirst, false); err != nil {
+		t.Fatalf("current shallow copy rejected: %v", err)
+	}
+	if anyTLSIdleRoutines() != before+1 {
+		t.Fatal("same-candidate reapply closed its transport")
+	}
+	if err := ApplyConfigContext(context.Background(), next, false); err != nil {
+		t.Fatal(err)
+	}
+	if anyTLSIdleRoutines() != before {
+		t.Fatal("replacement did not close old AnyTLS transport")
+	}
+	for _, stale := range []*config.Config{first, &copyOfFirst} {
+		if err := ApplyConfigContext(context.Background(), stale, false); !errors.Is(err, configresources.ErrRetired) {
+			t.Fatalf("retired candidate Apply = %v", err)
+		}
+		if tunnel.Proxies()["GLOBAL"] != next.Proxies["GLOBAL"] {
+			t.Fatal("stale candidate changed current map")
+		}
+		if err := next.Providers[AP.ReservedName].Update(); err != nil {
+			t.Fatalf("rejected stale candidate cancelled current provider: %v", err)
+		}
+	}
+	if err := RetireConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExplicitRetirementRejectsParsedCandidateReapplication(t *testing.T) {
+	_ = retirementFixture(t)
+	before := anyTLSIdleRoutines()
+	first, err := ParseWithBytes([]byte("proxies:\n  - name: owned\n    type: anytls\n    server: 127.0.0.1\n    port: 443\n    password: retirement-test\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyConfigContext(context.Background(), first, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := RetireConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if anyTLSIdleRoutines() != before {
+		t.Fatal("explicit retirement retained AnyTLS routine")
+	}
+	if err := ApplyConfigContext(context.Background(), first, false); !errors.Is(err, configresources.ErrRetired) {
+		t.Fatalf("Apply after RetireConfig = %v", err)
+	}
+	if len(tunnel.Proxies()) != 0 || inner.GetTunnel() != nil {
+		t.Fatal("retired candidate was republished")
+	}
+}
+
+func TestRetirementTimeoutRejectsSameParsedCandidate(t *testing.T) {
+	first := retirementFixture(t)
+	p := &retirementProvider{name: "blocked", done: make(chan struct{})}
+	first.Providers[p.name] = p
+	if err := ApplyConfigContext(context.Background(), first, false); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := RetireConfig(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("retirement = %v", err)
+	}
+	if !p.cancelled.Load() {
+		t.Fatal("timeout occurred before cancellation")
+	}
+	if err := ApplyConfigContext(context.Background(), first, false); !errors.Is(err, configresources.ErrRetired) {
+		t.Fatalf("same candidate after retirement timeout = %v", err)
+	}
+	close(p.done)
+	if err := RetireConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyConfigContext(context.Background(), first, false); !errors.Is(err, configresources.ErrRetired) {
+		t.Fatalf("retired candidate after eventual cleanup = %v", err)
+	}
+}
+
+func anyTLSIdleRoutines() int {
+	buf := make([]byte, 2<<20)
+	n := runtime.Stack(buf, true)
+	return strings.Count(string(buf[:n]), "github.com/metacubex/mihomo/transport/anytls/util.StartRoutine.func1(")
 }
 
 func TestConfigRetirementCancelsAllBeforeWaitAndBlocksPublication(t *testing.T) {
