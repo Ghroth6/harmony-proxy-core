@@ -5,12 +5,14 @@ import (
 	"errors"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outbound"
+	AP "github.com/metacubex/mihomo/adapter/provider"
 	"github.com/metacubex/mihomo/component/resource"
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
@@ -212,5 +214,102 @@ func TestConfigPublicationWaitsForRealRuleProviderNotification(t *testing.T) {
 	}
 	if tunnel.RuleProviders()["rules"] == p {
 		t.Fatal("retired rules still published")
+	}
+}
+
+type refreshAtCancelProvider struct {
+	*AP.ProxySetProvider
+	once         sync.Once
+	beforeCancel func()
+}
+
+func (p *refreshAtCancelProvider) Cancel() {
+	p.once.Do(p.beforeCancel)
+	p.ProxySetProvider.Cancel()
+}
+
+type finalRefreshAdapter struct {
+	*retirementAdapter
+	started, cancelled, release chan struct{}
+}
+
+func (a *finalRefreshAdapter) DialContext(ctx context.Context, _ *C.Metadata) (C.Conn, error) {
+	close(a.started)
+	<-ctx.Done()
+	close(a.cancelled)
+	<-a.release
+	return nil, ctx.Err()
+}
+
+func TestDirectConfigApplyJoinsURLTestPublishedDuringProviderCancellation(t *testing.T) {
+	next := retirementFixture(t)
+	old := adapter.NewProxy(outbound.NewDirect())
+	a := &finalRefreshAdapter{
+		retirementAdapter: &retirementAdapter{Base: outbound.NewBase(outbound.BaseOption{Name: "last-refresh", Type: C.Direct})},
+		started:           make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{}),
+	}
+	current := adapter.NewProxy(a)
+	var release sync.Once
+	t.Cleanup(func() { current.CancelURLTests(); release.Do(func() { close(a.release) }) })
+	actual, err := AP.NewProxySetProvider("race", 0, nil, func(data []byte) ([]C.Proxy, error) {
+		if string(data) == "initial" {
+			return []C.Proxy{old}, nil
+		}
+		return []C.Proxy{current}, nil
+	}, resource.NewFileVehicle(filepath.Join(t.TempDir(), "nodes.yaml")), AP.NewHealthCheck(nil, "", 0, 0, false, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = actual.SideUpdate([]byte("initial")); err != nil {
+		t.Fatal(err)
+	}
+	allowRefresh := make(chan struct{})
+	refreshResult := make(chan error, 1)
+	testResult := make(chan error, 1)
+	go func() {
+		<-allowRefresh
+		_, _, err := actual.SideUpdate([]byte("last"))
+		refreshResult <- err
+		if err != nil {
+			return
+		}
+		_, err = current.URLTest(context.Background(), "http://example.invalid", nil)
+		testResult <- err
+	}()
+	p := &refreshAtCancelProvider{ProxySetProvider: actual, beforeCancel: func() {
+		close(allowRefresh)
+		if err := <-refreshResult; err != nil {
+			t.Fatalf("final refresh: %v", err)
+		}
+		select {
+		case <-a.started:
+		case <-time.After(time.Second):
+			t.Fatal("manual URL test did not start")
+		}
+	}}
+	tunnel.UpdateProxies(nil, map[string]P.ProxyProvider{"race": p})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	err = ApplyConfigContext(ctx, next, false)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("new map published before final node's test joined: %v", err)
+	}
+	select {
+	case <-a.cancelled:
+	default:
+		t.Fatal("URL test on last refreshed node was not cancelled")
+	}
+	if a.calls.Load() != 0 || tunnel.Providers()["race"] != p {
+		t.Fatal("pool closed or maps replaced while test was active")
+	}
+	release.Do(func() { close(a.release) })
+	if err := <-testResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("URL test result: %v", err)
+	}
+	if err := ApplyConfigContext(context.Background(), next, false); err != nil {
+		t.Fatal(err)
+	}
+	if a.calls.Load() != 1 || len(current.DelayHistory()) != 0 {
+		t.Fatal("final node retirement or late result protection failed")
 	}
 }

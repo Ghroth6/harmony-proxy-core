@@ -92,6 +92,24 @@ func cancelConfigTasksLocked(next *config.Config) error {
 	// Refuse new internal traffic before any old adapter is cancelled/closed.
 	// A parse-time download must not route through a retired proxy map.
 	tunnel.OnSuspend()
+	old := providerSet(&config.Config{Providers: tunnel.Providers(), RuleProviders: tunnel.RuleProviders()})
+	for p := range old {
+		if _, reused := keep[p]; reused {
+			continue
+		}
+		if _, already := retiringConfig.providers[p]; already {
+			continue
+		}
+		retiringConfig.providers[p] = struct{}{}
+		if owner, ok := p.(configTaskOwner); ok {
+			owner.Cancel()
+		} else if _, ok := p.(io.Closer); ok {
+			retiringConfig.legacy[p] = &configClose{done: make(chan struct{})}
+		}
+	}
+	// A refresh may publish its last node list until Cancel closes the
+	// provider's commit fence. Snapshot only afterwards, so URL tests on that
+	// final list are owned even when cancellation races a successful update.
 	keepProxies := make(map[C.Proxy]struct{})
 	if next != nil {
 		keepProxies = proxyObjects(next.Proxies, next.Providers)
@@ -111,21 +129,6 @@ func cancelConfigTasksLocked(next *config.Config) error {
 		retiringConfig.proxies[p] = struct{}{}
 		if owner, ok := p.(proxyTestOwner); ok {
 			owner.CancelURLTests()
-		}
-	}
-	old := providerSet(&config.Config{Providers: tunnel.Providers(), RuleProviders: tunnel.RuleProviders()})
-	for p := range old {
-		if _, reused := keep[p]; reused {
-			continue
-		}
-		if _, already := retiringConfig.providers[p]; already {
-			continue
-		}
-		retiringConfig.providers[p] = struct{}{}
-		if owner, ok := p.(configTaskOwner); ok {
-			owner.Cancel()
-		} else if _, ok := p.(io.Closer); ok {
-			retiringConfig.legacy[p] = &configClose{done: make(chan struct{})}
 		}
 	}
 	return nil
