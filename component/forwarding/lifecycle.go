@@ -269,8 +269,8 @@ func (c *resource) Close() error {
 		c.err = c.closer.Close()
 		if c.r != nil {
 			c.r.mu.Lock()
-			if c.err != nil && !errors.Is(c.err, net.ErrClosed) {
-				c.r.errors = append(c.r.errors, c.err)
+			if err := closeError(c.err); err != nil {
+				c.r.errors = append(c.r.errors, err)
 				// Keep the failed object's ownership. Arbitrary protocol Close
 				// methods are not guaranteed retryable; never erase an uncertain
 				// descriptor and then admit a new generation.

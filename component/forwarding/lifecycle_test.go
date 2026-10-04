@@ -3,6 +3,8 @@ package forwarding
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -95,6 +97,60 @@ func TestForwardingWaitIncludesBlockingClose(t *testing.T) {
 	close(release)
 	wait, cancel = context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+	if err := Stop(wait); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestForwardingJoinedCloseFailureIsRetained(t *testing.T) {
+	resetLifecycle(t)
+	Enable()
+	if err := Start(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, finish, err := Acquire(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("protocol session cleanup failed")
+	Cleanup(ctx, func() error {
+		return fmt.Errorf("protocol close: %w", errors.Join(net.ErrClosed, failure))
+	})
+	finish()
+	wait, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	for i := 0; i < 2; i++ {
+		if err := Stop(wait); !errors.Is(err, failure) {
+			t.Fatalf("stop %d forgot joined failure: %v", i, err)
+		}
+	}
+	if err := Start(context.Background(), 2); err == nil {
+		t.Fatal("admitted a new generation after unresolved session cleanup")
+	}
+}
+
+func TestForwardingAlreadyClosedResourcesPermitRestart(t *testing.T) {
+	resetLifecycle(t)
+	Enable()
+	if err := Start(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, finish, err := Acquire(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	Cleanup(ctx, func() error {
+		return errors.Join(net.ErrClosed, fmt.Errorf("socket close: %w", net.ErrClosed))
+	})
+	finish()
+	wait, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := Stop(wait); err != nil {
+		t.Fatalf("already-closed resources blocked stop: %v", err)
+	}
+	if err := Start(context.Background(), 2); err != nil {
+		t.Fatalf("already-closed resources blocked restart: %v", err)
+	}
 	if err := Stop(wait); err != nil {
 		t.Fatal(err)
 	}
