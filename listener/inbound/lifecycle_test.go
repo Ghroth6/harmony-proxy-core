@@ -3,7 +3,9 @@ package inbound
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"strings"
 	"testing"
@@ -29,19 +31,26 @@ import (
 // Windows excludes different ranges for TCP and UDP; find a port valid for both.
 func lifecycleReservePair(t *testing.T) (net.Listener, net.PacketConn) {
 	t.Helper()
-	for attempt := 0; attempt < 100; attempt++ {
-		tcp, err := net.Listen("tcp", "127.0.0.1:0")
+	var bindErrors []error
+	for attempt := 0; attempt < 32; attempt++ {
+		address := "127.0.0.1:0"
+		if attempt > 0 {
+			address = fmt.Sprintf("127.0.0.1:%d", 1024+rand.Intn(65536-1024))
+		}
+		tcp, err := net.Listen("tcp", address)
 		if err != nil {
-			t.Fatal(err)
+			bindErrors = append(bindErrors, fmt.Errorf("TCP candidate %s: %w", address, err))
+			continue
 		}
 		udp, err := net.ListenPacket("udp", tcp.Addr().String())
 		if err == nil {
 			t.Cleanup(func() { _ = tcp.Close(); _ = udp.Close() })
 			return tcp, udp
 		}
+		bindErrors = append(bindErrors, fmt.Errorf("UDP candidate %s: %w", tcp.Addr(), err))
 		_ = tcp.Close()
 	}
-	t.Fatal("could not reserve a TCP/UDP loopback pair")
+	t.Fatalf("could not reserve a TCP/UDP loopback pair: %v", errors.Join(bindErrors...))
 	return nil, nil
 }
 

@@ -3,6 +3,7 @@ package listener
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"strconv"
 	"testing"
@@ -26,13 +27,21 @@ func reserveUDP(t *testing.T) net.PacketConn {
 	t.Helper()
 	// Select a port that TCP can use too (Windows UDP's ephemeral range may
 	// contain ports excluded from TCP). This setup is not a readiness check.
-	for attempt := 0; attempt < 2048; attempt++ {
-		l, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	// Ephemeral allocation can walk a whole excluded range consecutively.
+	var bindErrors []error
+	for attempt := 0; attempt < 32; attempt++ {
+		address := "127.0.0.1:0"
+		if attempt > 0 {
+			address = fmt.Sprintf("127.0.0.1:%d", 1024+rand.Intn(65536-1024))
+		}
+		l, err := net.ListenPacket("udp4", address)
 		if err != nil {
-			t.Fatal(err)
+			bindErrors = append(bindErrors, fmt.Errorf("UDP candidate %s: %w", address, err))
+			continue
 		}
 		tcp, err := net.Listen("tcp4", l.LocalAddr().String())
 		if err != nil {
+			bindErrors = append(bindErrors, fmt.Errorf("TCP candidate %s: %w", l.LocalAddr(), err))
 			_ = l.Close()
 			continue
 		}
@@ -40,7 +49,7 @@ func reserveUDP(t *testing.T) net.PacketConn {
 		t.Cleanup(func() { _ = l.Close() })
 		return l
 	}
-	t.Fatal("could not reserve a port usable by both TCP and UDP")
+	t.Fatalf("could not reserve a port usable by both TCP and UDP: %v", errors.Join(bindErrors...))
 	return nil
 }
 
