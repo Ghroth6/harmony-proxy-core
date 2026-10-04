@@ -20,7 +20,7 @@ $packages = @(
   'component/dialer', 'dns'
 )
 $imports = @($packages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })
-$stage = Join-Path $core ('local/interface-tests-' + (Get-Date -AsUTC -Format 'yyyyMMddTHHmmssfffffffZ'))
+$stage = Join-Path $core ('local/runs/interface-tests-' + (Get-Date -AsUTC -Format 'yyyyMMddTHHmmssfffffffZ'))
 if (Test-Path -LiteralPath $stage) { throw 'Existing test evidence; choose a new batch' }
 New-Item -ItemType Directory -Path $stage | Out-Null
 # The standalone driver selects the documented host toolchain without changing
@@ -31,7 +31,7 @@ module interface-tests
 go 1.24
 
 require github.com/metacubex/mihomo v1.0.0
-replace github.com/metacubex/mihomo => ../..
+replace github.com/metacubex/mihomo => ../../..
 '@ | Set-Content -LiteralPath (Join-Path $stage 'go.mod') -Encoding utf8NoBOM
 Copy-Item -LiteralPath (Join-Path $core 'go.sum') -Destination (Join-Path $stage 'go.sum')
 
@@ -43,15 +43,15 @@ $hashes = [ordered]@{}
 foreach ($name in $files) {
   $hashes[$name] = (Get-FileHash -LiteralPath (Join-Path $core $name) -Algorithm SHA256).Hash
 }
-if (!$ModuleCache) { $ModuleCache = Join-Path $core 'local/go-mod-cache' }
+if (!$ModuleCache) { $ModuleCache = Join-Path $core 'local/cache/go-mod-cache' }
 $env:GOENV = 'off'
 $env:GOTOOLCHAIN = 'local'
 $env:GOOS = 'windows'
 $env:GOARCH = 'amd64'
 $env:CGO_ENABLED = '0'
-$env:GOPATH = Join-Path $core 'local/go-host'
+$env:GOPATH = Join-Path $core 'local/cache/go-host'
 $env:GOMODCACHE = [IO.Path]::GetFullPath($ModuleCache)
-$env:GOCACHE = Join-Path $core 'local/go-host-cache'
+$env:GOCACHE = Join-Path $core 'local/cache/go-host-cache'
 # Tests use local/synthetic resources. Missing cached dependencies fail instead
 # of fetching modules or contacting a checksum service during validation.
 $env:GOPROXY = 'off'
