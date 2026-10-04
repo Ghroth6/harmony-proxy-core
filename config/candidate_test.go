@@ -44,6 +44,9 @@ func TestCandidateFailureClosesResourcesFromEveryParsingStage(t *testing.T) {
 			c.ProxyGroup = []map[string]any{{"name": "owned", "type": "select", "proxies": []string{"DIRECT"}}}
 		}, "duplicate name"},
 		{"provider", func(c *config.RawConfig) { c.ProxyProvider = map[string]map[string]any{"invalid": {"type": "unknown"}} }, "proxy provider invalid"},
+		{"partial-inline-provider", func(c *config.RawConfig) {
+			c.ProxyProvider = map[string]map[string]any{"partial": {"type": "inline", "payload": []map[string]any{anyTLSCandidate("owned-by-provider"), {"name": "invalid", "type": "unknown"}}}}
+		}, "parse proxy provider partial"},
 		{"dialer-reference", func(c *config.RawConfig) { c.Proxy[0]["dialer-proxy"] = "missing" }, "not found"},
 		{"listener", func(c *config.RawConfig) {
 			c.Listeners = []map[string]any{{"name": "valid", "type": "http", "port": 19089}, {"name": "invalid", "type": "unknown"}}
