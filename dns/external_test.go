@@ -3,6 +3,8 @@ package dns
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math/rand"
 	"net"
 	"strings"
 	"sync"
@@ -46,21 +48,30 @@ func externalFreeAddress(t *testing.T) string {
 	t.Helper()
 	// Windows may reserve different port ranges for TCP and UDP. A free TCP
 	// ephemeral port alone does not prove that UDP may bind the same number.
+	// Its UDP allocator can also return hundreds of consecutive ports excluded
+	// from TCP, so retry across the range rather than repeat the :0 allocation.
+	var bindErrors []error
 	for attempt := 0; attempt < 32; attempt++ {
-		p, err := net.ListenPacket("udp", "127.0.0.1:0")
+		candidate := "127.0.0.1:0"
+		if attempt > 0 {
+			candidate = fmt.Sprintf("127.0.0.1:%d", 1024+rand.Intn(65536-1024))
+		}
+		p, err := net.ListenPacket("udp", candidate)
 		if err != nil {
-			t.Fatal(err)
+			bindErrors = append(bindErrors, fmt.Errorf("UDP candidate %s: %w", candidate, err))
+			continue
 		}
 		addr := p.LocalAddr().String()
 		l, err := net.Listen("tcp", addr)
 		_ = p.Close()
 		if err != nil {
+			bindErrors = append(bindErrors, fmt.Errorf("TCP candidate %s: %w", addr, err))
 			continue
 		}
 		_ = l.Close()
 		return addr
 	}
-	t.Fatal("could not acquire a port available to both DNS protocols")
+	t.Fatalf("could not acquire a port available to both DNS protocols: %v", errors.Join(bindErrors...))
 	return ""
 }
 func externalQuery(t *testing.T, network, addr string) error {
