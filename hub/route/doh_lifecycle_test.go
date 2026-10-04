@@ -209,3 +209,22 @@ func TestDoHLifecycleStopInterruptsIncompletePOSTBody(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestDoHLifecyclePreparedRunRejectsQueriesUntilActivation(t *testing.T) {
+	s := dohLifecycleSetup(t, dohServiceFunc(dohAnswer))
+	if err := dns.PrepareExternalIngress(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := dohGetStatus(t, dohURL(s)); got != http.StatusServiceUnavailable {
+		t.Fatalf("prepared DoH response: %d", got)
+	}
+	if got := dohGetStatus(t, s.URL+"/version"); got != http.StatusOK {
+		t.Fatal(got)
+	}
+	if err := dns.ActivateExternalIngress(); err != nil {
+		t.Fatal(err)
+	}
+	if got := dohGetStatus(t, dohURL(s)); got != http.StatusOK {
+		t.Fatal(got)
+	}
+}

@@ -123,6 +123,52 @@ func StartExternalIngress(parent context.Context) error {
 }
 
 func (e *externalIngress) start(parent context.Context) error {
+	if err := e.prepare(parent); err != nil {
+		return err
+	}
+	if err := e.activate(); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), externalCleanupTimeout)
+		defer cancel()
+		return errors.Join(err, e.stop(ctx))
+	}
+	return nil
+}
+
+// PrepareExternalIngress binds all configured DNS sockets without admitting
+// DNS or DoH queries. Embedders can verify their other forwarding listeners
+// before ActivateExternalIngress publishes the completed run.
+func PrepareExternalIngress(parent context.Context) error {
+	external.opMu.Lock()
+	defer external.opMu.Unlock()
+	return external.prepare(parent)
+}
+
+// ActivateExternalIngress admits queries only after Prepare succeeded and
+// while its parent is still active. Cancelled or incompletely cleaned runs
+// cannot be revived; their caller must Stop and create a new run.
+func ActivateExternalIngress() error {
+	external.opMu.Lock()
+	defer external.opMu.Unlock()
+	return external.activate()
+}
+
+func (e *externalIngress) activate() error {
+	e.mu.Lock()
+	run := e.run
+	e.mu.Unlock()
+	if run == nil {
+		return errors.New("external DNS ingress has not been prepared")
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if err := run.ctx.Err(); err != nil {
+		return err
+	}
+	run.accepting = true
+	return nil
+}
+
+func (e *externalIngress) prepare(parent context.Context) error {
 	e.mu.Lock()
 	if e.run != nil {
 		e.mu.Unlock()
@@ -145,9 +191,6 @@ func (e *externalIngress) start(parent context.Context) error {
 		defer cancel()
 		return errors.Join(err, e.stop(ctx))
 	}
-	run.mu.Lock()
-	run.accepting = true
-	run.mu.Unlock()
 	return nil
 }
 

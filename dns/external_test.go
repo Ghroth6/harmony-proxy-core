@@ -368,3 +368,51 @@ func TestExternalIngressStopCancelsPendingBindBeforeOperationLock(t *testing.T) 
 	}
 	_ = p.Close()
 }
+
+func TestExternalIngressPreparedSocketsDoNotServeBeforeActivation(t *testing.T) {
+	externalTestSetup(t)
+	addr := externalFreeAddress(t)
+	var queries atomic.Int64
+	service := externalServiceFunc(func(ctx context.Context, q *D.Msg) (*D.Msg, error) { queries.Add(1); return externalAnswer(ctx, q) })
+	if err := ReCreateServer(addr, &net.ListenConfig{}, service); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := PrepareExternalIngress(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The port is genuinely bound, but the data service is still closed.
+	if l, err := net.Listen("tcp", addr); err == nil {
+		_ = l.Close()
+		t.Fatal("Prepare did not bind TCP")
+	}
+	if err := externalQuery(t, "udp", addr); err == nil {
+		t.Fatal("prepared UDP served a query")
+	}
+	if err := externalQuery(t, "tcp", addr); err == nil {
+		t.Fatal("prepared TCP served a query")
+	}
+	if queries.Load() != 0 {
+		t.Fatal("prepared ingress invoked resolver")
+	}
+	if err := ActivateExternalIngress(); err != nil {
+		t.Fatal(err)
+	}
+	if err := externalQuery(t, "udp", addr); err != nil {
+		t.Fatal(err)
+	}
+	if queries.Load() != 1 {
+		t.Fatal("activation did not admit query")
+	}
+	if err := StopExternalIngress(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareExternalIngress(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := ActivateExternalIngress(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled Prepare activated: %v", err)
+	}
+}
