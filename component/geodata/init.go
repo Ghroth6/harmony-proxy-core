@@ -2,13 +2,16 @@ package geodata
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
+	"github.com/metacubex/mihomo/component/forwarding"
 	mihomoHttp "github.com/metacubex/mihomo/component/http"
 	"github.com/metacubex/mihomo/component/mmdb"
 	C "github.com/metacubex/mihomo/constant"
@@ -71,20 +74,67 @@ func SetASNUrl(url string) {
 func downloadToPath(url string, path string) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*90)
 	defer cancel()
-	resp, err := mihomoHttp.HttpRequest(ctx, url, http.MethodGet, nil, nil)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
+	return downloadToPathContext(ctx, url, path)
+}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
+func downloadToPathContext(ctx context.Context, url, path string) (err error) {
+	ctx, finish, err := forwarding.AcquireManagementNetwork(ctx)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
+	defer finish()
+	resp, err := mihomoHttp.HttpRequest(ctx, url, http.MethodGet, nil, nil)
+	if err != nil {
+		return err
+	}
+	bodyClosed := false
+	defer func() {
+		if !bodyClosed {
+			err = errors.Join(err, resp.Body.Close())
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download %s: %s", url, resp.Status)
+	}
 
-	return err
+	// Keep the original target throughout the transfer. A same-directory
+	// rename publishes a complete file without a remove-then-rename gap.
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".download-*")
+	if err != nil {
+		return err
+	}
+	tempPath := f.Name()
+	fileClosed := false
+	defer func() {
+		if !fileClosed {
+			err = errors.Join(err, f.Close())
+		}
+		if removeErr := os.Remove(tempPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			err = errors.Join(err, removeErr)
+		}
+	}()
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return err
+	}
+	bodyErr := resp.Body.Close()
+	bodyClosed = true
+	if bodyErr != nil {
+		return bodyErr
+	}
+	if err := f.Chmod(0o644); err != nil {
+		return err
+	}
+	closeErr := f.Close()
+	fileClosed = true
+	if closeErr != nil {
+		return closeErr
+	}
+	return forwarding.CommitManagementNetwork(ctx, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return os.Rename(tempPath, path)
+	})
 }
 
 func InitGeoSite() error {
@@ -101,10 +151,7 @@ func InitGeoSite() error {
 	}
 	if !initGeoSite {
 		if err := Verify(C.GeositeName); err != nil {
-			log.Warnln("GeoSite.dat invalid, remove and download: %s", err)
-			if err := os.Remove(C.Path.GeoSite()); err != nil {
-				return fmt.Errorf("can't remove invalid GeoSite.dat: %s", err.Error())
-			}
+			log.Warnln("GeoSite.dat invalid, download replacement: %s", err)
 			if err := downloadToPath(GeoSiteUrl(), C.Path.GeoSite()); err != nil {
 				return fmt.Errorf("can't download GeoSite.dat: %s", err.Error())
 			}
@@ -130,10 +177,7 @@ func InitGeoIP() error {
 
 		if initGeoIP != 1 {
 			if err := Verify(C.GeoipName); err != nil {
-				log.Warnln("GeoIP.dat invalid, remove and download: %s", err)
-				if err := os.Remove(C.Path.GeoIP()); err != nil {
-					return fmt.Errorf("can't remove invalid GeoIP.dat: %s", err.Error())
-				}
+				log.Warnln("GeoIP.dat invalid, download replacement: %s", err)
 				if err := downloadToPath(GeoIpUrl(), C.Path.GeoIP()); err != nil {
 					return fmt.Errorf("can't download GeoIP.dat: %s", err.Error())
 				}
@@ -152,10 +196,7 @@ func InitGeoIP() error {
 
 	if initGeoIP != 2 {
 		if !mmdb.Verify(C.Path.MMDB()) {
-			log.Warnln("MMDB invalid, remove and download")
-			if err := os.Remove(C.Path.MMDB()); err != nil {
-				return fmt.Errorf("can't remove invalid MMDB: %s", err.Error())
-			}
+			log.Warnln("MMDB invalid, download replacement")
 			if err := downloadToPath(MmdbUrl(), C.Path.MMDB()); err != nil {
 				return fmt.Errorf("can't download MMDB: %s", err.Error())
 			}
@@ -179,10 +220,7 @@ func InitASN() error {
 	}
 	if !initASN {
 		if !mmdb.Verify(C.Path.ASN()) {
-			log.Warnln("ASN invalid, remove and download")
-			if err := os.Remove(C.Path.ASN()); err != nil {
-				return fmt.Errorf("can't remove invalid ASN: %s", err.Error())
-			}
+			log.Warnln("ASN invalid, download replacement")
 			if err := downloadToPath(ASNUrl(), C.Path.ASN()); err != nil {
 				return fmt.Errorf("can't download ASN: %s", err.Error())
 			}
