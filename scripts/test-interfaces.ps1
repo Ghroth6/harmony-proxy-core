@@ -20,7 +20,8 @@ $packages = @(
   'component/dialer', 'dns', 'component/forwarding', 'component/http',
   'tunnel', 'hub/route', 'listener/sing_tun',
   'listener/sing_hysteria2', 'transport/anytls/session', 'transport/tuic',
-  'transport/shadowquic', 'transport/kcptun'
+  'transport/shadowquic', 'transport/kcptun', 'component/resource',
+  'adapter/provider', 'rules/provider', 'component/updater'
 )
 $imports = @($packages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })
 $listenerPackages = @('listener', 'listener/inbound', 'listener/http', 'listener/tproxy')
