@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/resolver"
 )
 
 func managementForTest(t *testing.T) {
@@ -175,5 +176,52 @@ func TestManagementNetworkRetainsLateSocketAndCloseFailure(t *testing.T) {
 	}
 	if len(managementRun().resources) != 1 || raw.calls.Load() != 1 {
 		t.Fatal("lost handle or repeated close")
+	}
+}
+
+type blockedNetworkResolver struct {
+	resolver.Resolver
+	entered, release chan struct{}
+}
+
+func (*blockedNetworkResolver) Invalid() bool { return true }
+func (r *blockedNetworkResolver) LookupIPv4(context.Context, string) ([]netip.Addr, error) {
+	close(r.entered)
+	<-r.release
+	return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+}
+
+func TestManagementNetworkWaitIncludesDialAddressResolution(t *testing.T) {
+	managementForTest(t)
+	r := &blockedNetworkResolver{entered: make(chan struct{}), release: make(chan struct{})}
+	var calls atomic.Int32
+	d := dialer.NetDialerFunc(func(context.Context, string, string) (net.Conn, error) {
+		calls.Add(1)
+		return nil, errors.New("unexpected dial")
+	})
+	result := make(chan error, 1)
+	go func() {
+		_, err := dialer.DialContext(context.Background(), "tcp4", "resolution-epoch.test:80", dialer.WithResolver(r), dialer.WithNetDialer(d))
+		result <- err
+	}()
+	<-r.entered
+	CancelManagementNetwork()
+	wait, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := WaitManagementNetwork(wait); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("forgot resolution: %v", err)
+	}
+	close(r.release)
+	if err := <-result; err == nil {
+		t.Fatal("canceled resolution led to success")
+	}
+	if err := WaitManagementNetwork(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResumeManagementNetwork(); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("late resolution opened a new socket")
 	}
 }

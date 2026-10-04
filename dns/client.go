@@ -30,6 +30,11 @@ func (c *client) Address() string {
 }
 
 func (c *client) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) {
+	ctx, finishRequest, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finishRequest()
 	network := "udp"
 	if c.schema != "udp" {
 		network = "tcp"
@@ -49,7 +54,7 @@ func (c *client) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) 
 		err error
 	}
 	ch := make(chan result, 1)
-	ctx, finish, err := forwarding.AcquireManagementNetwork(ctx)
+	workCtx, finish, err := forwarding.AcquireManagementNetwork(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +76,7 @@ func (c *client) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) 
 			network = "tcp"
 			log.Debugln("[DNS] Truncated reply from %s:%s for %s over UDP, retrying over TCP", c.host, c.port, m.Question[0].String())
 			var tcpConn net.Conn
-			tcpConn, err = c.dialer.DialContext(ctx, network, addr)
+			tcpConn, err = c.dialer.DialContext(workCtx, network, addr)
 			if err != nil {
 				ch <- result{msg, err}
 				return
