@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/singledo"
 	"github.com/metacubex/mihomo/common/utils"
@@ -39,30 +40,63 @@ type HealthCheck struct {
 	lastTouch      atomic.TypedValue[time.Time]
 	singleDo       *singledo.Single[struct{}]
 	timeout        time.Duration
+	started        bool
+	closed         bool
+	active         int
+	done           chan struct{}
 }
 
-func (hc *HealthCheck) process() {
-	ticker := time.NewTicker(hc.interval)
-	go hc.check()
+func (hc *HealthCheck) start() error {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if hc.closed {
+		return context.Canceled
+	}
+	if hc.started || hc.interval == 0 {
+		return nil
+	}
+	hc.started = true
+	hc.active++
+	go hc.process(hc.interval)
+	return nil
+}
+
+func (hc *HealthCheck) finish() {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	hc.active--
+	if hc.closed && hc.active == 0 {
+		close(hc.done)
+	}
+}
+
+func (hc *HealthCheck) process(interval time.Duration) {
+	defer hc.finish()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	hc.check()
 	for {
 		select {
 		case <-ticker.C:
 			lastTouch := hc.lastTouch.Load()
 			since := time.Since(lastTouch)
-			if !hc.lazy || since < hc.interval {
+			if !hc.lazy || since < interval {
 				hc.check()
 			} else {
 				log.Debugln("Skip once health check because we are lazy")
 			}
 		case <-hc.ctx.Done():
-			ticker.Stop()
 			return
 		}
 	}
 }
 
 func (hc *HealthCheck) setProxies(proxies []C.Proxy) {
-	hc.proxies = proxies
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if !hc.closed {
+		hc.proxies = append([]C.Proxy(nil), proxies...)
+	}
 }
 
 func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint) {
@@ -74,6 +108,9 @@ func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.
 
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
+	if hc.closed {
+		return
+	}
 
 	// if the provider has not set up health checks, then modify it to be the same as the group's interval
 	if hc.interval == 0 {
@@ -113,17 +150,47 @@ func splitAndAddFiltersToExtra(filter string, option *extraOption) {
 }
 
 func (hc *HealthCheck) auto() bool {
-	return hc.interval != 0
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	return !hc.closed && hc.interval != 0
 }
 
 func (hc *HealthCheck) touch() {
 	hc.lastTouch.Store(time.Now())
 }
 
-func (hc *HealthCheck) check() {
-	if len(hc.proxies) == 0 {
+func (hc *HealthCheck) checkAsync() {
+	hc.mu.Lock()
+	if hc.closed {
+		hc.mu.Unlock()
 		return
 	}
+	hc.active++
+	hc.mu.Unlock()
+	go func() {
+		defer hc.finish()
+		hc.check()
+	}()
+}
+
+func (hc *HealthCheck) check() {
+	hc.mu.Lock()
+	if hc.closed || len(hc.proxies) == 0 {
+		hc.mu.Unlock()
+		return
+	}
+	hc.active++
+	proxies := append([]C.Proxy(nil), hc.proxies...)
+	extra := make(map[string]*extraOption, len(hc.extra))
+	for url, option := range hc.extra {
+		copyOption := &extraOption{expectedStatus: option.expectedStatus, filters: make(map[string]struct{}, len(option.filters))}
+		for filter := range option.filters {
+			copyOption.filters[filter] = struct{}{}
+		}
+		extra[url] = copyOption
+	}
+	hc.mu.Unlock()
+	defer hc.finish()
 
 	_, _, _ = hc.singleDo.Do(func() (struct{}, error) {
 		id := utils.NewUUIDV4().String()
@@ -133,12 +200,12 @@ func (hc *HealthCheck) check() {
 
 		// execute default health check
 		option := &extraOption{filters: nil, expectedStatus: hc.expectedStatus}
-		hc.execute(b, hc.url, id, option)
+		hc.execute(b, proxies, hc.url, id, option)
 
 		// execute extra health check
-		if len(hc.extra) != 0 {
-			for url, option := range hc.extra {
-				hc.execute(b, url, id, option)
+		if len(extra) != 0 {
+			for url, option := range extra {
+				hc.execute(b, proxies, url, id, option)
 			}
 		}
 		_ = b.Wait()
@@ -147,7 +214,7 @@ func (hc *HealthCheck) check() {
 	})
 }
 
-func (hc *HealthCheck) execute(b *errgroup.Group, url, uid string, option *extraOption) {
+func (hc *HealthCheck) execute(b *errgroup.Group, proxies []C.Proxy, url, uid string, option *extraOption) {
 	url = strings.TrimSpace(url)
 	if len(url) == 0 {
 		log.Debugln("Health Check has been skipped due to testUrl is empty, {%s}", uid)
@@ -168,7 +235,10 @@ func (hc *HealthCheck) execute(b *errgroup.Group, url, uid string, option *extra
 		}
 	}
 
-	for _, proxy := range hc.proxies {
+	for _, proxy := range proxies {
+		if hc.ctx.Err() != nil {
+			return
+		}
 		// skip proxies that do not require health check
 		if filterReg != nil {
 			if match, _ := filterReg.MatchString(proxy.Name()); !match {
@@ -180,6 +250,10 @@ func (hc *HealthCheck) execute(b *errgroup.Group, url, uid string, option *extra
 		b.Go(func() error {
 			ctx, cancel := context.WithTimeout(hc.ctx, hc.timeout)
 			defer cancel()
+			ctx = adapter.WithURLTestCommitGuard(ctx, hc.commit)
+			if ctx.Err() != nil {
+				return nil
+			}
 			log.Debugln("Health Checking, proxy: %s, url: %s, id: {%s}", p.Name(), url, uid)
 			_, _ = p.URLTest(ctx, url, expectedStatus)
 			log.Debugln("Health Checked, proxy: %s, url: %s, alive: %t, delay: %d ms uid: {%s}", p.Name(), url, p.AliveForTestUrl(url), p.LastDelayForTestUrl(url), uid)
@@ -188,8 +262,35 @@ func (hc *HealthCheck) execute(b *errgroup.Group, url, uid string, option *extra
 	}
 }
 
-func (hc *HealthCheck) close() {
-	hc.ctxCancel()
+func (hc *HealthCheck) commit(action func()) bool {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if hc.closed {
+		return false
+	}
+	action()
+	return true
+}
+
+func (hc *HealthCheck) cancel() {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if !hc.closed {
+		hc.closed = true
+		hc.ctxCancel()
+		if hc.active == 0 {
+			close(hc.done)
+		}
+	}
+}
+
+func (hc *HealthCheck) wait(ctx context.Context) error {
+	select {
+	case <-hc.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func NewHealthCheck(proxies []C.Proxy, url string, timeout uint, interval uint, lazy bool, expectedStatus utils.IntRanges[uint16]) *HealthCheck {
@@ -213,5 +314,6 @@ func NewHealthCheck(proxies []C.Proxy, url string, timeout uint, interval uint, 
 		lazy:           lazy,
 		expectedStatus: expectedStatus,
 		singleDo:       singledo.NewSingle[struct{}](time.Second),
+		done:           make(chan struct{}),
 	}
 }

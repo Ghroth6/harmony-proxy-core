@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +19,6 @@ import (
 	"github.com/metacubex/mihomo/component/resource"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
-	"github.com/metacubex/mihomo/tunnel/statistic"
 
 	"github.com/dlclark/regexp2"
 	"github.com/metacubex/http"
@@ -49,6 +49,7 @@ type baseProvider struct {
 	proxies     []C.Proxy
 	healthCheck *HealthCheck
 	version     uint32
+	closed      bool
 }
 
 func (bp *baseProvider) Name() string {
@@ -62,10 +63,7 @@ func (bp *baseProvider) Version() uint32 {
 }
 
 func (bp *baseProvider) Initial() error {
-	if bp.healthCheck.auto() {
-		go bp.healthCheck.process()
-	}
-	return nil
+	return bp.healthCheck.start()
 }
 
 func (bp *baseProvider) HealthCheck() {
@@ -103,17 +101,31 @@ func (bp *baseProvider) RegisterHealthCheckTask(url string, expectedStatus utils
 func (bp *baseProvider) setProxies(proxies []C.Proxy) {
 	bp.mutex.Lock()
 	defer bp.mutex.Unlock()
+	if bp.closed {
+		return
+	}
 	bp.proxies = proxies
 	bp.version += 1
 	bp.healthCheck.setProxies(proxies)
 	if bp.healthCheck.auto() {
-		go bp.healthCheck.check()
+		bp.healthCheck.checkAsync()
 	}
 }
 
 func (bp *baseProvider) Close() error {
-	bp.healthCheck.close()
-	return nil
+	bp.Cancel()
+	return bp.Wait(context.Background())
+}
+
+func (bp *baseProvider) Cancel() {
+	bp.mutex.Lock()
+	bp.closed = true
+	bp.mutex.Unlock()
+	bp.healthCheck.cancel()
+}
+
+func (bp *baseProvider) Wait(ctx context.Context) error {
+	return bp.healthCheck.wait(ctx)
 }
 
 // ProxySetProvider for auto gc
@@ -125,9 +137,14 @@ type proxySetProvider struct {
 	baseProvider
 	*resource.Fetcher[[]C.Proxy]
 	subscriptionInfo *SubscriptionInfo
+	initialMu        sync.Mutex
+	initialized      bool
 }
 
 func (pp *proxySetProvider) MarshalJSON() ([]byte, error) {
+	pp.mutex.RLock()
+	subscriptionInfo := pp.subscriptionInfo
+	pp.mutex.RUnlock()
 	return json.Marshal(providerForApi{
 		Name:             pp.Name(),
 		Type:             pp.Type().String(),
@@ -136,7 +153,7 @@ func (pp *proxySetProvider) MarshalJSON() ([]byte, error) {
 		TestUrl:          pp.healthCheck.url,
 		ExpectedStatus:   pp.healthCheck.expectedStatus.String(),
 		UpdatedAt:        pp.UpdatedAt(),
-		SubscriptionInfo: pp.subscriptionInfo,
+		SubscriptionInfo: subscriptionInfo,
 	})
 }
 
@@ -150,6 +167,11 @@ func (pp *proxySetProvider) Update() error {
 }
 
 func (pp *proxySetProvider) Initial() error {
+	pp.initialMu.Lock()
+	defer pp.initialMu.Unlock()
+	if pp.initialized {
+		return pp.Fetcher.Context().Err()
+	}
 	if err := pp.baseProvider.Initial(); err != nil {
 		return err
 	}
@@ -157,28 +179,29 @@ func (pp *proxySetProvider) Initial() error {
 	if err != nil {
 		return err
 	}
-	if subscriptionInfo := cachefile.Cache().GetSubscriptionInfo(pp.Name()); subscriptionInfo != "" {
-		pp.subscriptionInfo = NewSubscriptionInfo(subscriptionInfo)
-	}
-	pp.closeAllConnections()
-	return nil
-}
-
-func (pp *proxySetProvider) closeAllConnections() {
-	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
-		for _, chain := range c.ProviderChains() {
-			if chain == pp.Name() {
-				_ = c.Close()
-				break
-			}
+	return pp.Fetcher.Commit(func() error {
+		if subscriptionInfo := cachefile.Cache().GetSubscriptionInfo(pp.Name()); subscriptionInfo != "" {
+			pp.mutex.Lock()
+			pp.subscriptionInfo = NewSubscriptionInfo(subscriptionInfo)
+			pp.mutex.Unlock()
 		}
-		return true
+		pp.initialized = true
+		return nil
 	})
 }
 
 func (pp *proxySetProvider) Close() error {
-	_ = pp.baseProvider.Close()
-	return pp.Fetcher.Close()
+	pp.Cancel()
+	return pp.Wait(context.Background())
+}
+
+func (pp *proxySetProvider) Cancel() {
+	pp.baseProvider.Cancel()
+	pp.Fetcher.Cancel()
+}
+
+func (pp *proxySetProvider) Wait(ctx context.Context) error {
+	return errors.Join(pp.baseProvider.Wait(ctx), pp.Fetcher.Wait(ctx))
 }
 
 func NewProxySetProvider(name string, interval time.Duration, payload []map[string]any, parser resource.Parser[[]C.Proxy], vehicle P.Vehicle, hc *HealthCheck) (*ProxySetProvider, error) {
@@ -211,7 +234,9 @@ func NewProxySetProvider(name string, interval time.Duration, payload []map[stri
 		httpVehicle.SetInRead(func(resp *http.Response) {
 			if subscriptionInfo := resp.Header.Get("subscription-userinfo"); subscriptionInfo != "" {
 				cachefile.Cache().SetSubscriptionInfo(name, subscriptionInfo)
+				pd.mutex.Lock()
 				pd.subscriptionInfo = NewSubscriptionInfo(subscriptionInfo)
+				pd.mutex.Unlock()
 			}
 		})
 	}
@@ -237,6 +262,9 @@ type inlineProvider struct {
 }
 
 func (ip *inlineProvider) MarshalJSON() ([]byte, error) {
+	ip.mutex.RLock()
+	updatedAt := ip.updateAt
+	ip.mutex.RUnlock()
 	return json.Marshal(providerForApi{
 		Name:           ip.Name(),
 		Type:           ip.Type().String(),
@@ -244,7 +272,7 @@ func (ip *inlineProvider) MarshalJSON() ([]byte, error) {
 		Proxies:        ip.Proxies(),
 		TestUrl:        ip.healthCheck.url,
 		ExpectedStatus: ip.healthCheck.expectedStatus.String(),
-		UpdatedAt:      ip.updateAt,
+		UpdatedAt:      updatedAt,
 	})
 }
 
@@ -253,6 +281,11 @@ func (ip *inlineProvider) VehicleType() P.VehicleType {
 }
 
 func (ip *inlineProvider) Update() error {
+	ip.mutex.Lock()
+	defer ip.mutex.Unlock()
+	if ip.closed {
+		return context.Canceled
+	}
 	// make api update happy
 	ip.updateAt = time.Now()
 	return nil
@@ -310,6 +343,11 @@ func (cp *compatibleProvider) MarshalJSON() ([]byte, error) {
 }
 
 func (cp *compatibleProvider) Update() error {
+	cp.mutex.RLock()
+	defer cp.mutex.RUnlock()
+	if cp.closed {
+		return context.Canceled
+	}
 	return nil
 }
 

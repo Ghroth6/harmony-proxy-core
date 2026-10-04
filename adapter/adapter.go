@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -38,6 +39,16 @@ type Proxy struct {
 	alive     atomic.Bool
 	history   *queue.Queue[C.DelayHistory]
 	extra     xsync.Map[string, *internalProxyState]
+}
+
+type urlTestCommitGuardKey struct{}
+
+// WithURLTestCommitGuard binds result publication to a configuration owner. The
+// guard must execute action synchronously when publication is still allowed.
+// Actions only update local state; event callbacks run outside the guard and
+// remain part of the URLTest call, so the owner's wait also joins them.
+func WithURLTestCommitGuard(ctx context.Context, guard func(action func()) bool) context.Context {
+	return context.WithValue(ctx, urlTestCommitGuardKey{}, guard)
 }
 
 // Adapter implements C.Proxy
@@ -178,42 +189,58 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 	var statusCode int
 
 	defer func() {
-		p.historyMu.Lock()
-		alive := err == nil
-		record := C.DelayHistory{Time: time.Now()}
-		if alive {
-			record.Delay = t
+		// Cancellation retires a request; a deadline remains an actual failed
+		// measurement and must still make the node unhealthy.
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return
 		}
-
-		p.alive.Store(alive)
-		p.history.Put(record)
-		if p.history.Len() > defaultHistoriesNum {
-			p.history.Pop()
-		}
-
-		state, _ := p.extra.LoadOrStoreFn(url, func() *internalProxyState {
-			return &internalProxyState{
-				history: queue.New[C.DelayHistory](defaultHistoriesNum),
-				alive:   atomic.NewBool(true),
+		var event URLTestEvent
+		commit := func() {
+			p.historyMu.Lock()
+			alive := err == nil
+			record := C.DelayHistory{Time: time.Now()}
+			if alive {
+				record.Delay = t
 			}
-		})
 
-		if !satisfied {
-			record.Delay = 0
-			alive = false
-		}
+			p.alive.Store(alive)
+			p.history.Put(record)
+			if p.history.Len() > defaultHistoriesNum {
+				p.history.Pop()
+			}
 
-		state.alive.Store(alive)
-		state.history.Put(record)
-		if state.history.Len() > defaultHistoriesNum {
-			state.history.Pop()
+			state, _ := p.extra.LoadOrStoreFn(url, func() *internalProxyState {
+				return &internalProxyState{
+					history: queue.New[C.DelayHistory](defaultHistoriesNum),
+					alive:   atomic.NewBool(true),
+				}
+			})
+
+			if !satisfied {
+				record.Delay = 0
+				alive = false
+			}
+
+			state.alive.Store(alive)
+			state.history.Put(record)
+			if state.history.Len() > defaultHistoriesNum {
+				state.history.Pop()
+			}
+			p.historyMu.Unlock()
+			event = URLTestEvent{
+				Proxy: p, URL: url, Name: p.Name(), ProviderName: p.ProxyInfo().ProviderName,
+				Time: record.Time, Delay: record.Delay, StatusCode: statusCode,
+				Succeeded: alive, Err: err,
+			}
 		}
-		p.historyMu.Unlock()
-		urlTests.Emit(URLTestEvent{
-			Proxy: p, URL: url, Name: p.Name(), ProviderName: p.ProxyInfo().ProviderName,
-			Time: record.Time, Delay: record.Delay, StatusCode: statusCode,
-			Succeeded: alive, Err: err,
-		})
+		if guard, ok := ctx.Value(urlTestCommitGuardKey{}).(func(func()) bool); ok {
+			if !guard(commit) {
+				return
+			}
+		} else {
+			commit()
+		}
+		urlTests.Emit(event)
 	}()
 
 	unifiedDelay := UnifiedDelay.Load()
