@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
+	"github.com/metacubex/mihomo/common/event"
 	"github.com/metacubex/mihomo/common/xsync"
 	"github.com/metacubex/mihomo/component/memory"
 )
@@ -19,6 +20,7 @@ func init() {
 }
 
 type Manager struct {
+	created     event.Bus[Tracker]
 	connections xsync.Map[string, Tracker]
 	// One lock gives each accounting event, bucket rollover and reset a single
 	// boundary across both all-traffic and proxy-only counters.
@@ -44,6 +46,7 @@ func (c *trafficCounters) add(up, down int64) {
 
 func (m *Manager) Join(c Tracker) {
 	m.connections.Store(c.ID(), c)
+	m.created.Emit(c)
 }
 
 func (m *Manager) Leave(c Tracker) {

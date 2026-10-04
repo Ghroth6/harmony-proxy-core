@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
@@ -33,9 +34,10 @@ type internalProxyState struct {
 
 type Proxy struct {
 	C.ProxyAdapter
-	alive   atomic.Bool
-	history *queue.Queue[C.DelayHistory]
-	extra   xsync.Map[string, *internalProxyState]
+	historyMu sync.RWMutex
+	alive     atomic.Bool
+	history   *queue.Queue[C.DelayHistory]
+	extra     xsync.Map[string, *internalProxyState]
 }
 
 // Adapter implements C.Proxy
@@ -66,6 +68,8 @@ func (p *Proxy) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 
 // DelayHistory implements C.Proxy
 func (p *Proxy) DelayHistory() []C.DelayHistory {
+	p.historyMu.RLock()
+	defer p.historyMu.RUnlock()
 	queueM := p.history.Copy()
 	histories := []C.DelayHistory{}
 	for _, item := range queueM {
@@ -76,6 +80,8 @@ func (p *Proxy) DelayHistory() []C.DelayHistory {
 
 // DelayHistoryForTestUrl implements C.Proxy
 func (p *Proxy) DelayHistoryForTestUrl(url string) []C.DelayHistory {
+	p.historyMu.RLock()
+	defer p.historyMu.RUnlock()
 	var queueM []C.DelayHistory
 
 	if state, ok := p.extra.Load(url); ok {
@@ -91,6 +97,8 @@ func (p *Proxy) DelayHistoryForTestUrl(url string) []C.DelayHistory {
 // ExtraDelayHistories return all delay histories for each test URL
 // implements C.Proxy
 func (p *Proxy) ExtraDelayHistories() map[string]C.ProxyState {
+	p.historyMu.RLock()
+	defer p.historyMu.RUnlock()
 	histories := map[string]C.ProxyState{}
 
 	p.extra.Range(func(k string, v *internalProxyState) bool {
@@ -116,6 +124,8 @@ func (p *Proxy) ExtraDelayHistories() map[string]C.ProxyState {
 // LastDelayForTestUrl return last history record of the specified URL. if proxy is not alive, return the max value of uint16.
 // implements C.Proxy
 func (p *Proxy) LastDelayForTestUrl(url string) (delay uint16) {
+	p.historyMu.RLock()
+	defer p.historyMu.RUnlock()
 	var maxDelay uint16 = 0xffff
 
 	alive := false
@@ -165,8 +175,10 @@ func (p *Proxy) MarshalJSON() ([]byte, error) {
 // implements C.Proxy
 func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {
 	var satisfied bool
+	var statusCode int
 
 	defer func() {
+		p.historyMu.Lock()
 		alive := err == nil
 		record := C.DelayHistory{Time: time.Now()}
 		if alive {
@@ -196,7 +208,12 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 		if state.history.Len() > defaultHistoriesNum {
 			state.history.Pop()
 		}
-
+		p.historyMu.Unlock()
+		urlTests.Emit(URLTestEvent{
+			Proxy: p, URL: url, Name: p.Name(), ProviderName: p.ProxyInfo().ProviderName,
+			Time: record.Time, Delay: record.Delay, StatusCode: statusCode,
+			Succeeded: alive, Err: err,
+		})
 	}()
 
 	unifiedDelay := UnifiedDelay.Load()
@@ -273,6 +290,9 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 		}
 	}
 
+	if resp != nil {
+		statusCode = resp.StatusCode
+	}
 	satisfied = resp != nil && (expectedStatus == nil || expectedStatus.Check(uint16(resp.StatusCode)))
 	t = uint16(time.Since(start) / time.Millisecond)
 	return

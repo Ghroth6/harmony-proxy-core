@@ -84,6 +84,7 @@ func ParseWithBytes(buf []byte) (*config.Config, error) {
 func ApplyConfig(cfg *config.Config, force bool) {
 	mux.Lock()
 	defer mux.Unlock()
+	generation := configGeneration.Add(1)
 	log.SetLevel(cfg.General.LogLevel)
 
 	tunnel.OnSuspend()
@@ -112,9 +113,9 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	tunnel.OnInnerLoading()
 
 	initInnerTcp()
-	loadProvider(cfg.Providers)
+	loadProvider(cfg.Providers, generation)
 	updateProfile(cfg)
-	loadProvider(cfg.RuleProviders)
+	loadProvider(cfg.RuleProviders, generation)
 	runtime.GC()
 	tunnel.OnRunning()
 	updateUpdater(cfg)
@@ -315,7 +316,7 @@ func updateRules(rules []C.Rule, subRules map[string][]C.Rule, ruleProviders map
 	tunnel.UpdateRules(rules, subRules, ruleProviders)
 }
 
-func loadProvider[T P.Provider](providers map[string]T) {
+func loadProvider[T P.Provider](providers map[string]T, generation uint64) {
 	load := func(pv T) {
 		name := pv.Name()
 		if pv.VehicleType() == P.Compatible {
@@ -324,7 +325,8 @@ func loadProvider[T P.Provider](providers map[string]T) {
 			log.Infoln("Start initial provider %s", name)
 		}
 
-		if err := pv.Initial(); err != nil {
+		err := pv.Initial()
+		if err != nil {
 			switch pv.Type() {
 			case P.Proxy:
 				{
@@ -336,6 +338,10 @@ func loadProvider[T P.Provider](providers map[string]T) {
 				}
 			}
 		}
+		providerInitializations.Emit(ProviderInitializationEvent{
+			Name: name, Type: pv.Type(), VehicleType: pv.VehicleType(),
+			Generation: generation, Succeeded: err == nil, Err: err,
+		})
 	}
 
 	wg := sync.WaitGroup{}
