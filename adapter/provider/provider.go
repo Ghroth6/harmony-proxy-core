@@ -99,20 +99,6 @@ func (bp *baseProvider) RegisterHealthCheckTask(url string, expectedStatus utils
 	bp.healthCheck.registerHealthCheckTask(url, expectedStatus, filter, interval)
 }
 
-func (bp *baseProvider) setProxies(proxies []C.Proxy) {
-	bp.mutex.Lock()
-	defer bp.mutex.Unlock()
-	if bp.closed {
-		return
-	}
-	bp.proxies = proxies
-	bp.version += 1
-	bp.healthCheck.setProxies(proxies)
-	if bp.healthCheck.auto() {
-		bp.healthCheck.checkAsync()
-	}
-}
-
 func (bp *baseProvider) Close() error {
 	bp.Cancel()
 	return bp.Wait(context.Background())
@@ -140,6 +126,7 @@ type proxySetProvider struct {
 	subscriptionInfo *SubscriptionInfo
 	initialMu        sync.Mutex
 	initialized      bool
+	retired          map[*retiredProxy]struct{} // guarded by baseProvider.mutex
 }
 
 func (pp *proxySetProvider) MarshalJSON() ([]byte, error) {
@@ -164,7 +151,12 @@ func (pp *proxySetProvider) Name() string {
 
 func (pp *proxySetProvider) Update() error {
 	_, _, err := pp.Fetcher.Update()
-	return err
+	return errors.Join(err, pp.retirementError())
+}
+
+func (pp *proxySetProvider) SideUpdate(buf []byte) ([]C.Proxy, bool, error) {
+	proxies, same, err := pp.Fetcher.SideUpdate(buf)
+	return proxies, same, errors.Join(err, pp.retirementError())
 }
 
 func (pp *proxySetProvider) Initial() error {
@@ -201,10 +193,11 @@ func (pp *proxySetProvider) Cancel() {
 	// otherwise a committed fetch could silently lose ownership in setProxies.
 	pp.Fetcher.Cancel()
 	pp.baseProvider.Cancel()
+	pp.forceRetiredProxies()
 }
 
 func (pp *proxySetProvider) Wait(ctx context.Context) error {
-	return errors.Join(pp.baseProvider.Wait(ctx), pp.Fetcher.Wait(ctx))
+	return errors.Join(pp.baseProvider.Wait(ctx), pp.Fetcher.Wait(ctx), pp.waitRetiredProxies(ctx))
 }
 
 func NewProxySetProvider(name string, interval time.Duration, payload []map[string]any, parser resource.Parser[[]C.Proxy], vehicle P.Vehicle, hc *HealthCheck) (_ *ProxySetProvider, err error) {

@@ -24,7 +24,11 @@ URLTest、连接创建和 provider 初始化通过可注销订阅发布事件。
 
 配置替换可通过 `executor.CancelConfigTasks` 先关闭旧 provider 与测速准入，再用 `RetireConfig(ctx)` 等待任务和当前可达节点池收尾；`ApplyConfigContext` 只有退休成功才发布新配置。同对象复用按身份判断，已取消对象不可重新采用，超时保留实际等待/关闭记录。Fetcher、健康检查、规则通知及 URLTest 有取消与完成屏障；资源、元信息、ETag、健康结果和地理库写入受所属配置的提交保护。旧无 context 入口继续保留包装。
 
-本批仍未覆盖失败候选构造资源、provider 历次刷新后已退出当前节点集的池，以及全部协议内部定时任务的完成屏障。KcpTun 与 TUIC 池有真实关闭回归；QUIC 依赖不完整传播底层 UDP Close 错误，不能据此证明系统句柄已全部释放。详细剩余项由协调仓设计与配置退休检查点记录。
+节点、订阅列表与完整配置解析失败会清理本次候选资源，清理超时保留同一次操作、真实错误持续返回；成功发布转交所有权，已退休的 Config 不能再次发布。应用入口在重载与 Shutdown 时等待这些结果。
+
+原生 parser 的节点适配器按实际使用登记租约，覆盖在途 TCP/UDP 创建及返回连接的完整 Close；半关闭不释放租约。provider 刷新关闭旧节点的新请求准入，现有连接自然结束后只关闭一次节点池；测速回调也属于待收尾任务。成功收尾的历史记录立即移除，错误保留并停止后续刷新。provider 取消时强制收尾仍活跃的历史节点，当前列表仍由 executor 按复用身份管理。URLTest 组在使用缓存前检查当前成员，避免新请求继续选中刷新前的对象。自定义 Parser 返回不具备 Retire/ForceRetire/WaitRetired 合同的借用对象维持上游行为，provider 不擅自取消其测速或关闭资源。
+
+租约完成证明已登记调用、连接 Close 及 adapter.Close 已返回，不等于所有协议内部任务或系统句柄均已验收。AnyTLS idle routine 已等待，但 session recvLoop 和 deadline watcher 仍待补；smux/KCP 依赖缺少完整 worker 等待，部分关闭错误未上报。WireGuard 依赖等待 worker，但 Close 返回 void；QUIC 依赖也未完整传播 UDP Close 错误。详细剩余项与实际验证范围由协调仓设计和阶段检查点记录。
 
 ---
 

@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"net"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -55,6 +56,63 @@ type retirementAdapter struct {
 }
 
 func (a *retirementAdapter) Close() error { a.calls.Add(1); return a.closeErr }
+
+type historicalRetirementAdapter struct {
+	*retirementAdapter
+	connection net.Conn
+}
+
+func (a *historicalRetirementAdapter) DialContext(context.Context, *C.Metadata) (C.Conn, error) {
+	return outbound.NewConn(a.connection, a), nil
+}
+
+func TestConfigRetirementIncludesHistoricalProviderConnections(t *testing.T) {
+	next := retirementFixture(t)
+	left, right := net.Pipe()
+	defer right.Close()
+	raw := &historicalRetirementAdapter{
+		retirementAdapter: &retirementAdapter{Base: outbound.NewBase(outbound.BaseOption{Name: "historical", Type: C.Direct})},
+		connection:        left,
+	}
+	old := adapter.NewProxy(outbound.NewAutoCloseProxyAdapter(raw))
+	defer old.Close()
+	newRaw := &retirementAdapter{Base: outbound.NewBase(outbound.BaseOption{Name: "current", Type: C.Direct})}
+	current := adapter.NewProxy(outbound.NewAutoCloseProxyAdapter(newRaw))
+	defer current.Close()
+	pd, err := AP.NewProxySetProvider("owned", 0, []map[string]any{{"name": "initial"}}, func(data []byte) ([]C.Proxy, error) {
+		if string(data) == "next" {
+			return []C.Proxy{current}, nil
+		}
+		return []C.Proxy{old}, nil
+	}, resource.NewFileVehicle(filepath.Join(t.TempDir(), "nodes.yaml")), AP.NewHealthCheck(nil, "", 0, 0, false, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pd.Close()
+	tunnel.UpdateProxies(nil, map[string]P.ProxyProvider{"owned": pd})
+	conn, err := old.DialContext(context.Background(), &C.Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, _, err := pd.SideUpdate([]byte("next")); err != nil {
+		t.Fatal(err)
+	}
+	if raw.calls.Load() != 0 {
+		t.Fatal("provider refresh interrupted an existing connection")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := ApplyConfigContext(ctx, next, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("closed")); err == nil {
+		t.Fatal("old configuration still has a live historical connection")
+	}
+	if raw.calls.Load() != 1 || newRaw.calls.Load() != 1 {
+		t.Fatal("config retirement missed historical or current provider adapters")
+	}
+}
 
 func retirementFixture(t *testing.T) *config.Config {
 	t.Helper()
