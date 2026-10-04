@@ -49,6 +49,9 @@ func UpdateMMDB() (err error) {
 }
 
 func UpdateMMDBContext(ctx context.Context) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	vehicle := resource.NewHTTPVehicle(geodata.MmdbUrl(), C.Path.MMDB(), "", nil, defaultHttpTimeout, 0)
 	var oldHash utils.HashType
 	if buf, err := os.ReadFile(vehicle.Path()); err == nil {
@@ -59,7 +62,7 @@ func UpdateMMDBContext(ctx context.Context) (err error) {
 		return fmt.Errorf("can't download MMDB database file: %w", err)
 	}
 	if oldHash.Equal(hash) { // same hash, ignored
-		return nil
+		return commitGeoUpdate(ctx, func() error { return nil })
 	}
 	if len(data) == 0 {
 		return fmt.Errorf("can't download MMDB database file: no data")
@@ -71,7 +74,7 @@ func UpdateMMDBContext(ctx context.Context) (err error) {
 	}
 	_ = instance.Close()
 
-	return resource.Commit(ctx, func() error {
+	return commitGeoUpdate(ctx, func() error {
 		defer mmdb.ReloadIP()
 		mmdb.IPInstance().Reader.Close() // mmap must close before overwriting the file.
 		if err := vehicle.Write(data); err != nil {
@@ -86,6 +89,9 @@ func UpdateASN() (err error) {
 }
 
 func UpdateASNContext(ctx context.Context) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	vehicle := resource.NewHTTPVehicle(geodata.ASNUrl(), C.Path.ASN(), "", nil, defaultHttpTimeout, 0)
 	var oldHash utils.HashType
 	if buf, err := os.ReadFile(vehicle.Path()); err == nil {
@@ -96,7 +102,7 @@ func UpdateASNContext(ctx context.Context) (err error) {
 		return fmt.Errorf("can't download ASN database file: %w", err)
 	}
 	if oldHash.Equal(hash) { // same hash, ignored
-		return nil
+		return commitGeoUpdate(ctx, func() error { return nil })
 	}
 	if len(data) == 0 {
 		return fmt.Errorf("can't download ASN database file: no data")
@@ -108,7 +114,7 @@ func UpdateASNContext(ctx context.Context) (err error) {
 	}
 	_ = instance.Close()
 
-	return resource.Commit(ctx, func() error {
+	return commitGeoUpdate(ctx, func() error {
 		defer mmdb.ReloadASN()
 		mmdb.ASNInstance().Reader.Close()
 		if err := vehicle.Write(data); err != nil {
@@ -123,6 +129,9 @@ func UpdateGeoIp() (err error) {
 }
 
 func UpdateGeoIpContext(ctx context.Context) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	geoLoader, err := geodata.GetGeoDataLoader("standard")
 	if err != nil {
 		return err
@@ -138,7 +147,7 @@ func UpdateGeoIpContext(ctx context.Context) (err error) {
 		return fmt.Errorf("can't download GeoIP database file: %w", err)
 	}
 	if oldHash.Equal(hash) { // same hash, ignored
-		return nil
+		return commitGeoUpdate(ctx, func() error { return nil })
 	}
 	if len(data) == 0 {
 		return fmt.Errorf("can't download GeoIP database file: no data")
@@ -148,7 +157,7 @@ func UpdateGeoIpContext(ctx context.Context) (err error) {
 		return fmt.Errorf("invalid GeoIP database file: %s", err)
 	}
 
-	return resource.Commit(ctx, func() error {
+	return commitGeoUpdate(ctx, func() error {
 		defer geodata.ClearGeoIPCache()
 		if err := vehicle.Write(data); err != nil {
 			return fmt.Errorf("can't save GeoIP database file: %w", err)
@@ -162,6 +171,9 @@ func UpdateGeoSite() (err error) {
 }
 
 func UpdateGeoSiteContext(ctx context.Context) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	geoLoader, err := geodata.GetGeoDataLoader("standard")
 	if err != nil {
 		return err
@@ -177,7 +189,7 @@ func UpdateGeoSiteContext(ctx context.Context) (err error) {
 		return fmt.Errorf("can't download GeoSite database file: %w", err)
 	}
 	if oldHash.Equal(hash) { // same hash, ignored
-		return nil
+		return commitGeoUpdate(ctx, func() error { return nil })
 	}
 	if len(data) == 0 {
 		return fmt.Errorf("can't download GeoSite database file: no data")
@@ -187,12 +199,23 @@ func UpdateGeoSiteContext(ctx context.Context) (err error) {
 		return fmt.Errorf("invalid GeoSite database file: %s", err)
 	}
 
-	return resource.Commit(ctx, func() error {
+	return commitGeoUpdate(ctx, func() error {
 		defer geodata.ClearGeoSiteCache()
 		if err := vehicle.Write(data); err != nil {
 			return fmt.Errorf("can't save GeoSite database file: %w", err)
 		}
 		return nil
+	})
+}
+
+func commitGeoUpdate(ctx context.Context, action func() error) error {
+	return resource.Commit(ctx, func() error {
+		// An owner guard may accept ordinary request timeouts for callers such as
+		// health checks. Database updates must also honor their own cancellation.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return action()
 	})
 }
 
