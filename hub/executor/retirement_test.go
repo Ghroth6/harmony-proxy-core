@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -124,6 +125,33 @@ func TestConfigRetirementRetainsCloseFailureWithoutRepeatingOpaqueClose(t *testi
 	}
 	if a.calls.Load() != 1 || tunnel.Proxies()["one"] != proxy {
 		t.Fatal("close repeated or old ownership discarded")
+	}
+}
+
+func TestConfigRetirementClosesEveryDistinctAdapterExactlyOnce(t *testing.T) {
+	_ = retirementFixture(t)
+	// With one P, queued close goroutines begin after the launch loop. This
+	// exercises the old range-variable semantics selected by go.mod (Go 1.20).
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	proxies := make(map[string]C.Proxy)
+	var adapters []*retirementAdapter
+	for _, name := range []string{"first", "second", "third", "fourth"} {
+		a := &retirementAdapter{Base: outbound.NewBase(outbound.BaseOption{Name: name, Type: C.Direct})}
+		adapters = append(adapters, a)
+		proxies[name] = adapter.NewProxy(a)
+	}
+	tunnel.UpdateProxies(proxies, nil)
+	if err := RetireConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := RetireConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range adapters {
+		if got := a.calls.Load(); got != 1 {
+			t.Fatalf("adapter %s closed %d times", a.Name(), got)
+		}
 	}
 }
 

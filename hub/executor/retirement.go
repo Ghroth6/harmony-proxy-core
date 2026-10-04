@@ -220,6 +220,9 @@ func retireConfigLocked(ctx context.Context, next *config.Config) error {
 	// Start every close before waiting, so a slow dependency does not prevent
 	// cancellation/cleanup of unrelated pools.
 	for a, call := range retiringConfig.adapters {
+		// This module targets Go 1.20: range variables are shared across
+		// iterations even when tests/builds use a newer Go toolchain.
+		a, call := a, call
 		call.once.Do(func() { go func() { call.err = a.Close(); close(call.done) }() })
 	}
 	for a, call := range retiringConfig.adapters {
