@@ -2,6 +2,7 @@ package resource
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -12,8 +13,6 @@ import (
 	"github.com/metacubex/mihomo/component/slowdown"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
-
-	"github.com/metacubex/fswatch"
 	"github.com/samber/lo"
 )
 
@@ -23,7 +22,6 @@ type BundleFile func() (fs.File, error)
 type Fetcher[V any] struct {
 	ctx          context.Context
 	ctxCancel    context.CancelFunc
-	resourceType string
 	name         string
 	vehicle      P.Vehicle
 	bundleFile   BundleFile
@@ -32,164 +30,270 @@ type Fetcher[V any] struct {
 	parser       Parser[V]
 	interval     time.Duration
 	onUpdate     func(V)
-	watcher      *fswatch.Watcher
 	loadBufMutex sync.Mutex
+	stateMutex   sync.RWMutex
+	startMutex   sync.Mutex
+	started      bool
 	backoff      slowdown.Backoff
+
+	// lifecycleMutex protects admission and short commits, never downloads/parsers.
+	lifecycleMutex sync.Mutex
+	retired        bool
+	active         int
+	done           chan struct{}
+	closeErr       error
 }
 
-func (f *Fetcher[V]) Name() string {
-	return f.name
-}
-
-func (f *Fetcher[V]) Vehicle() P.Vehicle {
-	return f.vehicle
-}
-
-func (f *Fetcher[V]) VehicleType() P.VehicleType {
-	return f.vehicle.Type()
-}
-
+func (f *Fetcher[V]) Name() string               { return f.name }
+func (f *Fetcher[V]) Vehicle() P.Vehicle         { return f.vehicle }
+func (f *Fetcher[V]) VehicleType() P.VehicleType { return f.vehicle.Type() }
+func (f *Fetcher[V]) Context() context.Context   { return f.ctx }
 func (f *Fetcher[V]) UpdatedAt() time.Time {
+	f.stateMutex.RLock()
+	defer f.stateMutex.RUnlock()
 	return f.updatedAt
 }
 
-func (f *Fetcher[V]) Initial() (V, error) {
-	if stat, fErr := os.Stat(f.vehicle.Path()); fErr == nil {
-		// local file exists, use it first
-		buf, err := os.ReadFile(f.vehicle.Path())
-		modTime := stat.ModTime()
-		contents, _, err := f.loadBuf(buf, utils.MakeHash(buf), false)
-		f.updatedAt = modTime // reset updatedAt to file's modTime
+// Commit protects publication by this provider. Actions must be short and must
+// not reenter Commit, Cancel or Wait; network work and parsing belong outside it.
+func (f *Fetcher[V]) Commit(action func() error) error {
+	f.lifecycleMutex.Lock()
+	defer f.lifecycleMutex.Unlock()
+	if f.retired {
+		return context.Canceled
+	}
+	return action()
+}
 
-		if err == nil {
-			err = f.startPullLoop(time.Since(modTime) > f.interval)
-			if err != nil {
-				return lo.Empty[V](), err
-			}
-			return contents, nil
+func (f *Fetcher[V]) begin() error {
+	f.lifecycleMutex.Lock()
+	defer f.lifecycleMutex.Unlock()
+	if f.retired {
+		return context.Canceled
+	}
+	f.active++
+	return nil
+}
+func (f *Fetcher[V]) finish() {
+	f.lifecycleMutex.Lock()
+	defer f.lifecycleMutex.Unlock()
+	f.active--
+	if f.retired && f.active == 0 {
+		close(f.done)
+	}
+}
+
+// Cancel closes admission and invalidates future commits before returning.
+// Work that ignores cancellation remains owned until Wait observes its exit.
+func (f *Fetcher[V]) Cancel() {
+	f.lifecycleMutex.Lock()
+	defer f.lifecycleMutex.Unlock()
+	if f.retired {
+		return
+	}
+	f.retired = true
+	f.ctxCancel()
+	if f.active == 0 {
+		close(f.done)
+	}
+}
+
+// Wait waits for a canceled fetcher's requests and scheduler to finish. A
+// deadline does not forget outstanding work; a later Wait can finish retirement.
+func (f *Fetcher[V]) Wait(ctx context.Context) error {
+	select {
+	case <-f.done:
+	default:
+		select {
+		case <-f.done:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
+	f.lifecycleMutex.Lock()
+	defer f.lifecycleMutex.Unlock()
+	return f.closeErr
+}
+func (f *Fetcher[V]) Close() error {
+	f.Cancel()
+	return f.Wait(context.Background())
+}
+func (f *Fetcher[V]) recordCloseError(err error) {
+	if err != nil {
+		f.lifecycleMutex.Lock()
+		f.closeErr = errors.Join(f.closeErr, err)
+		f.lifecycleMutex.Unlock()
+	}
+}
 
-	// parse local file error, fallback to bundle file
-	if f.bundleFile != nil {
-		// bundle file exists, use it first
-		if file, fErr := f.bundleFile(); fErr == nil {
-			defer file.Close()
-			buf, err := io.ReadAll(file)
-			var modTime time.Time
-			if stat, sErr := file.Stat(); sErr == nil {
-				modTime = stat.ModTime()
-			}
-			contents, _, err := f.loadBuf(buf, utils.MakeHash(buf), true)
-			f.updatedAt = modTime // reset updatedAt to file's modTime
-
+func (f *Fetcher[V]) Initial() (V, error) {
+	if err := f.begin(); err != nil {
+		return lo.Empty[V](), err
+	}
+	defer f.finish()
+	if stat, err := os.Stat(f.vehicle.Path()); err == nil {
+		if buf, err := os.ReadFile(f.vehicle.Path()); err == nil {
+			contents, _, err := f.loadBuf(buf, utils.MakeHash(buf), false)
 			if err == nil {
-				log.Infoln("[Provider] %s extract successful from bundle file", f.Name())
-				err = f.startPullLoop(time.Since(modTime) > f.interval)
-				if err != nil {
+				if err := f.setInitialTime(stat.ModTime()); err != nil {
+					return lo.Empty[V](), err
+				}
+				if err := f.startPullLoop(time.Since(stat.ModTime()) > f.interval); err != nil {
 					return lo.Empty[V](), err
 				}
 				return contents, nil
 			}
-			log.Warnln("[Provider] %s read bundle file error: %s", f.Name(), err.Error())
-		} else {
-			log.Warnln("[Provider] %s read bundle file error: %s", f.Name(), fErr.Error())
 		}
 	}
-
-	// parse local file error, fallback to remote
-	contents, _, updateErr := f.Update()
-
-	// start the pull loop even if f.Update() failed
-	err := f.startPullLoop(false)
-	if err != nil {
+	if err := f.ctx.Err(); err != nil {
 		return lo.Empty[V](), err
 	}
 
+	if f.bundleFile != nil {
+		if file, err := f.bundleFile(); err == nil {
+			defer file.Close()
+			buf, err := io.ReadAll(file)
+			var modTime time.Time
+			if stat, err := file.Stat(); err == nil {
+				modTime = stat.ModTime()
+			}
+			var contents V
+			if err == nil {
+				contents, _, err = f.loadBuf(buf, utils.MakeHash(buf), true)
+			}
+			if err == nil {
+				if err := f.setInitialTime(modTime); err != nil {
+					return lo.Empty[V](), err
+				}
+				log.Infoln("[Provider] %s extract successful from bundle file", f.Name())
+				if err := f.startPullLoop(time.Since(modTime) > f.interval); err != nil {
+					return lo.Empty[V](), err
+				}
+				return contents, nil
+			}
+			log.Warnln("[Provider] %s read bundle file error: %s", f.Name(), err)
+		} else {
+			log.Warnln("[Provider] %s read bundle file error: %s", f.Name(), err)
+		}
+	}
+	if err := f.ctx.Err(); err != nil {
+		return lo.Empty[V](), err
+	}
+	contents, _, updateErr := f.update()
+	// A failed read still starts the normal retry loop, unless retired.
+	if err := f.startPullLoop(false); err != nil {
+		return lo.Empty[V](), err
+	}
 	if updateErr != nil {
 		return lo.Empty[V](), updateErr
 	}
-
 	return contents, nil
+}
+func (f *Fetcher[V]) setInitialTime(modTime time.Time) error {
+	return f.Commit(func() error {
+		f.stateMutex.Lock()
+		f.updatedAt = modTime
+		f.stateMutex.Unlock()
+		return nil
+	})
 }
 
 func (f *Fetcher[V]) Update() (V, bool, error) {
-	buf, hash, err := f.vehicle.Read(f.ctx, f.hash)
+	if err := f.begin(); err != nil {
+		return lo.Empty[V](), false, err
+	}
+	defer f.finish()
+	return f.update()
+}
+func (f *Fetcher[V]) update() (V, bool, error) {
+	if err := f.ctx.Err(); err != nil {
+		return lo.Empty[V](), false, err
+	}
+	f.stateMutex.RLock()
+	oldHash := f.hash
+	f.stateMutex.RUnlock()
+	buf, hash, err := f.vehicle.Read(f.ctx, oldHash)
 	if err != nil {
-		f.backoff.AddAttempt() // add a failed attempt to backoff
+		_ = f.Commit(func() error { f.backoff.AddAttempt(); return nil })
 		return lo.Empty[V](), false, err
 	}
 	return f.loadBuf(buf, hash, f.vehicle.Type() != P.File)
 }
-
 func (f *Fetcher[V]) SideUpdate(buf []byte) (V, bool, error) {
+	if err := f.begin(); err != nil {
+		return lo.Empty[V](), false, err
+	}
+	defer f.finish()
 	return f.loadBuf(buf, utils.MakeHash(buf), true)
 }
 
 func (f *Fetcher[V]) loadBuf(buf []byte, hash utils.HashType, updateFile bool) (V, bool, error) {
 	f.loadBufMutex.Lock()
 	defer f.loadBufMutex.Unlock()
-
-	now := time.Now()
-	if f.hash.Equal(hash) {
-		if updateFile {
-			_ = os.Chtimes(f.vehicle.Path(), now, now)
-		}
-		f.updatedAt = now
-		f.backoff.Reset() // no error, reset backoff
-		return lo.Empty[V](), true, nil
-	}
-
-	if buf == nil { // f.hash has been changed between f.vehicle.Read but should not happen (cause by concurrent)
-		return lo.Empty[V](), true, nil
-	}
-
-	contents, err := f.parser(buf)
-	if err != nil {
-		f.backoff.AddAttempt() // add a failed attempt to backoff
+	if err := f.ctx.Err(); err != nil {
 		return lo.Empty[V](), false, err
 	}
-	f.backoff.Reset() // no error, reset backoff
-
-	if updateFile {
-		if err = f.vehicle.Write(buf); err != nil {
-			return lo.Empty[V](), false, err
+	f.stateMutex.RLock()
+	same := f.hash.Equal(hash)
+	f.stateMutex.RUnlock()
+	if same {
+		err := f.Commit(func() error {
+			now := time.Now()
+			if updateFile {
+				_ = os.Chtimes(f.vehicle.Path(), now, now)
+			}
+			f.stateMutex.Lock()
+			f.updatedAt = now
+			f.stateMutex.Unlock()
+			f.backoff.Reset()
+			return nil
+		})
+		return lo.Empty[V](), true, err
+	}
+	if buf == nil {
+		return lo.Empty[V](), true, f.ctx.Err()
+	}
+	contents, err := f.parser(buf)
+	if err != nil {
+		_ = f.Commit(func() error { f.backoff.AddAttempt(); return nil })
+		return lo.Empty[V](), false, err
+	}
+	err = f.Commit(func() error {
+		if updateFile {
+			if err := f.vehicle.Write(buf); err != nil {
+				return err
+			}
 		}
+		f.stateMutex.Lock()
+		f.updatedAt = time.Now()
+		f.hash = hash
+		f.stateMutex.Unlock()
+		f.backoff.Reset()
+		if f.onUpdate != nil {
+			f.onUpdate(contents)
+		}
+		return nil
+	})
+	if err != nil {
+		return lo.Empty[V](), false, err
 	}
-	f.updatedAt = now
-	f.hash = hash
-
-	if f.onUpdate != nil {
-		f.onUpdate(contents)
-	}
-
 	return contents, false, nil
 }
 
-func (f *Fetcher[V]) Close() error {
-	f.ctxCancel()
-	if f.watcher != nil {
-		_ = f.watcher.Close()
-	}
-	return nil
-}
-
 func (f *Fetcher[V]) pullLoop(forceUpdate bool) {
-	initialInterval := f.interval - time.Since(f.updatedAt)
+	initialInterval := f.interval - time.Since(f.UpdatedAt())
 	if initialInterval > f.interval {
 		initialInterval = f.interval
 	}
-
 	if forceUpdate {
 		log.Warnln("[Provider] %s not updated for a long time, force refresh", f.Name())
 		f.updateWithLog()
 	}
-	if attempt := f.backoff.Attempt(); attempt > 0 { // f.Update() was failed, decrease the interval from backoff to achieve fast retry
+	if attempt := f.backoff.Attempt(); attempt > 0 {
 		if duration := f.backoff.ForAttempt(attempt); duration < initialInterval {
 			initialInterval = duration
 		}
 	}
-
 	timer := time.NewTimer(initialInterval)
 	defer timer.Stop()
 	for {
@@ -197,7 +301,7 @@ func (f *Fetcher[V]) pullLoop(forceUpdate bool) {
 		case <-timer.C:
 			f.updateWithLog()
 			interval := f.interval
-			if attempt := f.backoff.Attempt(); attempt > 0 { // f.Update() was failed, decrease the interval from backoff to achieve fast retry
+			if attempt := f.backoff.Attempt(); attempt > 0 {
 				if duration := f.backoff.ForAttempt(attempt); duration < interval {
 					interval = duration
 				}
@@ -209,44 +313,41 @@ func (f *Fetcher[V]) pullLoop(forceUpdate bool) {
 	}
 }
 
-func (f *Fetcher[V]) startPullLoop(forceUpdate bool) (err error) {
-	// pull contents automatically
+func (f *Fetcher[V]) startPullLoop(forceUpdate bool) error {
+	f.startMutex.Lock()
+	defer f.startMutex.Unlock()
+	if err := f.ctx.Err(); err != nil {
+		return err
+	}
+	if f.started {
+		return nil
+	}
 	if f.vehicle.Type() == P.File {
-		f.watcher, err = fswatch.NewWatcher(fswatch.Options{
-			Path:     []string{f.vehicle.Path()},
-			Callback: f.updateCallback,
-		})
-		if err != nil {
-			return err
-		}
-		err = f.watcher.Start()
-		if err != nil {
+		if err := f.startWatcher(); err != nil {
 			return err
 		}
 	} else if f.interval > 0 {
-		go f.pullLoop(forceUpdate)
+		if err := f.begin(); err != nil {
+			return err
+		}
+		go func() { defer f.finish(); f.pullLoop(forceUpdate) }()
 	}
-	return
+	f.started = true
+	return nil
 }
-
-func (f *Fetcher[V]) updateCallback(path string) {
-	f.updateWithLog()
-}
-
 func (f *Fetcher[V]) updateWithLog() {
 	_, same, err := f.Update()
 	if err != nil {
-		log.Errorln("[Provider] %s pull error: %s", f.Name(), err.Error())
+		if !errors.Is(err, context.Canceled) {
+			log.Errorln("[Provider] %s pull error: %s", f.Name(), err)
+		}
 		return
 	}
-
 	if same {
 		log.Debugln("[Provider] %s's content doesn't change", f.Name())
 		return
 	}
-
 	log.Infoln("[Provider] %s's content update", f.Name())
-	return
 }
 
 func NewFetcher[V any](name string, interval time.Duration, vehicle P.Vehicle, bundleFile BundleFile, parser Parser[V], onUpdate func(V)) *Fetcher[V] {
@@ -255,20 +356,11 @@ func NewFetcher[V any](name string, interval time.Duration, vehicle P.Vehicle, b
 	if interval < minBackoff {
 		minBackoff = interval
 	}
-	return &Fetcher[V]{
-		ctx:        ctx,
-		ctxCancel:  cancel,
-		name:       name,
-		bundleFile: bundleFile,
-		vehicle:    vehicle,
-		parser:     parser,
-		onUpdate:   onUpdate,
-		interval:   interval,
-		backoff: slowdown.Backoff{
-			Factor: 2,
-			Jitter: false,
-			Min:    minBackoff,
-			Max:    interval,
-		},
+	f := &Fetcher[V]{
+		ctxCancel: cancel, done: make(chan struct{}), name: name, bundleFile: bundleFile,
+		vehicle: vehicle, parser: parser, onUpdate: onUpdate, interval: interval,
+		backoff: slowdown.Backoff{Factor: 2, Jitter: false, Min: minBackoff, Max: interval},
 	}
+	f.ctx = WithCommitGuard(ctx, f.Commit)
+	return f
 }

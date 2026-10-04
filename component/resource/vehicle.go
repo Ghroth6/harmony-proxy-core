@@ -142,13 +142,9 @@ func (h *HTTPVehicle) Read(ctx context.Context, oldHash utils.HashType) (buf []b
 	}
 	defer resp.Body.Close()
 
-	if h.inRead != nil {
-		h.inRead(resp)
-	}
-
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		if setIfNoneMatch && resp.StatusCode == http.StatusNotModified {
-			return nil, oldHash, nil
+			return nil, oldHash, h.commitResponse(ctx, resp, oldHash, false)
 		}
 		err = errors.New(resp.Status)
 		return
@@ -162,14 +158,30 @@ func (h *HTTPVehicle) Read(ctx context.Context, oldHash utils.HashType) (buf []b
 		return
 	}
 	hash = utils.MakeHash(buf)
-	if etag {
-		cachefile.Cache().SetETagWithHash(h.url, cachefile.EtagWithHash{
-			Hash: hash,
-			ETag: resp.Header.Get("ETag"),
-			Time: time.Now(),
-		})
-	}
+	err = h.commitResponse(ctx, resp, hash, true)
 	return
+}
+
+func (h *HTTPVehicle) commitResponse(ctx context.Context, resp *http.Response, hash utils.HashType, updateETag bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return Commit(ctx, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if h.inRead != nil {
+			h.inRead(resp)
+		}
+		if etag && updateETag {
+			cachefile.Cache().SetETagWithHash(h.url, cachefile.EtagWithHash{
+				Hash: hash,
+				ETag: resp.Header.Get("ETag"),
+				Time: time.Now(),
+			})
+		}
+		return nil
+	})
 }
 
 func NewHTTPVehicle(url string, path string, proxy string, header http.Header, timeout time.Duration, sizeLimit int64) *HTTPVehicle {
