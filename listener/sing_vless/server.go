@@ -12,6 +12,7 @@ import (
 	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 	"github.com/metacubex/mihomo/listener/jls"
 	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/restls"
@@ -38,7 +39,8 @@ type Listener struct {
 	decryption *encryption.ServerInstance
 }
 
-func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (sl *Listener, err error) {
+func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
+	var sl *Listener
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-VLESS"),
@@ -68,18 +70,11 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		}))
 
 	sl = &Listener{config: config, service: service}
+	defer lifecycle.Rollback(sl, &err)
 
 	sl.decryption, err = encryption.NewServer(config.Decryption)
 	if err != nil {
 		return nil, err
-	}
-	if sl.decryption != nil {
-		decryption := sl.decryption
-		defer func() { // decryption must be closed to avoid the goroutine leak
-			if err != nil {
-				_ = decryption.Close()
-			}
-		}()
 	}
 
 	httpServer := http.Server{
@@ -273,7 +268,7 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		} else if tlsConfig.GetCertificate != nil {
 			l = tls.NewListener(l, tlsConfig)
 		} else if sl.decryption == nil && !config.AllowInsecure {
-			return nil, errors.New("disallow using Vless without any certificates/shadow-tls/res-tls/jls/reality/decryption/allow-insecure config")
+			return nil, errors.Join(errors.New("disallow using Vless without any certificates/shadow-tls/res-tls/jls/reality/decryption/allow-insecure config"), lifecycle.Close(l))
 		}
 		sl.listeners = append(sl.listeners, l)
 
@@ -301,17 +296,14 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var retErr error
-	for _, lis := range l.listeners {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
+	var errs []error
+	var err error
+	l.listeners, err = lifecycle.CloseAll(l.listeners)
+	errs = append(errs, err)
 	if l.decryption != nil {
-		_ = l.decryption.Close()
+		errs = append(errs, lifecycle.Close(l.decryption))
 	}
-	return retErr
+	return errors.Join(errs...)
 }
 
 func (l *Listener) Config() string {

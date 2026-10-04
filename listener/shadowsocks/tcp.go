@@ -2,6 +2,7 @@ package shadowsocks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 	"github.com/metacubex/mihomo/listener/jls"
 	"github.com/metacubex/mihomo/listener/restls"
 	"github.com/metacubex/mihomo/listener/shadowtls"
@@ -31,7 +33,7 @@ type Listener struct {
 
 var _listener *Listener
 
-func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
 	pickCipher, err := core.PickCipher(config.Cipher, nil, config.Password)
 	if err != nil {
 		return nil, err
@@ -48,7 +50,7 @@ func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 	}
 
 	sl := &Listener{config: config, pickCipher: pickCipher, handler: h}
-	_listener = sl
+	defer lifecycle.Rollback(sl, &err)
 
 	securityModes := make([]string, 0, 3)
 	if config.ShadowTLS.Enable {
@@ -136,24 +138,19 @@ func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 		}()
 	}
 
+	_listener = sl
 	return sl, nil
 }
 
 func (l *Listener) Close() error {
-	var retErr error
-	for _, lis := range l.listeners {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	for _, lis := range l.udpListeners {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	return retErr
+	l.closed = true
+	var errs []error
+	var err error
+	l.listeners, err = lifecycle.CloseAll(l.listeners)
+	errs = append(errs, err)
+	l.udpListeners, err = lifecycle.CloseAll(l.udpListeners)
+	errs = append(errs, err)
+	return errors.Join(errs...)
 }
 
 func (l *Listener) Config() string {

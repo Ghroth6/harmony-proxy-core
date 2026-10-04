@@ -17,6 +17,7 @@ import (
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 	"github.com/metacubex/mihomo/listener/jls"
 	"github.com/metacubex/mihomo/listener/restls"
 	"github.com/metacubex/mihomo/listener/shadowtls"
@@ -94,8 +95,7 @@ func New(config LC.SnellServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		}
 		ln, err := lc.Listen(context.Background(), "tcp", addr)
 		if err != nil {
-			_ = l.Close()
-			return nil, err
+			return nil, errors.Join(err, lifecycle.Close(l))
 		}
 		if shadowTLSBuilder != nil {
 			ln = shadowTLSBuilder.NewListener(ln)
@@ -123,13 +123,11 @@ func New(config LC.SnellServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var retErr error
-	for _, ln := range l.listeners {
-		if err := ln.Close(); err != nil {
-			retErr = err
-		}
-	}
-	return retErr
+	var errs []error
+	var err error
+	l.listeners, err = lifecycle.CloseAll(l.listeners)
+	errs = append(errs, err)
+	return errors.Join(errs...)
 }
 
 func (l *Listener) Config() string {

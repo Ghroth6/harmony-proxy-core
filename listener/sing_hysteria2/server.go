@@ -19,6 +19,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/inner"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
@@ -40,9 +41,8 @@ type Listener struct {
 	services     []*hysteria2.Service[string]
 }
 
-func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
 	var sl *Listener
-	var err error
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-HYSTERIA2"),
@@ -61,6 +61,7 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 	}
 
 	sl = &Listener{false, config, nil, nil}
+	defer lifecycle.Rollback(sl, &err)
 
 	tlsConfig := &tls.Config{
 		Time:       ntp.Now,
@@ -263,9 +264,9 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 		sl.udpListeners = append(sl.udpListeners, ul)
 		sl.services = append(sl.services, service)
 
-		go func() {
-			_ = service.Start(ul)
-		}()
+		if err := service.Start(ul); err != nil {
+			return nil, err
+		}
 	}
 
 	return sl, nil
@@ -273,20 +274,13 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var retErr error
-	for _, service := range l.services {
-		err := service.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	for _, lis := range l.udpListeners {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	return retErr
+	var errs []error
+	var err error
+	l.services, err = lifecycle.CloseAll(l.services)
+	errs = append(errs, err)
+	l.udpListeners, err = lifecycle.CloseAll(l.udpListeners)
+	errs = append(errs, err)
+	return errors.Join(errs...)
 }
 
 func (l *Listener) Config() string {

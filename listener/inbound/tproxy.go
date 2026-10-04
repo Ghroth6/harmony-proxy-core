@@ -2,7 +2,6 @@ package inbound
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
@@ -55,7 +54,15 @@ func (t *TProxy) Address() string {
 }
 
 // Listen implements constant.InboundListener
-func (t *TProxy) Listen(tunnel C.Tunnel) error {
+func (t *TProxy) Listen(tunnel C.Tunnel) (err error) {
+	if len(t.lTCP) != 0 || len(t.lUDP) != 0 {
+		return errors.New("listener is already running")
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, t.Close())
+		}
+	}()
 	for _, addr := range strings.Split(t.RawAddress(), ",") {
 		lTCP, err := tproxy.New(addr, tunnel, t.Additions()...)
 		if err != nil {
@@ -76,23 +83,17 @@ func (t *TProxy) Listen(tunnel C.Tunnel) error {
 
 // Close implements constant.InboundListener
 func (t *TProxy) Close() error {
+	var err error
 	var errs []error
-	for _, l := range t.lTCP {
-		err := l.Close()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("close tcp listener %s err: %w", l.Address(), err))
-		}
+	t.lTCP, err = closeListeners(t.lTCP)
+	if err != nil {
+		errs = append(errs, err)
 	}
-	for _, l := range t.lUDP {
-		err := l.Close()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("close udp listener %s err: %w", l.Address(), err))
-		}
+	t.lUDP, err = closeListeners(t.lUDP)
+	if err != nil {
+		errs = append(errs, err)
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 var _ C.InboundListener = (*TProxy)(nil)

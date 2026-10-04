@@ -81,17 +81,27 @@ func (s *Snell) Address() string {
 }
 
 func (s *Snell) Listen(tunnel C.Tunnel) error {
-	var err error
-	s.l, err = snell.New(s.snell, s.ListenConfig(), tunnel, s.Additions()...)
+	if s.l != nil {
+		return errAlreadyListening
+	}
+	next, err := snell.New(s.snell, s.ListenConfig(), tunnel, s.Additions()...)
 	if err != nil {
 		return err
 	}
+	s.l = next
 	log.Infoln("Snell[%s] inbound listening at: %s", s.Name(), s.Address())
 	return nil
 }
 
 func (s *Snell) Close() error {
-	return s.l.Close()
+	if s.l == nil {
+		return nil
+	}
+	if err := closeListener(s.l); err != nil {
+		return err
+	}
+	s.l = nil
+	return nil
 }
 
 var _ C.InboundListener = (*Snell)(nil)

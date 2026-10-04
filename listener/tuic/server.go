@@ -2,6 +2,7 @@ package tuic
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
@@ -33,7 +35,7 @@ type Listener struct {
 	servers      []*tuic.Server
 }
 
-func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-TUIC"),
@@ -174,6 +176,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 	}
 
 	sl := &Listener{false, config, nil, nil}
+	defer lifecycle.Rollback(sl, &err)
 
 	for _, addr := range strings.Split(config.Listen, ",") {
 		addr := addr
@@ -212,20 +215,13 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var retErr error
-	for _, lis := range l.servers {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	for _, lis := range l.udpListeners {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	return retErr
+	var errs []error
+	var err error
+	l.servers, err = lifecycle.CloseAll(l.servers)
+	errs = append(errs, err)
+	l.udpListeners, err = lifecycle.CloseAll(l.udpListeners)
+	errs = append(errs, err)
+	return errors.Join(errs...)
 }
 
 func (l *Listener) Config() LC.TuicServer {

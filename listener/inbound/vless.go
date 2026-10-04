@@ -153,18 +153,28 @@ func (v *Vless) Address() string {
 
 // Listen implements constant.InboundListener
 func (v *Vless) Listen(tunnel C.Tunnel) error {
-	var err error
-	v.l, err = sing_vless.New(v.vs, v.ListenConfig(), tunnel, v.Additions()...)
+	if v.l != nil {
+		return errAlreadyListening
+	}
+	next, err := sing_vless.New(v.vs, v.ListenConfig(), tunnel, v.Additions()...)
 	if err != nil {
 		return err
 	}
+	v.l = next
 	log.Infoln("Vless[%s] proxy listening at: %s", v.Name(), v.Address())
 	return nil
 }
 
 // Close implements constant.InboundListener
 func (v *Vless) Close() error {
-	return v.l.Close()
+	if v.l == nil {
+		return nil
+	}
+	if err := closeListener(v.l); err != nil {
+		return err
+	}
+	v.l = nil
+	return nil
 }
 
 var _ C.InboundListener = (*Vless)(nil)

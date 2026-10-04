@@ -117,19 +117,26 @@ func (s *ShadowQuic) Address() string {
 }
 
 func (s *ShadowQuic) Listen(tunnel C.Tunnel) error {
-	var err error
-	s.l, err = shadowquic.New(s.ss, s.ListenConfig(), tunnel, s.Additions()...)
+	if s.l != nil {
+		return errAlreadyListening
+	}
+	next, err := shadowquic.New(s.ss, s.ListenConfig(), tunnel, s.Additions()...)
 	if err != nil {
 		return err
 	}
+	s.l = next
 	log.Infoln("ShadowQuic[%s] proxy listening at: %s", s.Name(), s.Address())
 	return nil
 }
 
 func (s *ShadowQuic) Close() error {
-	if s.l != nil {
-		return s.l.Close()
+	if s.l == nil {
+		return nil
 	}
+	if err := closeListener(s.l); err != nil {
+		return err
+	}
+	s.l = nil
 	return nil
 }
 

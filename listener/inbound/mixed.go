@@ -2,7 +2,6 @@ package inbound
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
@@ -63,7 +62,15 @@ func (m *Mixed) Address() string {
 }
 
 // Listen implements constant.InboundListener
-func (m *Mixed) Listen(tunnel C.Tunnel) error {
+func (m *Mixed) Listen(tunnel C.Tunnel) (err error) {
+	if len(m.l) != 0 || len(m.lUDP) != 0 {
+		return errors.New("listener is already running")
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, m.Close())
+		}
+	}()
 	lc := m.ListenConfig()
 	for _, addr := range strings.Split(m.RawAddress(), ",") {
 		config := LC.AuthServer{
@@ -96,23 +103,17 @@ func (m *Mixed) Listen(tunnel C.Tunnel) error {
 
 // Close implements constant.InboundListener
 func (m *Mixed) Close() error {
+	var err error
 	var errs []error
-	for _, l := range m.l {
-		err := l.Close()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("close tcp listener %s err: %w", l.Address(), err))
-		}
+	m.l, err = closeListeners(m.l)
+	if err != nil {
+		errs = append(errs, err)
 	}
-	for _, l := range m.lUDP {
-		err := l.Close()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("close udp listener %s err: %w", l.Address(), err))
-		}
+	m.lUDP, err = closeListeners(m.lUDP)
+	if err != nil {
+		errs = append(errs, err)
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 var _ C.InboundListener = (*Mixed)(nil)

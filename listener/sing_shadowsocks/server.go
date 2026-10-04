@@ -2,6 +2,7 @@ package sing_shadowsocks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/metacubex/mihomo/common/sockopt"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 	"github.com/metacubex/mihomo/listener/jls"
 	"github.com/metacubex/mihomo/listener/restls"
 	embedSS "github.com/metacubex/mihomo/listener/shadowsocks"
@@ -42,16 +44,17 @@ type Listener struct {
 
 var _listener *Listener
 
-func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (C.MultiAddrListener, error) {
+func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ C.MultiAddrListener, err error) {
 	var sl *Listener
-	var err error
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-SHADOWSOCKS"),
 			inbound.WithSpecialRules(""),
 		}
 		defer func() {
-			_listener = sl
+			if sl != nil && !sl.closed {
+				_listener = sl
+			}
 		}()
 	}
 
@@ -68,6 +71,7 @@ func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 	}
 
 	sl = &Listener{}
+	defer lifecycle.Rollback(sl, &err)
 	sl.config = config
 
 	switch {
@@ -78,8 +82,11 @@ func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 	case common.Contains(shadowaead_2022.List, config.Cipher):
 		sl.service, err = shadowaead_2022.NewServiceWithPassword(config.Cipher, config.Password, udpTimeout, h, ntp.Now)
 	default:
-		err = fmt.Errorf("shadowsocks: unsupported method: %s", config.Cipher)
-		return embedSS.New(config, lc, tunnel, additions...)
+		fallback, err := embedSS.New(config, lc, tunnel, additions...)
+		if err != nil {
+			return nil, err
+		}
+		return fallback, nil
 	}
 	if err != nil {
 		return nil, err
@@ -235,20 +242,13 @@ func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var retErr error
-	for _, lis := range l.listeners {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	for _, lis := range l.udpListeners {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	return retErr
+	var errs []error
+	var err error
+	l.listeners, err = lifecycle.CloseAll(l.listeners)
+	errs = append(errs, err)
+	l.udpListeners, err = lifecycle.CloseAll(l.udpListeners)
+	errs = append(errs, err)
+	return errors.Join(errs...)
 }
 
 func (l *Listener) Config() string {

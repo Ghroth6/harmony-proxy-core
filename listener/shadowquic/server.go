@@ -15,6 +15,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/inner"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
@@ -35,7 +36,7 @@ type Listener struct {
 	servers      []*shadowquic.Server
 }
 
-func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
 	if strings.TrimSpace(config.JLSUpstream.Addr) == "" {
 		return nil, errors.New("shadowquic: jls-upstream.addr is required")
 	}
@@ -165,6 +166,7 @@ func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, 
 	}
 
 	sl := &Listener{config: config}
+	defer lifecycle.Rollback(sl, &err)
 	for _, addr := range strings.Split(config.Listen, ",") {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
@@ -211,18 +213,13 @@ func defaultJLSServerName(upstreamAddr string) string {
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var retErr error
-	for _, server := range l.servers {
-		if err := server.Close(); err != nil {
-			retErr = err
-		}
-	}
-	for _, lis := range l.udpListeners {
-		if err := lis.Close(); err != nil {
-			retErr = err
-		}
-	}
-	return retErr
+	var errs []error
+	var err error
+	l.servers, err = lifecycle.CloseAll(l.servers)
+	errs = append(errs, err)
+	l.udpListeners, err = lifecycle.CloseAll(l.udpListeners)
+	errs = append(errs, err)
+	return errors.Join(errs...)
 }
 
 func (l *Listener) Config() LC.ShadowQuicServer {

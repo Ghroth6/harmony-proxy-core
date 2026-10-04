@@ -164,18 +164,28 @@ func (t *Tun) Address() string {
 
 // Listen implements constant.InboundListener
 func (t *Tun) Listen(tunnel C.Tunnel) error {
-	var err error
-	t.l, err = sing_tun.New(t.tun, tunnel, t.Additions()...)
+	if t.l != nil {
+		return errAlreadyListening
+	}
+	next, err := sing_tun.New(t.tun, tunnel, t.Additions()...)
 	if err != nil {
 		return err
 	}
+	t.l = next
 	log.Infoln("Tun[%s] proxy listening at: %s", t.Name(), t.Address())
 	return nil
 }
 
 // Close implements constant.InboundListener
 func (t *Tun) Close() error {
-	return t.l.Close()
+	if t.l == nil {
+		return nil
+	}
+	if err := closeListener(t.l); err != nil {
+		return err
+	}
+	t.l = nil
+	return nil
 }
 
 var _ C.InboundListener = (*Tun)(nil)

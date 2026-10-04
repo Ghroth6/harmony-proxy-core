@@ -12,6 +12,7 @@ import (
 	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 	"github.com/metacubex/mihomo/listener/jls"
 	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/restls"
@@ -42,14 +43,17 @@ type Listener struct {
 
 var _listener *Listener
 
-func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (sl *Listener, err error) {
+func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
+	var sl *Listener
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-VMESS"),
 			inbound.WithSpecialRules(""),
 		}
 		defer func() {
-			_listener = sl
+			if sl != nil && !sl.closed {
+				_listener = sl
+			}
 		}()
 	}
 	h, err := sing.NewListenerHandler(sing.ListenerConfig{
@@ -91,6 +95,7 @@ func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	}
 
 	sl = &Listener{false, config, nil, service}
+	defer lifecycle.Rollback(sl, &err)
 
 	httpServer := http.Server{
 		IdleTimeout: 30 * time.Second,
@@ -275,9 +280,10 @@ func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 			l = tls.NewListener(l, tlsConfig)
 		}
 		if config.MekyaConfig.Enable {
+			outer := l
 			l, err = mekya.Listen(context.Background(), l, config.MekyaConfig.Build())
 			if err != nil {
-				return nil, err
+				return nil, errors.Join(err, lifecycle.Close(outer))
 			}
 		}
 		sl.listeners = append(sl.listeners, l)
@@ -305,19 +311,16 @@ func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 }
 
 func (l *Listener) Close() error {
+	wasClosed := l.closed
 	l.closed = true
-	var retErr error
-	for _, lis := range l.listeners {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
+	var errs []error
+	var err error
+	l.listeners, err = lifecycle.CloseAll(l.listeners)
+	errs = append(errs, err)
+	if !wasClosed {
+		errs = append(errs, lifecycle.Close(l.service))
 	}
-	err := l.service.Close()
-	if err != nil {
-		retErr = err
-	}
-	return retErr
+	return errors.Join(errs...)
 }
 
 func (l *Listener) Config() string {

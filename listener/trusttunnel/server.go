@@ -12,6 +12,7 @@ import (
 	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
@@ -29,7 +30,9 @@ type Listener struct {
 	services     []*trusttunnel.Service
 }
 
-func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (sl *Listener, err error) {
+func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+	var sl *Listener
+	var err error
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-TRUSTTUNNEL"),
@@ -110,16 +113,14 @@ func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 		if listenTCP {
 			tcpListener, err = lc.Listen(context.Background(), "tcp", addr)
 			if err != nil {
-				_ = sl.Close()
-				return nil, err
+				return nil, errors.Join(err, lifecycle.Close(sl))
 			}
 			sl.listeners = append(sl.listeners, tcpListener)
 		}
 		if listenUDP {
 			udpConn, err = lc.ListenPacket(context.Background(), "udp", addr)
 			if err != nil {
-				_ = sl.Close()
-				return nil, err
+				return nil, errors.Join(err, lifecycle.Close(sl))
 			}
 
 			if err := sockopt.UDPReuseaddr(udpConn); err != nil {
@@ -138,13 +139,12 @@ func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 			QUICBBRProfile:        config.BBRProfile,
 		})
 		service.UpdateUsers(config.Users)
+		sl.services = append(sl.services, service)
 		err = service.Start(tcpListener, udpConn, tlsConfig)
 		if err != nil {
-			_ = sl.Close()
-			return nil, err
+			return nil, errors.Join(err, lifecycle.Close(sl))
 		}
 
-		sl.services = append(sl.services, service)
 	}
 
 	return sl, nil
@@ -152,26 +152,15 @@ func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var retErr error
-	for _, lis := range l.services {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	for _, lis := range l.listeners {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	for _, lis := range l.udpListeners {
-		err := lis.Close()
-		if err != nil {
-			retErr = err
-		}
-	}
-	return retErr
+	var errs []error
+	var err error
+	l.services, err = lifecycle.CloseAll(l.services)
+	errs = append(errs, err)
+	l.listeners, err = lifecycle.CloseAll(l.listeners)
+	errs = append(errs, err)
+	l.udpListeners, err = lifecycle.CloseAll(l.udpListeners)
+	errs = append(errs, err)
+	return errors.Join(errs...)
 }
 
 func (l *Listener) Config() string {

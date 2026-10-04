@@ -108,7 +108,15 @@ func (s *Sudoku) Address() string {
 }
 
 // Listen implements constant.InboundListener
-func (s *Sudoku) Listen(tunnel C.Tunnel) error {
+func (s *Sudoku) Listen(tunnel C.Tunnel) (err error) {
+	if len(s.listeners) != 0 {
+		return errors.New("listener is already running")
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, s.Close())
+		}
+	}()
 	if s.serverConf.Key == "" {
 		return fmt.Errorf("sudoku inbound requires key")
 	}
@@ -136,16 +144,9 @@ func (s *Sudoku) Listen(tunnel C.Tunnel) error {
 
 // Close implements constant.InboundListener
 func (s *Sudoku) Close() error {
-	var errs []error
-	for _, l := range s.listeners {
-		if err := l.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	var err error
+	s.listeners, err = closeListeners(s.listeners)
+	return err
 }
 
 var _ C.InboundListener = (*Sudoku)(nil)

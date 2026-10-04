@@ -2,7 +2,6 @@ package inbound
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
@@ -58,7 +57,15 @@ func (h *HTTP) Address() string {
 }
 
 // Listen implements constant.InboundListener
-func (h *HTTP) Listen(tunnel C.Tunnel) error {
+func (h *HTTP) Listen(tunnel C.Tunnel) (err error) {
+	if len(h.l) != 0 {
+		return errors.New("listener is already running")
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, h.Close())
+		}
+	}()
 	lc := h.ListenConfig()
 	for _, addr := range strings.Split(h.RawAddress(), ",") {
 		l, err := http.NewWithConfig(
@@ -88,17 +95,9 @@ func (h *HTTP) Listen(tunnel C.Tunnel) error {
 
 // Close implements constant.InboundListener
 func (h *HTTP) Close() error {
-	var errs []error
-	for _, l := range h.l {
-		err := l.Close()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("close tcp listener %s err: %w", l.Address(), err))
-		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	var err error
+	h.l, err = closeListeners(h.l)
+	return err
 }
 
 var _ C.InboundListener = (*HTTP)(nil)

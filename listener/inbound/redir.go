@@ -2,7 +2,6 @@ package inbound
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
@@ -50,7 +49,15 @@ func (r *Redir) Address() string {
 }
 
 // Listen implements constant.InboundListener
-func (r *Redir) Listen(tunnel C.Tunnel) error {
+func (r *Redir) Listen(tunnel C.Tunnel) (err error) {
+	if len(r.l) != 0 {
+		return errors.New("listener is already running")
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, r.Close())
+		}
+	}()
 	for _, addr := range strings.Split(r.RawAddress(), ",") {
 		l, err := redir.New(addr, tunnel, r.Additions()...)
 		if err != nil {
@@ -64,17 +71,9 @@ func (r *Redir) Listen(tunnel C.Tunnel) error {
 
 // Close implements constant.InboundListener
 func (r *Redir) Close() error {
-	var errs []error
-	for _, l := range r.l {
-		err := l.Close()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("close redir listener %s err: %w", l.Address(), err))
-		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	var err error
+	r.l, err = closeListeners(r.l)
+	return err
 }
 
 var _ C.InboundListener = (*Redir)(nil)

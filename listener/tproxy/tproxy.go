@@ -8,6 +8,7 @@ import (
 	"github.com/metacubex/mihomo/component/keepalive"
 	"github.com/metacubex/mihomo/component/mptcp"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 	"github.com/metacubex/mihomo/transport/socks5"
 )
 
@@ -41,7 +42,7 @@ func (l *Listener) handleTProxy(conn net.Conn, tunnel C.Tunnel, additions ...inb
 	tunnel.HandleTCPConn(inbound.NewSocket(target, conn, C.TPROXY, additions...))
 }
 
-func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-TPROXY"),
@@ -56,6 +57,8 @@ func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener
 	if err != nil {
 		return nil, err
 	}
+
+	defer func() { lifecycle.Rollback(l, &err) }()
 
 	tl := l.(*net.TCPListener)
 	rc, err := tl.SyscallConn()

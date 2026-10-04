@@ -2,7 +2,6 @@ package inbound
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
@@ -54,23 +53,17 @@ func (s *Socks) Config() C.InboundConfig {
 
 // Close implements constant.InboundListener
 func (s *Socks) Close() error {
+	var err error
 	var errs []error
-	for _, l := range s.stl {
-		err := l.Close()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("close tcp listener %s err: %w", l.Address(), err))
-		}
+	s.stl, err = closeListeners(s.stl)
+	if err != nil {
+		errs = append(errs, err)
 	}
-	for _, l := range s.sul {
-		err := l.Close()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("close udp listener %s err: %w", l.Address(), err))
-		}
+	s.sul, err = closeListeners(s.sul)
+	if err != nil {
+		errs = append(errs, err)
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Address implements constant.InboundListener
@@ -83,7 +76,15 @@ func (s *Socks) Address() string {
 }
 
 // Listen implements constant.InboundListener
-func (s *Socks) Listen(tunnel C.Tunnel) error {
+func (s *Socks) Listen(tunnel C.Tunnel) (err error) {
+	if len(s.stl) != 0 || len(s.sul) != 0 {
+		return errors.New("listener is already running")
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, s.Close())
+		}
+	}()
 	lc := s.ListenConfig()
 	for _, addr := range strings.Split(s.RawAddress(), ",") {
 		config := LC.AuthServer{

@@ -88,18 +88,28 @@ func (t *Hysteria2RealmServer) Address() string {
 
 // Listen implements constant.InboundListener
 func (t *Hysteria2RealmServer) Listen(tunnel C.Tunnel) error {
-	var err error
-	t.l, err = hysteria2_realm.New(t.ts, t.ListenConfig(), tunnel, t.Additions()...)
+	if t.l != nil {
+		return errAlreadyListening
+	}
+	next, err := hysteria2_realm.New(t.ts, t.ListenConfig(), tunnel, t.Additions()...)
 	if err != nil {
 		return err
 	}
+	t.l = next
 	log.Infoln("Hysteria2_Realm[%s] proxy listening at: %s", t.Name(), t.Address())
 	return nil
 }
 
 // Close implements constant.InboundListener
 func (t *Hysteria2RealmServer) Close() error {
-	return t.l.Close()
+	if t.l == nil {
+		return nil
+	}
+	if err := closeListener(t.l); err != nil {
+		return err
+	}
+	t.l = nil
+	return nil
 }
 
 var _ C.InboundListener = (*Hysteria2)(nil)

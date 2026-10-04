@@ -103,18 +103,28 @@ func (v *Vmess) Address() string {
 
 // Listen implements constant.InboundListener
 func (v *Vmess) Listen(tunnel C.Tunnel) error {
-	var err error
-	v.l, err = sing_vmess.New(v.vs, v.ListenConfig(), tunnel, v.Additions()...)
+	if v.l != nil {
+		return errAlreadyListening
+	}
+	next, err := sing_vmess.New(v.vs, v.ListenConfig(), tunnel, v.Additions()...)
 	if err != nil {
 		return err
 	}
+	v.l = next
 	log.Infoln("Vmess[%s] proxy listening at: %s", v.Name(), v.Address())
 	return nil
 }
 
 // Close implements constant.InboundListener
 func (v *Vmess) Close() error {
-	return v.l.Close()
+	if v.l == nil {
+		return nil
+	}
+	if err := closeListener(v.l); err != nil {
+		return err
+	}
+	v.l = nil
+	return nil
 }
 
 var _ C.InboundListener = (*Vmess)(nil)

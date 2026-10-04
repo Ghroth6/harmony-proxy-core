@@ -2,6 +2,9 @@ package inbound
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"strconv"
@@ -10,7 +13,34 @@ import (
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/listener/internal/lifecycle"
 )
+
+var errAlreadyListening = errors.New("listener is already running")
+
+func closeListener(l io.Closer) error {
+	return lifecycle.Close(l)
+}
+
+// Keep handles whose Close failed for a later cleanup attempt.
+func closeListeners[T interface {
+	io.Closer
+	Address() string
+}](listeners []T) ([]T, error) {
+	remaining := listeners[:0]
+	var errs []error
+	for _, l := range listeners {
+		if err := closeListener(l); err != nil {
+			remaining = append(remaining, l)
+			errs = append(errs, fmt.Errorf("close listener %s: %w", l.Address(), err))
+		}
+	}
+	var zero T
+	for i := len(remaining); i < len(listeners); i++ {
+		listeners[i] = zero
+	}
+	return remaining, errors.Join(errs...)
+}
 
 type Base struct {
 	config       *BaseOption

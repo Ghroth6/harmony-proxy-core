@@ -87,18 +87,28 @@ func (s *ShadowSocks) Address() string {
 
 // Listen implements constant.InboundListener
 func (s *ShadowSocks) Listen(tunnel C.Tunnel) error {
-	var err error
-	s.l, err = sing_shadowsocks.New(s.ss, s.ListenConfig(), tunnel, s.Additions()...)
+	if s.l != nil {
+		return errAlreadyListening
+	}
+	next, err := sing_shadowsocks.New(s.ss, s.ListenConfig(), tunnel, s.Additions()...)
 	if err != nil {
 		return err
 	}
+	s.l = next
 	log.Infoln("ShadowSocks[%s] proxy listening at: %s", s.Name(), s.Address())
 	return nil
 }
 
 // Close implements constant.InboundListener
 func (s *ShadowSocks) Close() error {
-	return s.l.Close()
+	if s.l == nil {
+		return nil
+	}
+	if err := closeListener(s.l); err != nil {
+		return err
+	}
+	s.l = nil
+	return nil
 }
 
 var _ C.InboundListener = (*ShadowSocks)(nil)

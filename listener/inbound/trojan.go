@@ -110,18 +110,28 @@ func (v *Trojan) Address() string {
 
 // Listen implements constant.InboundListener
 func (v *Trojan) Listen(tunnel C.Tunnel) error {
-	var err error
-	v.l, err = trojan.New(v.vs, v.ListenConfig(), tunnel, v.Additions()...)
+	if v.l != nil {
+		return errAlreadyListening
+	}
+	next, err := trojan.New(v.vs, v.ListenConfig(), tunnel, v.Additions()...)
 	if err != nil {
 		return err
 	}
+	v.l = next
 	log.Infoln("Trojan[%s] proxy listening at: %s", v.Name(), v.Address())
 	return nil
 }
 
 // Close implements constant.InboundListener
 func (v *Trojan) Close() error {
-	return v.l.Close()
+	if v.l == nil {
+		return nil
+	}
+	if err := closeListener(v.l); err != nil {
+		return err
+	}
+	v.l = nil
+	return nil
 }
 
 var _ C.InboundListener = (*Trojan)(nil)
