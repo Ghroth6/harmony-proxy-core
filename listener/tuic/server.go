@@ -11,6 +11,7 @@ import (
 	"github.com/metacubex/mihomo/common/sockopt"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/internal/lifecycle"
@@ -36,6 +37,11 @@ type Listener struct {
 }
 
 func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
+	ctx, finish, err := forwarding.AcquireConstruction(lifecycle.Context(tunnel))
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-TUIC"),
@@ -136,7 +142,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 		//}
 		//conn, metadata := inbound.NewSocket(addr, conn, C.TUIC, newAdditions...)
 		//go tunnel.HandleTCPConn(conn, metadata)
-		go h.HandleSocket(addr, conn, _additions...) // h.HandleSocket will block, so open a new goroutine
+		h.HandleSocket(addr, conn, _additions...) // transport owns and joins this stream handler
 		return nil
 	}
 	handleUdpFn := func(addr socks5.Addr, packet C.UDPPacket, _additions ...inbound.Addition) error {
@@ -150,6 +156,8 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 	}
 
 	option := &tuic.ServerOption{
+		Context:               ctx,
+		AsyncTCP:              true,
 		HandleTcpFn:           handleTcpFn,
 		HandleUdpFn:           handleUdpFn,
 		TlsConfig:             tlsConfig,
@@ -208,6 +216,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 				}
 			}
 		}()
+		forwarding.Cleanup(ctx, server.Close)
 	}
 
 	return sl, nil

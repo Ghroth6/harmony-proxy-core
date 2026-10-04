@@ -12,6 +12,7 @@ import (
 	"github.com/metacubex/mihomo/common/sockopt"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/inner"
@@ -37,6 +38,11 @@ type Listener struct {
 }
 
 func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
+	ctx, finish, err := forwarding.AcquireConstruction(lifecycle.Context(tunnel))
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	if strings.TrimSpace(config.JLSUpstream.Addr) == "" {
 		return nil, errors.New("shadowquic: jls-upstream.addr is required")
 	}
@@ -140,7 +146,7 @@ func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, 
 		quicConfig.MaxConnectionReceiveWindow = tuic.DefaultConnectionReceiveWindow
 	}
 	handleTcpFn := func(conn net.Conn, addr socks5.Addr, _additions ...inbound.Addition) error {
-		go h.HandleSocket(addr, conn, _additions...)
+		h.HandleSocket(addr, conn, _additions...)
 		return nil
 	}
 	handleUdpFn := func(addr socks5.Addr, packet C.UDPPacket, _additions ...inbound.Addition) error {
@@ -153,6 +159,7 @@ func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, 
 	}
 
 	option := &shadowquic.ServerOption{
+		Context:               ctx,
 		HandleTcpFn:           handleTcpFn,
 		HandleUdpFn:           handleUdpFn,
 		TLSConfig:             tlsConfig,
@@ -193,6 +200,7 @@ func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, 
 				log.Warnln("ShadowQuic server closed: %s", err)
 			}
 		}()
+		forwarding.Cleanup(ctx, server.Close)
 	}
 	return sl, nil
 }

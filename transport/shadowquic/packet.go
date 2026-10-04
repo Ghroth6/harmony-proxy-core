@@ -48,11 +48,11 @@ func newAssociation(parent *connState, control *quic.Stream, mode udpMode) *asso
 		readDeadline:  deadline.MakePipeDeadline(),
 		writeDeadline: deadline.MakePipeDeadline(),
 	}
-	go a.readControl()
-	go func() {
+	parent.goTask(a.readControl)
+	parent.goTask(func() {
 		<-parent.ctx.Done()
 		_ = a.Close()
-	}()
+	})
 	return a
 }
 

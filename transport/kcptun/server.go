@@ -1,33 +1,60 @@
 package kcptun
 
 import (
+	"context"
+	"errors"
+	"io"
 	"net"
+	"sync"
 	"time"
+
+	"github.com/metacubex/mihomo/transport/internal/session"
 
 	"github.com/metacubex/kcp-go"
 	"github.com/metacubex/smux"
 )
 
 type Server struct {
-	config Config
-	block  kcp.BlockCrypt
+	config    Config
+	block     kcp.BlockCrypt
+	mu        sync.Mutex
+	closeMu   sync.Mutex
+	closed    bool
+	listeners []*kcp.Listener
+	serveWG   sync.WaitGroup
+	sessions  *session.Group
 }
 
 func NewServer(config Config) *Server {
+	return NewServerContext(context.Background(), config)
+}
+
+func NewServerContext(ctx context.Context, config Config) *Server {
 	config.FillDefaults()
 	block := config.NewBlock()
 
 	return &Server{
-		config: config,
-		block:  block,
+		config:   config,
+		block:    block,
+		sessions: session.New(ctx),
 	}
 }
 
 func (s *Server) Serve(pc net.PacketConn, handler func(net.Conn)) error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return net.ErrClosed
+	}
 	lis, err := kcp.ServeConn(s.block, s.config.DataShard, s.config.ParityShard, pc)
 	if err != nil {
+		s.mu.Unlock()
 		return err
 	}
+	s.listeners = append(s.listeners, lis)
+	s.serveWG.Add(1)
+	s.mu.Unlock()
+	defer s.serveWG.Done()
 	defer lis.Close()
 	_ = lis.SetDSCP(s.config.DSCP)
 	_ = lis.SetReadBuffer(s.config.SockBuf)
@@ -36,6 +63,16 @@ func (s *Server) Serve(pc net.PacketConn, handler func(net.Conn)) error {
 		conn, err := lis.AcceptKCP()
 		if err != nil {
 			return err
+		}
+		owned, err := s.sessions.Begin(func() error {
+			err := conn.Close()
+			if errors.Is(err, io.ErrClosedPipe) {
+				return nil
+			}
+			return err
+		})
+		if err != nil {
+			continue
 		}
 		conn.SetStreamMode(true)
 		conn.SetWriteDelay(false)
@@ -50,7 +87,7 @@ func (s *Server) Serve(pc net.PacketConn, handler func(net.Conn)) error {
 			netConn = NewCompStream(netConn)
 		}
 
-		go func() {
+		owned.Run(func() {
 			// stream multiplex
 			smuxConfig := smux.DefaultConfig()
 			smuxConfig.Version = s.config.SmuxVer
@@ -74,9 +111,26 @@ func (s *Server) Serve(pc net.PacketConn, handler func(net.Conn)) error {
 				if err != nil {
 					return
 				}
-				go handler(stream)
+				owned.Go(func() { handler(stream) })
 			}
-		}()
+		})
 
 	}
+}
+
+func (s *Server) Close() error {
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	s.mu.Lock()
+	s.closed = true
+	listeners := append([]*kcp.Listener{}, s.listeners...)
+	s.mu.Unlock()
+	var errs []error
+	for _, l := range listeners {
+		if err := l.Close(); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+			errs = append(errs, err)
+		}
+	}
+	s.serveWG.Wait()
+	return errors.Join(append(errs, s.sessions.Close())...)
 }

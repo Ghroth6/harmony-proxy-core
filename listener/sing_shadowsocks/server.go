@@ -41,11 +41,17 @@ type Listener struct {
 	udpListeners []net.PacketConn
 	service      shadowsocks.Service
 	simpleObfs   func(net.Conn) net.Conn
+	kcptun       *kcptun.Server
 }
 
 var _listener *Listener
 
 func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ C.MultiAddrListener, err error) {
+	ctx, finish, err := forwarding.AcquireConstruction(lifecycle.Context(tunnel))
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	lc = forwarding.WrapListenConfig(lc)
 	var sl *Listener
 	if len(additions) == 0 {
@@ -142,7 +148,9 @@ func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 
 	var kcptunServer *kcptun.Server
 	if config.KcpTun.Enable {
-		kcptunServer = kcptun.NewServer(config.KcpTun.Config)
+		kcptunServer = kcptun.NewServerContext(ctx, config.KcpTun.Config)
+		sl.kcptun = kcptunServer
+		forwarding.Cleanup(ctx, kcptunServer.Close)
 		config.Udp = true
 	}
 
@@ -246,6 +254,9 @@ func (l *Listener) Close() error {
 	l.closed = true
 	var errs []error
 	var err error
+	if l.kcptun != nil {
+		errs = append(errs, l.kcptun.Close())
+	}
 	l.listeners, err = lifecycle.CloseAll(l.listeners)
 	errs = append(errs, err)
 	l.udpListeners, err = lifecycle.CloseAll(l.udpListeners)

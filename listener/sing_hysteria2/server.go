@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -15,6 +16,7 @@ import (
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -28,6 +30,7 @@ import (
 	"github.com/metacubex/http"
 	"github.com/metacubex/http/httputil"
 	"github.com/metacubex/quic-go"
+	"github.com/metacubex/quic-go/qlogwriter"
 	"github.com/metacubex/sing-quic/hysteria2"
 	"github.com/metacubex/sing-quic/hysteria2/realm"
 	E "github.com/metacubex/sing/common/exceptions"
@@ -39,9 +42,24 @@ type Listener struct {
 	config       LC.Hysteria2Server
 	udpListeners []net.PacketConn
 	services     []*hysteria2.Service[string]
+	closeMu      sync.Mutex
+	sessionMu    sync.Mutex
+	sessions     sync.WaitGroup
+	cancel       context.CancelFunc
 }
 
 func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
+	ctx, finish, err := forwarding.AcquireConstruction(lifecycle.Context(tunnel))
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	ctx, cancel := context.WithCancel(ctx)
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+	}()
 	var sl *Listener
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
@@ -60,7 +78,7 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 		return nil, err
 	}
 
-	sl = &Listener{false, config, nil, nil}
+	sl = &Listener{config: config, cancel: cancel}
 	defer lifecycle.Rollback(sl, &err)
 
 	tlsConfig := &tls.Config{
@@ -148,7 +166,7 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 					TLSHandshakeTimeout:   10 * time.Second,
 					ExpectContinueTimeout: 1 * time.Second,
 					DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-						return inner.HandleTcp(tunnel, address, "")
+						return inner.HandleTcpContext(ctx, tunnel, address, "")
 					},
 				},
 			}
@@ -179,7 +197,7 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 			STUNServers: config.RealmOpts.STUNServers,
 			HTTPClient: &http.Client{Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-					return inner.HandleTcp(tunnel, address, config.RealmOpts.Proxy)
+					return inner.HandleTcpContext(ctx, tunnel, address, config.RealmOpts.Proxy)
 				},
 				TLSClientConfig: httpTLSClientConfig,
 				// from http.DefaultTransport
@@ -213,9 +231,33 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 		InitialConnectionReceiveWindow: config.InitialConnectionReceiveWindow,
 		MaxConnectionReceiveWindow:     config.MaxConnectionReceiveWindow,
 	}
+	quicConfig.GetConfigForClient = func(*quic.ClientInfo) (*quic.Config, error) {
+		// Register before returning the per-connection config. Close excludes
+		// later registrations under the same mutex, so it cannot miss a QUIC
+		// handshake which has not reached the Tracer hook yet.
+		sl.sessionMu.Lock()
+		if sl.closed {
+			sl.sessionMu.Unlock()
+			return nil, net.ErrClosed
+		}
+		_, done, err := forwarding.Acquire(ctx)
+		if err != nil {
+			sl.sessionMu.Unlock()
+			return nil, err
+		}
+		sl.sessions.Add(1)
+		sl.sessionMu.Unlock()
+		connConfig := quicConfig.Clone()
+		connConfig.GetConfigForClient = nil
+		connConfig.Tracer = func(connCtx context.Context, _ bool, _ quic.ConnectionID) qlogwriter.Trace {
+			context.AfterFunc(connCtx, func() { sl.sessions.Done(); done() })
+			return nil // Observe lifecycle only; no qlog payload collection.
+		}
+		return connConfig, nil
+	}
 
 	service, err := hysteria2.NewService[string](hysteria2.ServiceOptions{
-		Context:               context.Background(),
+		Context:               ctx,
 		Logger:                log.SingLogger,
 		SendBPS:               utils.StringToBps(config.Up),
 		ReceiveBPS:            utils.StringToBps(config.Down),
@@ -268,17 +310,30 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 			return nil, err
 		}
 	}
+	forwarding.Cleanup(ctx, sl.Close)
 
 	return sl, nil
 }
 
 func (l *Listener) Close() error {
+	l.closeMu.Lock()
+	defer l.closeMu.Unlock()
+	l.sessionMu.Lock()
 	l.closed = true
+	l.sessionMu.Unlock()
+	if l.cancel != nil {
+		l.cancel()
+	}
 	var errs []error
 	var err error
-	l.services, err = lifecycle.CloseAll(l.services)
-	errs = append(errs, err)
+	// The pinned quic-go Listener.Close only ends admission. Closing the UDP
+	// transport first makes its read loop destroy every accepted connection;
+	// wait for their real contexts before closing the service listener. Doing
+	// this in the opposite order can leave unauthenticated sessions alive.
 	l.udpListeners, err = lifecycle.CloseAll(l.udpListeners)
+	errs = append(errs, err)
+	l.sessions.Wait()
+	l.services, err = lifecycle.CloseAll(l.services)
 	errs = append(errs, err)
 	return errors.Join(errs...)
 }

@@ -184,6 +184,17 @@ func Generation(ctx context.Context) uint64 {
 // Descendants inherit the original owner, never whichever run happens to be
 // current when a delayed dial returns.
 func Acquire(ctx context.Context) (context.Context, func(), error) {
+	return acquire(ctx, false)
+}
+
+// AcquireConstruction holds the generation open while a listener constructor
+// registers its resources. It permits a prepared run, never a stopped run;
+// protocol request admission must continue to use Acquire.
+func AcquireConstruction(ctx context.Context) (context.Context, func(), error) {
+	return acquire(ctx, true)
+}
+
+func acquire(ctx context.Context, allowPrepared bool) (context.Context, func(), error) {
 	if ctx == nil {
 		lifecycle.Lock()
 		if !lifecycle.enabled {
@@ -205,7 +216,7 @@ func Acquire(ctx context.Context) (context.Context, func(), error) {
 		return ctx, func() {}, nil
 	}
 	r.mu.Lock()
-	if r.stopped || !r.active {
+	if r.stopped || (!r.active && !allowPrepared) {
 		r.mu.Unlock()
 		return nil, nil, ErrStopped
 	}
@@ -247,7 +258,7 @@ type closeFunc func() error
 func (f closeFunc) Close() error { return f() }
 
 // Cleanup retains a connection's accounting cleanup alongside its descriptor.
-// Callers must hold an Acquire lease while registering it.
+// Callers must hold an Acquire or AcquireConstruction lease while registering it.
 func Cleanup(ctx context.Context, close func() error) func() error {
 	if owner(ctx) == nil {
 		return close

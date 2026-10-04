@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	N "github.com/metacubex/mihomo/common/net"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/internal/session"
 	"github.com/metacubex/mihomo/transport/socks5"
 
 	"github.com/metacubex/jls-quic-go"
@@ -16,6 +18,7 @@ import (
 )
 
 type ServerOption struct {
+	Context     context.Context
 	HandleTcpFn func(conn net.Conn, addr socks5.Addr, additions ...inbound.Addition) error
 	HandleUdpFn func(addr socks5.Addr, packet C.UDPPacket, additions ...inbound.Addition) error
 
@@ -33,6 +36,10 @@ type ServerOption struct {
 type Server struct {
 	option   *ServerOption
 	listener *quic.EarlyListener
+	mu       sync.Mutex
+	closed   bool
+	serveWG  sync.WaitGroup
+	sessions *session.Group
 }
 
 func NewServer(option *ServerOption, pc net.PacketConn) (*Server, error) {
@@ -40,24 +47,43 @@ func NewServer(option *ServerOption, pc net.PacketConn) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{option: option, listener: listener}, nil
+	return &Server{option: option, listener: listener, sessions: session.New(option.Context)}, nil
 }
 
 func (s *Server) Serve() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return net.ErrClosed
+	}
+	s.serveWG.Add(1)
+	s.mu.Unlock()
+	defer s.serveWG.Done()
 	for {
 		conn, err := s.listener.Accept(context.Background())
 		if err != nil {
 			return err
 		}
+		owned, err := s.sessions.Begin(func() error { return conn.CloseWithError(0, "server stopped") })
+		if err != nil {
+			continue
+		}
 		// Application streams may arrive before Brutal negotiation completes.
 		SetCongestionController(conn, s.option.CongestionController, s.option.CWND, s.option.BBRProfile)
-		state := newConnState(conn)
-		go s.handleConnection(state)
+		owned.Run(func() {
+			state := newConnState(conn, owned)
+			s.handleConnection(state)
+		})
 	}
 }
 
 func (s *Server) Close() error {
-	return s.listener.Close()
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	err := s.listener.Close()
+	s.serveWG.Wait()
+	return errors.Join(err, s.sessions.Close())
 }
 
 func (s *Server) handleConnection(state *connState) {
@@ -67,7 +93,7 @@ func (s *Server) handleConnection(state *connState) {
 			state.cancel()
 			return
 		}
-		go s.handleStream(state, stream)
+		state.goTask(func() { s.handleStream(state, stream) })
 	}
 }
 
@@ -106,7 +132,7 @@ func (s *Server) handleStream(state *connState, stream *quic.Stream) {
 			mode = udpModeStream
 		}
 		assoc := newAssociation(state, stream, mode)
-		go s.handleAssociation(assoc)
+		state.goTask(func() { s.handleAssociation(assoc) })
 	case CommandExtension:
 		s.handleExtension(state, conn)
 	case CommandBind, CommandAuthenticate:

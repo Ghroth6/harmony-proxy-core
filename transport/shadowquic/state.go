@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/metacubex/mihomo/transport/internal/session"
 	"github.com/metacubex/mihomo/transport/socks5"
 
 	"github.com/metacubex/jls-quic-go"
@@ -30,6 +31,7 @@ type connState struct {
 	quicConn *quic.Conn
 	ctx      context.Context
 	cancel   context.CancelFunc
+	session  *session.Session
 
 	mu         sync.Mutex
 	nextID     uint16
@@ -49,7 +51,7 @@ type recvTarget struct {
 	net   net.Addr
 }
 
-func newConnState(quicConn *quic.Conn) *connState {
+func newConnState(quicConn *quic.Conn, sessions ...*session.Session) *connState {
 	ctx, cancel := context.WithCancel(quicConn.Context())
 	state := &connState{
 		quicConn:   quicConn,
@@ -58,13 +60,24 @@ func newConnState(quicConn *quic.Conn) *connState {
 		activeSend: make(map[uint16]struct{}),
 		recv:       make(map[uint16]*recvSlot),
 	}
-	go state.handleDatagrams()
-	go state.handleUniStreams()
-	go func() {
+	if len(sessions) > 0 {
+		state.session = sessions[0]
+	}
+	state.goTask(state.handleDatagrams)
+	state.goTask(state.handleUniStreams)
+	state.goTask(func() {
 		<-quicConn.Context().Done()
 		cancel()
-	}()
+	})
 	return state
+}
+
+func (s *connState) goTask(f func()) {
+	if s.session != nil {
+		s.session.Go(f)
+	} else {
+		go f()
+	}
 }
 
 func (s *connState) closed() bool {
@@ -103,7 +116,7 @@ func (s *connState) handleUniStreams() {
 			s.cancel()
 			return
 		}
-		go s.handleUniStream(stream)
+		s.goTask(func() { s.handleUniStream(stream) })
 	}
 }
 
