@@ -14,6 +14,7 @@ import (
 
 	"github.com/metacubex/mihomo/common/contextutils"
 	"github.com/metacubex/mihomo/common/httputils"
+	"github.com/metacubex/mihomo/component/forwarding"
 
 	"github.com/metacubex/http"
 	"github.com/metacubex/http/httptrace"
@@ -170,12 +171,16 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 				MaxIdleTimeout:     ConnIdleTimeout,
 			},
 			Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+				ctx, release := forwarding.SharedDialContext(ctx)
+				defer release()
 				return dialQUIC(ctx, cfg)
 			},
 		}
 	}
 	if len(alpn) == 1 && alpn[0] == "http/1.1" { // `alpn: [http/1.1]` means using http/1.1 mode
 		dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
+			ctx, release := forwarding.SharedDialContext(ctx)
+			defer release()
 			raw, err := dialRaw(ctx)
 			if err != nil {
 				return nil, err
@@ -209,6 +214,8 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 	protocols.SetUnencryptedHTTP2(true)
 	return &http.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			ctx, release := forwarding.SharedDialContext(ctx)
+			defer release()
 			raw, err := dialRaw(ctx)
 			if err != nil {
 				return nil, err

@@ -12,6 +12,7 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
@@ -220,7 +221,7 @@ func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 		UDPDisabled:        false,
 		UdpMTU:             option.UdpMTU,
 		ServerAddress:      M.ParseSocksaddr(addr),
-		PacketListener:     outbound.dialer,
+		PacketListener:     forwarding.SharedDialer(outbound.dialer),
 		QuicDialer: qtls.QuicDialerFunc(func(ctx context.Context, addr string, dialer qtls.PacketDialer, tlsCfg *tls.Config, cfg *quic.Config, early bool) (net.PacketConn, *quic.Conn, error) {
 			err := echConfig.ClientHandle(ctx, tlsCfg)
 			if err != nil {
@@ -289,7 +290,7 @@ func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 			STUNServers: option.RealmOpts.STUNServers,
 			HTTPClient: &http.Client{
 				Transport: &http.Transport{
-					DialContext:     outbound.dialer.DialContext,
+					DialContext:     forwarding.SharedDialer(outbound.dialer).DialContext,
 					TLSClientConfig: httpTLSClientConfig,
 					// from http.DefaultTransport
 					ForceAttemptHTTP2:     true,

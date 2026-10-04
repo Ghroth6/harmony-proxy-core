@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/jls-quic-go"
@@ -49,6 +50,8 @@ func (c *Client) getConn(ctx context.Context) (*connState, error) {
 	if c.option == nil || c.option.Dial == nil {
 		return nil, errors.New("shadowquic: dial function is nil")
 	}
+	ctx, release := forwarding.SharedDialContext(ctx)
+	defer release()
 	quicConn, err := c.option.Dial(ctx)
 	if err != nil {
 		return nil, err

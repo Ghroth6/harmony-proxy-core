@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/metacubex/kcp-go"
@@ -53,6 +54,8 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) createConn(ctx context.Context, dial DialFn) (*smux.Session, error) {
+	ctx, release := forwarding.SharedDialContext(ctx)
+	defer release()
 	conn, addr, err := dial(ctx)
 	if err != nil {
 		return nil, err

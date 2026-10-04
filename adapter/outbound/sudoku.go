@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/sudoku"
 	"github.com/metacubex/mihomo/transport/sudoku/obfs/httpmask"
@@ -247,6 +248,8 @@ func NewSudoku(option SudokuOption) (*Sudoku, error) {
 	if baseConf.SessionMuxEnabled() {
 		outbound.muxDialer, err = sudoku.NewMultiplexDialer(func(ctx context.Context) (net.Conn, error) {
 			cfg := outbound.baseConf
+			ctx, release := forwarding.SharedDialContext(ctx)
+			defer release()
 			return outbound.dialAndHandshake(ctx, &cfg)
 		})
 		if err != nil {
@@ -302,7 +305,7 @@ func (s *Sudoku) dialAndHandshake(ctx context.Context, cfg *sudoku.ProtocolConfi
 					PathRoot:     cfg.HTTPMaskPathRoot,
 					AuthKey:      sudoku.ClientAEADSeed(cfg.Key),
 					Upgrade:      upgrade,
-					DialContext:  s.dialer.DialContext,
+					DialContext:  forwarding.SharedDialer(s.dialer).DialContext,
 				})
 				if err != nil {
 					s.resetHTTPMaskClient()

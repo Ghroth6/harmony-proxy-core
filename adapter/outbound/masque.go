@@ -18,6 +18,7 @@ import (
 	"github.com/metacubex/mihomo/common/contextutils"
 	"github.com/metacubex/mihomo/common/pool"
 	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/dns"
@@ -188,6 +189,8 @@ func NewMasque(option MasqueOption) (*Masque, error) {
 		protocols.SetUnencryptedHTTP2(true)
 		outbound.h2Transport = &http.Transport{
 			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				ctx, release := forwarding.SharedDialContext(ctx)
+				defer release()
 				c, err := outbound.dialer.DialContext(ctx, "tcp", outbound.addr)
 				if err != nil {
 					return nil, err
@@ -267,6 +270,8 @@ func NewMasque(option MasqueOption) (*Masque, error) {
 }
 
 func (w *Masque) dialQuic(ctx context.Context) (net.PacketConn, *quic.Conn, error) {
+	ctx, release := forwarding.SharedDialContext(ctx)
+	defer release()
 	// without ConnectionIDLength set, backend occasionally throws PROTOCOL_VIOLATION and that closes our connection
 	pc, quicConn, err := common.DialQuic(ctx, w.addr, w.DialOptions(), w.dialer, w.tlsConfig, w.quicConfig, common.DialQuicOption{ConnectionIDLength: 20})
 	if err != nil {

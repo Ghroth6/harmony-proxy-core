@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/transport/anytls/padding"
 	"github.com/metacubex/mihomo/transport/anytls/skiplist"
 	"github.com/metacubex/mihomo/transport/anytls/util"
@@ -123,6 +124,8 @@ func (c *Client) getIdleSession() (idle *Session) {
 }
 
 func (c *Client) createSession(ctx context.Context) (*Session, error) {
+	ctx, release := forwarding.SharedDialContext(ctx)
+	defer release()
 	underlying, err := c.dialOut(ctx)
 	if err != nil {
 		return nil, err

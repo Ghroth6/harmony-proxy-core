@@ -5,6 +5,7 @@ import (
 
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/proxydialer"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
@@ -95,7 +96,7 @@ func NewSingMux(option SingMuxOption, proxy ProxyAdapter) (ProxyAdapter, error) 
 	// TODO
 	// "TCP Brutal is only supported on Linux-based systems"
 
-	singDialer := proxydialer.NewSingDialer(proxydialer.New(proxy, option.Statistic))
+	singDialer := proxydialer.NewSingDialer(forwarding.SharedDialer(proxydialer.New(proxy, option.Statistic)))
 	client, err := mux.NewClient(mux.Options{
 		Dialer:         singDialer,
 		Logger:         log.SingLogger,

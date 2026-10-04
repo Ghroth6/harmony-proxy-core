@@ -15,6 +15,7 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/pool"
 	"github.com/metacubex/mihomo/common/xsync"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/tuic/types"
@@ -66,6 +67,8 @@ func (t *clientImpl) getQuicConn(ctx context.Context) (*quic.Conn, error) {
 	if t.quicConn != nil {
 		return t.quicConn, nil
 	}
+	ctx, release := forwarding.SharedDialContext(ctx)
+	defer release()
 	quicConn, err := t.dialFn(ctx)
 	if err != nil {
 		return nil, err

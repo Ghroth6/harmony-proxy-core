@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/randv2"
@@ -60,6 +61,8 @@ func (s *Ssh) connect(ctx context.Context, addr string) (client *ssh.Client, err
 	if s.client != nil {
 		return s.client, nil
 	}
+	ctx, release := forwarding.SharedDialContext(ctx)
+	defer release()
 	c, err := s.dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err

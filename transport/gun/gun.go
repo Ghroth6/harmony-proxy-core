@@ -19,6 +19,7 @@ import (
 	"github.com/metacubex/mihomo/common/buf"
 	"github.com/metacubex/mihomo/common/httputils"
 	"github.com/metacubex/mihomo/common/pool"
+	"github.com/metacubex/mihomo/component/forwarding"
 	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/vmess"
@@ -264,6 +265,8 @@ func NewTransport(dialFn DialFn, tlsConfig *vmess.TLSConfig, gunCfg *Config) *Tr
 	dialFunc := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(ctx, C.DefaultTLSTimeout)
 		defer cancel()
+		ctx, release := forwarding.SharedDialContext(ctx)
+		defer release()
 		pconn, err := dialFn(ctx, network, addr)
 		if err != nil {
 			return nil, err

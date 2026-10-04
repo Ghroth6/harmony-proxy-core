@@ -15,6 +15,7 @@ import (
 	"github.com/metacubex/mihomo/common/httputils"
 	"github.com/metacubex/mihomo/common/once"
 	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/vmess"
 
@@ -58,7 +59,7 @@ type Client struct {
 func NewClient(ctx context.Context, options ClientOptions) (client *Client, err error) {
 	client = &Client{
 		ctx:         ctx,
-		dialer:      options.Dialer,
+		dialer:      forwarding.SharedDialer(options.Dialer),
 		dialOptions: options.DialOptions,
 		server:      options.Server,
 		auth:        buildAuth(options.Username, options.Password),

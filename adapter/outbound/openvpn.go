@@ -12,6 +12,7 @@ import (
 
 	"github.com/metacubex/mihomo/common/contextutils"
 	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/dns"
@@ -314,6 +315,8 @@ func (o *OpenVPN) run(ctx context.Context) (ipStack, resolver.Resolver, error) {
 }
 
 func (o *OpenVPN) startLocked(handshakeCtx context.Context) (ipStack, resolver.Resolver, error) {
+	handshakeCtx, release := forwarding.SharedDialContext(handshakeCtx)
+	defer release()
 	packetIO, err := o.openPacketIO(handshakeCtx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect OpenVPN server: %w", err)
