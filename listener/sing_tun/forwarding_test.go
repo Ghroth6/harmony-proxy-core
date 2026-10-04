@@ -270,6 +270,19 @@ func (c *sharedDNSClient) ExchangeContext(ctx context.Context, q *D.Msg) (*D.Msg
 	}
 }
 
+type dnsWaitContext struct {
+	context.Context
+	joined chan struct{}
+	once   sync.Once
+}
+
+func (c *dnsWaitContext) Done() <-chan struct{} {
+	// ExchangeContext checks Done only after registering its singleflight
+	// waiter. Do not release the upstream result before that registration.
+	c.once.Do(func() { close(c.joined) })
+	return c.Context.Done()
+}
+
 func TestTUNIngressStopPreservesSharedManagementDNSQuery(t *testing.T) {
 	h := tunTestHandler(t, true)
 	release, finish := releaseOnce(t)
@@ -280,7 +293,9 @@ func TestTUNIngressStopPreservesSharedManagementDNSQuery(t *testing.T) {
 	h.NewPacket(context.Background(), netip.AddrPort{}, queryBuffer(t), dnsMetadata(), func(N.PacketConn) N.PacketWriter { return writer })
 	<-client.entered
 	management := make(chan error, 1)
-	go func() { _, err := r.ExchangeContext(context.Background(), dnsQuestion()); management <- err }()
+	managementCtx := &dnsWaitContext{Context: context.Background(), joined: make(chan struct{})}
+	go func() { _, err := r.ExchangeContext(managementCtx, dnsQuestion()); management <- err }()
+	<-managementCtx.joined
 	if err := forwarding.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}

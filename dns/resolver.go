@@ -159,7 +159,11 @@ func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, e
 	continueFetch := false
 	sharedCtx := forwarding.SharedManagementNetworkContext(ctx)
 	defer func() {
-		if continueFetch || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		// A cancelled waiter has already joined an independently owned worker;
+		// exchangeWithoutCache keeps it running (and monitors its retry) to fill
+		// the cache. Starting another refresh here can duplicate a successful
+		// query if this goroutine runs after that worker leaves singleflight.
+		if continueFetch {
 			go func() {
 				ctx, cancel := context.WithTimeout(sharedCtx, resolver.DefaultDNSTimeout)
 				defer cancel()
