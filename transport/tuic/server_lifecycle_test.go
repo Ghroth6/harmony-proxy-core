@@ -1,4 +1,4 @@
-package tuic
+package tuic_test
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/socks5"
+	"github.com/metacubex/mihomo/transport/tuic"
 	v4 "github.com/metacubex/mihomo/transport/tuic/v4"
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/tls"
@@ -19,10 +20,11 @@ import (
 
 func TestTUICSessionStopWaitsForAcceptedHandler(t *testing.T) {
 	forwarding.Enable()
-	if err := forwarding.Start(context.Background(), 1); err != nil {
+	generation := forwardingGeneration.Add(1)
+	if err := forwarding.Start(context.Background(), generation); err != nil {
 		t.Fatal(err)
 	}
-	scope, _ := forwarding.Context(1)
+	scope, _ := forwarding.Context(generation)
 	certPEM, keyPEM, _, err := ca.NewRandomTLSKeyPair(ca.KeyPairTypeP256)
 	if err != nil {
 		t.Fatal(err)
@@ -37,9 +39,9 @@ func TestTUICSessionStopWaitsForAcceptedHandler(t *testing.T) {
 	}
 	defer p.Close()
 	entered, release := make(chan struct{}), make(chan struct{})
-	server, err := NewServer(&ServerOption{Context: scope, AsyncTCP: true,
+	server, err := tuic.NewServer(&tuic.ServerOption{Context: scope, AsyncTCP: true,
 		TlsConfig:  &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"h3"}},
-		QuicConfig: &quic.Config{EnableDatagrams: true}, Tokens: [][32]byte{GenTKN("lifecycle")},
+		QuicConfig: &quic.Config{EnableDatagrams: true}, Tokens: [][32]byte{tuic.GenTKN("lifecycle")},
 		AuthenticationTimeout: time.Second, MaxUdpRelayPacketSize: 1200,
 		HandleTcpFn: func(conn net.Conn, _ socks5.Addr, _ ...inbound.Addition) error {
 			close(entered)
@@ -57,7 +59,7 @@ func TestTUICSessionStopWaitsForAcceptedHandler(t *testing.T) {
 	}
 	forwarding.Cleanup(scope, server.Close)
 	finish()
-	client := v4.NewClient(&v4.ClientOption{Token: GenTKN("lifecycle"), RequestTimeout: time.Second, MaxOpenStreams: 10}, false,
+	client := v4.NewClient(&v4.ClientOption{Token: tuic.GenTKN("lifecycle"), RequestTimeout: time.Second, MaxOpenStreams: 10}, false,
 		func(ctx context.Context) (*quic.Conn, error) {
 			return quic.DialAddrEarly(ctx, p.LocalAddr().String(), &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"h3"}}, &quic.Config{EnableDatagrams: true})
 		})
@@ -98,7 +100,7 @@ func TestTUICSessionStopWaitsForAcceptedHandler(t *testing.T) {
 	if err := forwarding.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := forwarding.Prepare(context.Background(), 2); err != nil {
+	if err := forwarding.Prepare(context.Background(), forwardingGeneration.Add(1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := forwarding.Stop(ctx); err != nil {
