@@ -1,10 +1,11 @@
 package listener
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -22,8 +23,6 @@ import (
 	"github.com/metacubex/mihomo/listener/tuic"
 	LT "github.com/metacubex/mihomo/listener/tunnel"
 	"github.com/metacubex/mihomo/log"
-
-	"github.com/samber/lo"
 )
 
 var (
@@ -42,6 +41,7 @@ var (
 	tunnelTCPListeners  = map[string]*LT.Listener{}
 	tunnelUDPListeners  = map[string]*LT.PacketConn{}
 	inboundListeners    = map[string]C.InboundListener{}
+	inboundPendingClose = map[string]C.InboundListener{}
 	tunLister           *sing_tun.Listener
 	shadowSocksListener C.MultiAddrListener
 	vmessListener       *sing_vmess.Listener
@@ -104,395 +104,174 @@ func SetBindAddress(host string) {
 	bindAddress = host
 }
 
-func ReCreateHTTP(port int, tunnel C.Tunnel) {
+// ReCreateHTTP replaces the HTTP entrypoint and reports its actual bind/close result.
+func ReCreateHTTP(port int, tunnel C.Tunnel) (err error) {
 	httpMux.Lock()
 	defer httpMux.Unlock()
-
-	var err error
-	defer func() {
-		if err != nil {
-			log.Errorln("Start HTTP server error: %s", err.Error())
-		}
-	}()
-
+	defer logListenerError("HTTP", &err)
 	addr := genAddr(bindAddress, port, allowLan)
-
-	if httpListener != nil {
-		if httpListener.RawAddress() == addr {
-			return
-		}
-		httpListener.Close()
-		httpListener = nil
+	if httpListener != nil && httpListener.RawAddress() == addr {
+		return nil
 	}
-
+	if err = closeAndClear(&httpListener); err != nil {
+		return err
+	}
 	if portIsZero(addr) {
-		return
+		return nil
 	}
-
-	httpListener, err = http.New(addr, tunnel)
+	next, err := http.New(addr, tunnel)
 	if err != nil {
-		log.Errorln("Start HTTP server error: %s", err.Error())
-		return
+		return err
 	}
-
+	httpListener = next
 	log.Infoln("HTTP proxy listening at: %s", httpListener.Address())
+	return nil
 }
 
-func ReCreateSocks(port int, tunnel C.Tunnel) {
+func ReCreateSocks(port int, tunnel C.Tunnel) (err error) {
 	socksMux.Lock()
 	defer socksMux.Unlock()
-
-	var err error
-	defer func() {
-		if err != nil {
-			log.Errorln("Start SOCKS server error: %s", err.Error())
-		}
-	}()
-
+	defer logListenerError("SOCKS", &err)
 	addr := genAddr(bindAddress, port, allowLan)
-
-	shouldTCPIgnore := false
-	shouldUDPIgnore := false
-
-	if socksListener != nil {
-		if socksListener.RawAddress() != addr {
-			socksListener.Close()
-			socksListener = nil
-		} else {
-			shouldTCPIgnore = true
-		}
+	err = recreatePair(&socksListener, &socksUDPListener, addr,
+		func() (*socks.Listener, error) { return socks.New(addr, tunnel) },
+		func() (*socks.UDPListener, error) { return socks.NewUDP(addr, tunnel) })
+	if err == nil && socksListener != nil {
+		log.Infoln("SOCKS proxy listening at: %s", socksListener.Address())
 	}
-
-	if socksUDPListener != nil {
-		if socksUDPListener.RawAddress() != addr {
-			socksUDPListener.Close()
-			socksUDPListener = nil
-		} else {
-			shouldUDPIgnore = true
-		}
-	}
-
-	if shouldTCPIgnore && shouldUDPIgnore {
-		return
-	}
-
-	if portIsZero(addr) {
-		return
-	}
-
-	tcpListener, err := socks.New(addr, tunnel)
-	if err != nil {
-		return
-	}
-
-	udpListener, err := socks.NewUDP(addr, tunnel)
-	if err != nil {
-		tcpListener.Close()
-		return
-	}
-
-	socksListener = tcpListener
-	socksUDPListener = udpListener
-
-	log.Infoln("SOCKS proxy listening at: %s", socksListener.Address())
+	return err
 }
 
-func ReCreateRedir(port int, tunnel C.Tunnel) {
+func ReCreateRedir(port int, tunnel C.Tunnel) (err error) {
 	redirMux.Lock()
 	defer redirMux.Unlock()
-
-	var err error
-	defer func() {
-		if err != nil {
-			log.Errorln("Start Redir server error: %s", err.Error())
-		}
-	}()
-
+	defer logListenerError("Redir", &err)
 	addr := genAddr(bindAddress, port, allowLan)
-
-	if redirListener != nil {
-		if redirListener.RawAddress() == addr {
-			return
-		}
-		redirListener.Close()
-		redirListener = nil
+	err = recreatePair(&redirListener, &redirUDPListener, addr,
+		func() (*redir.Listener, error) { return redir.New(addr, tunnel) },
+		func() (*tproxy.UDPListener, error) { return tproxy.NewUDP(addr, tunnel) })
+	if err == nil && redirListener != nil {
+		log.Infoln("Redirect proxy listening at: %s", redirListener.Address())
 	}
-
-	if redirUDPListener != nil {
-		if redirUDPListener.RawAddress() == addr {
-			return
-		}
-		redirUDPListener.Close()
-		redirUDPListener = nil
-	}
-
-	if portIsZero(addr) {
-		return
-	}
-
-	redirListener, err = redir.New(addr, tunnel)
-	if err != nil {
-		return
-	}
-
-	redirUDPListener, err = tproxy.NewUDP(addr, tunnel)
-	if err != nil {
-		log.Warnln("Failed to start Redir UDP Listener: %s", err)
-	}
-
-	log.Infoln("Redirect proxy listening at: %s", redirListener.Address())
+	return err
 }
 
-func ReCreateShadowSocks(shadowSocksConfig string, tunnel C.Tunnel) {
+func ReCreateShadowSocks(shadowSocksConfig string, tunnel C.Tunnel) (err error) {
 	ssMux.Lock()
 	defer ssMux.Unlock()
-
-	var err error
-	defer func() {
-		if err != nil {
-			log.Errorln("Start ShadowSocks server error: %s", err.Error())
+	defer logListenerError("ShadowSocks", &err)
+	var config LC.ShadowsocksServer
+	if shadowSocksConfig != "" {
+		addr, cipher, password, parseErr := embedSS.ParseSSURL(shadowSocksConfig)
+		if parseErr != nil {
+			return parseErr
 		}
-	}()
-
-	var ssConfig LC.ShadowsocksServer
-	if addr, cipher, password, err := embedSS.ParseSSURL(shadowSocksConfig); err == nil {
-		ssConfig = LC.ShadowsocksServer{
-			Enable:   len(shadowSocksConfig) > 0,
-			Listen:   addr,
-			Password: password,
-			Cipher:   cipher,
-			Udp:      true,
+		if addr == "" {
+			return errors.New("missing ShadowSocks listen address")
 		}
+		config = LC.ShadowsocksServer{Enable: true, Listen: addr, Cipher: cipher, Password: password, Udp: true}
 	}
-
-	shouldIgnore := false
-
-	if shadowSocksListener != nil {
-		if shadowSocksListener.Config() != ssConfig.String() {
-			shadowSocksListener.Close()
-			shadowSocksListener = nil
-		} else {
-			shouldIgnore = true
-		}
+	if shadowSocksListener != nil && shadowSocksListener.Config() == config.String() {
+		return nil
 	}
-
-	if shouldIgnore {
-		return
+	if err = closeAndClear(&shadowSocksListener); err != nil || !config.Enable {
+		return err
 	}
-
-	if !ssConfig.Enable {
-		return
-	}
-
-	listener, err := sing_shadowsocks.New(ssConfig, inbound.NewListenConfig(), tunnel)
+	next, err := sing_shadowsocks.New(config, inbound.NewListenConfig(), tunnel)
 	if err != nil {
-		return
+		return err
 	}
-
-	shadowSocksListener = listener
-
+	shadowSocksListener = next
 	for _, addr := range shadowSocksListener.AddrList() {
 		log.Infoln("ShadowSocks proxy listening at: %s", addr.String())
 	}
-	return
+	return nil
 }
 
-func ReCreateVmess(vmessConfig string, tunnel C.Tunnel) {
+func ReCreateVmess(vmessConfig string, tunnel C.Tunnel) (err error) {
 	vmessMux.Lock()
 	defer vmessMux.Unlock()
-
-	var err error
-	defer func() {
-		if err != nil {
-			log.Errorln("Start Vmess server error: %s", err.Error())
+	defer logListenerError("Vmess", &err)
+	var config LC.VmessServer
+	if vmessConfig != "" {
+		addr, username, password, parseErr := sing_vmess.ParseVmessURL(vmessConfig)
+		if parseErr != nil {
+			return parseErr
 		}
-	}()
-
-	var vsConfig LC.VmessServer
-	if addr, username, password, err := sing_vmess.ParseVmessURL(vmessConfig); err == nil {
-		vsConfig = LC.VmessServer{
-			Enable: len(vmessConfig) > 0,
-			Listen: addr,
-			Users:  []LC.VmessUser{{Username: username, UUID: password, AlterID: 1}},
+		if addr == "" {
+			return errors.New("missing Vmess listen address")
 		}
+		config = LC.VmessServer{Enable: true, Listen: addr, Users: []LC.VmessUser{{Username: username, UUID: password, AlterID: 1}}}
 	}
-
-	shouldIgnore := false
-
-	if vmessListener != nil {
-		if vmessListener.Config() != vsConfig.String() {
-			vmessListener.Close()
-			vmessListener = nil
-		} else {
-			shouldIgnore = true
-		}
+	if vmessListener != nil && vmessListener.Config() == config.String() {
+		return nil
 	}
-
-	if shouldIgnore {
-		return
+	if err = closeAndClear(&vmessListener); err != nil || !config.Enable {
+		return err
 	}
-
-	if !vsConfig.Enable {
-		return
-	}
-
-	listener, err := sing_vmess.New(vsConfig, inbound.NewListenConfig(), tunnel)
+	next, err := sing_vmess.New(config, inbound.NewListenConfig(), tunnel)
 	if err != nil {
-		return
+		return err
 	}
-
-	vmessListener = listener
-
+	vmessListener = next
 	for _, addr := range vmessListener.AddrList() {
 		log.Infoln("Vmess proxy listening at: %s", addr.String())
 	}
-	return
+	return nil
 }
 
-func ReCreateTuic(config LC.TuicServer, tunnel C.Tunnel) {
+func ReCreateTuic(config LC.TuicServer, tunnel C.Tunnel) (err error) {
 	tuicMux.Lock()
-	defer func() {
-		LastTuicConf = config
-		tuicMux.Unlock()
-	}()
-	shouldIgnore := false
-
-	var err error
-	defer func() {
-		if err != nil {
-			log.Errorln("Start Tuic server error: %s", err.Error())
-		}
-	}()
-
-	if tuicListener != nil {
-		if tuicListener.Config().String() != config.String() {
-			tuicListener.Close()
-			tuicListener = nil
-		} else {
-			shouldIgnore = true
-		}
+	defer tuicMux.Unlock()
+	defer logListenerError("Tuic", &err)
+	if tuicListener != nil && LastTuicConf.String() == config.String() {
+		return nil
 	}
-
-	if shouldIgnore {
-		return
+	LastTuicConf = LC.TuicServer{Enable: false}
+	if err = closeAndClear(&tuicListener); err != nil {
+		return err
 	}
-
 	if !config.Enable {
-		return
+		return nil
 	}
-
-	listener, err := tuic.New(config, inbound.NewListenConfig(), tunnel)
+	next, err := tuic.New(config, inbound.NewListenConfig(), tunnel)
 	if err != nil {
-		return
+		return err
 	}
-
-	tuicListener = listener
-
+	tuicListener = next
+	LastTuicConf = config
 	for _, addr := range tuicListener.AddrList() {
 		log.Infoln("Tuic proxy listening at: %s", addr.String())
 	}
-	return
+	return nil
 }
 
-func ReCreateTProxy(port int, tunnel C.Tunnel) {
+func ReCreateTProxy(port int, tunnel C.Tunnel) (err error) {
 	tproxyMux.Lock()
 	defer tproxyMux.Unlock()
-
-	var err error
-	defer func() {
-		if err != nil {
-			log.Errorln("Start TProxy server error: %s", err.Error())
-		}
-	}()
-
+	defer logListenerError("TProxy", &err)
 	addr := genAddr(bindAddress, port, allowLan)
-
-	if tproxyListener != nil {
-		if tproxyListener.RawAddress() == addr {
-			return
-		}
-		tproxyListener.Close()
-		tproxyListener = nil
+	err = recreatePair(&tproxyListener, &tproxyUDPListener, addr,
+		func() (*tproxy.Listener, error) { return tproxy.New(addr, tunnel) },
+		func() (*tproxy.UDPListener, error) { return tproxy.NewUDP(addr, tunnel) })
+	if err == nil && tproxyListener != nil {
+		log.Infoln("TProxy server listening at: %s", tproxyListener.Address())
 	}
-
-	if tproxyUDPListener != nil {
-		if tproxyUDPListener.RawAddress() == addr {
-			return
-		}
-		tproxyUDPListener.Close()
-		tproxyUDPListener = nil
-	}
-
-	if portIsZero(addr) {
-		return
-	}
-
-	tproxyListener, err = tproxy.New(addr, tunnel)
-	if err != nil {
-		return
-	}
-
-	tproxyUDPListener, err = tproxy.NewUDP(addr, tunnel)
-	if err != nil {
-		log.Warnln("Failed to start TProxy UDP Listener: %s", err)
-	}
-
-	log.Infoln("TProxy server listening at: %s", tproxyListener.Address())
+	return err
 }
 
-func ReCreateMixed(port int, tunnel C.Tunnel) {
+func ReCreateMixed(port int, tunnel C.Tunnel) (err error) {
 	mixedMux.Lock()
 	defer mixedMux.Unlock()
-
-	var err error
-	defer func() {
-		if err != nil {
-			log.Errorln("Start Mixed(http+socks) server error: %s", err.Error())
-		}
-	}()
-
+	defer logListenerError("Mixed(http+socks)", &err)
 	addr := genAddr(bindAddress, port, allowLan)
-
-	shouldTCPIgnore := false
-	shouldUDPIgnore := false
-
-	if mixedListener != nil {
-		if mixedListener.RawAddress() != addr {
-			mixedListener.Close()
-			mixedListener = nil
-		} else {
-			shouldTCPIgnore = true
-		}
+	err = recreatePair(&mixedListener, &mixedUDPLister, addr,
+		func() (*mixed.Listener, error) { return mixed.New(addr, tunnel) },
+		func() (*socks.UDPListener, error) { return socks.NewUDP(addr, tunnel) })
+	if err == nil && mixedListener != nil {
+		log.Infoln("Mixed(http+socks) proxy listening at: %s", mixedListener.Address())
 	}
-	if mixedUDPLister != nil {
-		if mixedUDPLister.RawAddress() != addr {
-			mixedUDPLister.Close()
-			mixedUDPLister = nil
-		} else {
-			shouldUDPIgnore = true
-		}
-	}
-
-	if shouldTCPIgnore && shouldUDPIgnore {
-		return
-	}
-
-	if portIsZero(addr) {
-		return
-	}
-
-	mixedListener, err = mixed.New(addr, tunnel)
-	if err != nil {
-		return
-	}
-
-	mixedUDPLister, err = socks.NewUDP(addr, tunnel)
-	if err != nil {
-		mixedListener.Close()
-		return
-	}
-
-	log.Infoln("Mixed(http+socks) proxy listening at: %s", mixedListener.Address())
+	return err
 }
 
 func ReCreateTun(tunConf LC.Tun, tunnel C.Tunnel) {
@@ -534,123 +313,171 @@ func ReCreateTun(tunConf LC.Tun, tunnel C.Tunnel) {
 	log.Infoln("[TUN] Tun adapter listening at: %s", tunLister.Address())
 }
 
-func PatchTunnel(tunnels []LC.Tunnel, tunnel C.Tunnel) {
+type tunnelCloseKey struct{ network, key string }
+
+// PatchTunnel applies the requested set. On failure, sockets created by this
+// call are closed; unchanged sockets remain. Removed/replaced sockets are not
+// restored. An error is never a readiness result for the requested set.
+func PatchTunnel(tunnels []LC.Tunnel, tunnel C.Tunnel) (err error) {
 	tunnelMux.Lock()
 	defer tunnelMux.Unlock()
+	defer logListenerError("Tunnel", &err)
+	var errs []error
+	pendingListenerCloses.Range(func(key, value any) bool {
+		if key, ok := key.(tunnelCloseKey); ok {
+			if err := closeRetired(key, value.(io.Closer)); err != nil {
+				errs = append(errs, fmt.Errorf("close %s tunnel %s: %w", key.network, key.key, err))
+			}
+		}
+		return true
+	})
 
-	type addrProxy struct {
-		network string
-		addr    string
-		target  string
-		proxy   string
+	tcpWanted := make(map[string]LC.Tunnel)
+	udpWanted := make(map[string]LC.Tunnel)
+	for _, config := range tunnels {
+		key := fmt.Sprintf("%s/%s/%s", config.Address, config.Target, config.Proxy)
+		for _, network := range config.Network {
+			switch network {
+			case "tcp":
+				tcpWanted[key] = config
+			case "udp":
+				udpWanted[key] = config
+			default:
+				return fmt.Errorf("invalid tunnel network %q", network)
+			}
+		}
 	}
-
-	tcpOld := lo.Map(
-		lo.Keys(tunnelTCPListeners),
-		func(key string, _ int) addrProxy {
-			parts := strings.Split(key, "/")
-			return addrProxy{
-				network: "tcp",
-				addr:    parts[0],
-				target:  parts[1],
-				proxy:   parts[2],
+	for _, key := range sortedKeys(tunnelTCPListeners) {
+		if _, keep := tcpWanted[key]; !keep {
+			if err := closeRetired(tunnelCloseKey{"tcp", key}, tunnelTCPListeners[key]); err != nil {
+				errs = append(errs, fmt.Errorf("close TCP tunnel %s: %w", key, err))
 			}
-		},
-	)
-	udpOld := lo.Map(
-		lo.Keys(tunnelUDPListeners),
-		func(key string, _ int) addrProxy {
-			parts := strings.Split(key, "/")
-			return addrProxy{
-				network: "udp",
-				addr:    parts[0],
-				target:  parts[1],
-				proxy:   parts[2],
-			}
-		},
-	)
-	oldElm := lo.Union(tcpOld, udpOld)
-
-	newElm := lo.FlatMap(
-		tunnels,
-		func(tunnel LC.Tunnel, _ int) []addrProxy {
-			return lo.Map(
-				tunnel.Network,
-				func(network string, _ int) addrProxy {
-					return addrProxy{
-						network: network,
-						addr:    tunnel.Address,
-						target:  tunnel.Target,
-						proxy:   tunnel.Proxy,
-					}
-				},
-			)
-		},
-	)
-
-	needClose, needCreate := lo.Difference(oldElm, newElm)
-
-	for _, elm := range needClose {
-		key := fmt.Sprintf("%s/%s/%s", elm.addr, elm.target, elm.proxy)
-		if elm.network == "tcp" {
-			tunnelTCPListeners[key].Close()
 			delete(tunnelTCPListeners, key)
-		} else {
-			tunnelUDPListeners[key].Close()
+		}
+	}
+	for _, key := range sortedKeys(tunnelUDPListeners) {
+		if _, keep := udpWanted[key]; !keep {
+			if err := closeRetired(tunnelCloseKey{"udp", key}, tunnelUDPListeners[key]); err != nil {
+				errs = append(errs, fmt.Errorf("close UDP tunnel %s: %w", key, err))
+			}
 			delete(tunnelUDPListeners, key)
 		}
 	}
-
-	lc := inbound.NewListenConfig()
-	for _, elm := range needCreate {
-		key := fmt.Sprintf("%s/%s/%s", elm.addr, elm.target, elm.proxy)
-		if elm.network == "tcp" {
-			l, err := LT.New(elm.addr, elm.target, elm.proxy, lc, tunnel)
-			if err != nil {
-				log.Errorln("Start tunnel %s error: %s", elm.target, err.Error())
-				continue
-			}
-			tunnelTCPListeners[key] = l
-			log.Infoln("Tunnel(tcp/%s) proxy %s listening at: %s", elm.target, elm.proxy, tunnelTCPListeners[key].Address())
-		} else {
-			l, err := LT.NewUDP(elm.addr, elm.target, elm.proxy, lc, tunnel)
-			if err != nil {
-				log.Errorln("Start tunnel %s error: %s", elm.target, err.Error())
-				continue
-			}
-			tunnelUDPListeners[key] = l
-			log.Infoln("Tunnel(udp/%s) proxy %s listening at: %s", elm.target, elm.proxy, tunnelUDPListeners[key].Address())
-		}
+	if len(errs) != 0 {
+		return errors.Join(errs...)
 	}
-}
 
-func PatchInboundListeners(newListenerMap map[string]C.InboundListener, tunnel C.Tunnel, dropOld bool) {
-	inboundMux.Lock()
-	defer inboundMux.Unlock()
-
-	for name, newListener := range newListenerMap {
-		if oldListener, ok := inboundListeners[name]; ok {
-			if !oldListener.Config().Equal(newListener.Config()) {
-				_ = oldListener.Close()
-			} else {
-				continue
-			}
-		}
-		if err := newListener.Listen(tunnel); err != nil {
-			log.Errorln("Listener %s listen err: %s", name, err.Error())
+	tcpCreated := make(map[string]*LT.Listener)
+	udpCreated := make(map[string]*LT.PacketConn)
+	lc := inbound.NewListenConfig()
+	for _, key := range sortedKeys(tcpWanted) {
+		if _, exists := tunnelTCPListeners[key]; exists {
 			continue
 		}
-		inboundListeners[name] = newListener
+		config := tcpWanted[key]
+		l, err := LT.New(config.Address, config.Target, config.Proxy, lc, tunnel)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("bind TCP tunnel %s: %w", key, err))
+			break
+		}
+		tcpCreated[key] = l
 	}
-
-	if dropOld {
-		for name, oldListener := range inboundListeners {
-			if _, ok := newListenerMap[name]; !ok {
-				_ = oldListener.Close()
-				delete(inboundListeners, name)
+	if len(errs) == 0 {
+		for _, key := range sortedKeys(udpWanted) {
+			if _, exists := tunnelUDPListeners[key]; exists {
+				continue
 			}
+			config := udpWanted[key]
+			l, err := LT.NewUDP(config.Address, config.Target, config.Proxy, lc, tunnel)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("bind UDP tunnel %s: %w", key, err))
+				break
+			}
+			udpCreated[key] = l
 		}
 	}
+	if len(errs) != 0 {
+		for key, l := range tcpCreated {
+			if err := closeRetired(tunnelCloseKey{"tcp", key}, l); err != nil {
+				errs = append(errs, fmt.Errorf("rollback TCP tunnel %s: %w", key, err))
+			}
+		}
+		for key, l := range udpCreated {
+			if err := closeRetired(tunnelCloseKey{"udp", key}, l); err != nil {
+				errs = append(errs, fmt.Errorf("rollback UDP tunnel %s: %w", key, err))
+			}
+		}
+		return errors.Join(errs...)
+	}
+	for key, l := range tcpCreated {
+		tunnelTCPListeners[key] = l
+		log.Infoln("Tunnel(tcp/%s) listening at: %s", key, l.Address())
+	}
+	for key, l := range udpCreated {
+		tunnelUDPListeners[key] = l
+		log.Infoln("Tunnel(udp/%s) listening at: %s", key, l.Address())
+	}
+	return nil
+}
+
+// PatchInboundListeners reports real Listen/Close results. A failed batch rolls
+// back its new listeners, preserving only unchanged existing listeners. Objects
+// whose Close failed are kept separately for the next cleanup attempt, never as
+// ready listeners. Callers must not treat an error as a usable configuration.
+func PatchInboundListeners(newListenerMap map[string]C.InboundListener, tunnel C.Tunnel, dropOld bool) (err error) {
+	inboundMux.Lock()
+	defer inboundMux.Unlock()
+	defer logListenerError("Inbound", &err)
+	var errs []error
+	closeNamed := func(name string, l C.InboundListener) {
+		if err := closeError(l); err != nil {
+			errs = append(errs, fmt.Errorf("close listener %s: %w", name, err))
+			inboundPendingClose[name] = l
+		} else {
+			delete(inboundPendingClose, name)
+		}
+	}
+	for _, name := range sortedKeys(inboundPendingClose) {
+		closeNamed(name, inboundPendingClose[name])
+	}
+	for _, name := range sortedKeys(inboundListeners) {
+		old := inboundListeners[name]
+		next, exists := newListenerMap[name]
+		if (exists && (next == nil || !old.Config().Equal(next.Config()))) || (!exists && dropOld) {
+			delete(inboundListeners, name)
+			closeNamed(name, old)
+		}
+	}
+	if len(errs) != 0 {
+		return errors.Join(errs...)
+	}
+	created := make(map[string]C.InboundListener)
+	for _, name := range sortedKeys(newListenerMap) {
+		if _, exists := inboundListeners[name]; exists {
+			continue
+		}
+		next := newListenerMap[name]
+		if next == nil {
+			errs = append(errs, fmt.Errorf("listener %s is nil", name))
+			break
+		}
+		if err := next.Listen(tunnel); err != nil {
+			errs = append(errs, fmt.Errorf("listen %s: %w", name, err))
+			closeNamed(name, next)
+			break
+		}
+		created[name] = next
+	}
+	if len(errs) != 0 {
+		for _, name := range sortedKeys(created) {
+			closeNamed(name, created[name])
+		}
+		return errors.Join(errs...)
+	}
+	for name, l := range created {
+		inboundListeners[name] = l
+	}
+	return nil
 }
 
 // GetPorts return the ports of proxy servers

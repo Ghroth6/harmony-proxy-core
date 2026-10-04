@@ -20,6 +20,8 @@ $packages = @(
   'component/dialer', 'dns'
 )
 $imports = @($packages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })
+$listenerPackages = @('listener', 'listener/inbound', 'listener/http', 'listener/tproxy')
+$listenerImports = @($listenerPackages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })
 $stage = Join-Path $core ('local/runs/interface-tests-' + (Get-Date -AsUTC -Format 'yyyyMMddTHHmmssfffffffZ'))
 if (Test-Path -LiteralPath $stage) { throw 'Existing test evidence; choose a new batch' }
 New-Item -ItemType Directory -Path $stage | Out-Null
@@ -57,6 +59,7 @@ $env:GOCACHE = Join-Path $core 'local/cache/go-host-cache'
 $env:GOPROXY = 'off'
 $env:GOSUMDB = 'off'
 $hostArguments = @('test', '-mod=mod', '-count=1', '-timeout=90s', '-json') + $imports
+$listenerArguments = @('test', '-mod=mod', '-count=1', '-timeout=90s', '-json', '-run', '^TestListenerLifecycle') + $listenerImports
 $ohosArguments = @(
   'test', '-mod=mod', '-count=1', '-timeout=90s', '-json', '-tags', 'ohos',
   '-run', '^TestOHOSBeforeFirstSnapshot$', 'github.com/metacubex/mihomo/dns'
@@ -64,11 +67,14 @@ $ohosArguments = @(
 [ordered]@{
   core=$head; go=$version; packages=$packages; source_sha256=$hashes
   module_cache=$env:GOMODCACHE; host_arguments=$hostArguments; ohos_tag_arguments=$ohosArguments
+  listener_packages=$listenerPackages; listener_arguments=$listenerArguments
   scope='Windows CGO=0; cached dependencies only; no race detector, OHOS binary, or device validation'
 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $stage 'inputs.json') -Encoding utf8NoBOM
 
 & $go -C $stage @hostArguments *> (Join-Path $stage 'host-test.jsonl')
 $hostExit = $LASTEXITCODE
+& $go -C $stage @listenerArguments *> (Join-Path $stage 'listener-test.jsonl')
+$listenerExit = $LASTEXITCODE
 # A fresh test process is required: preceding tests must not have published a
 # network snapshot before the initial OHOS defaults are observed.
 & $go -C $stage @ohosArguments *> (Join-Path $stage 'ohos-tag-test.jsonl')
@@ -90,6 +96,7 @@ function Read-TestSummary([string]$Path) {
   return [ordered]@{top_level_passed=$passed.Count; top_level_failed=$failed; passed_packages=$passedPackages}
 }
 $hostSummary = Read-TestSummary (Join-Path $stage 'host-test.jsonl')
+$listenerSummary = Read-TestSummary (Join-Path $stage 'listener-test.jsonl')
 $ohosSummary = Read-TestSummary (Join-Path $stage 'ohos-tag-test.jsonl')
 $afterHead = git -C $core rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { $afterHead = '<unavailable>' }
@@ -103,15 +110,18 @@ foreach ($name in $files) {
   }
 }
 $validInputs = $afterHead -ceq $head -and $afterDirty.Count -eq 0 -and $changed.Count -eq 0
-$success = $hostExit -eq 0 -and $ohosExit -eq 0 -and $validInputs -and
-  $hostSummary.passed_packages.Count -eq $packages.Count -and $ohosSummary.top_level_passed -eq 1
+$success = $hostExit -eq 0 -and $listenerExit -eq 0 -and $ohosExit -eq 0 -and $validInputs -and
+  $hostSummary.passed_packages.Count -eq $packages.Count -and $ohosSummary.top_level_passed -eq 1 -and
+  $listenerSummary.passed_packages.Count -eq $listenerPackages.Count -and $listenerSummary.top_level_passed -gt 0
 $exitCode = if ($success) { 0 } else { 1 }
 [ordered]@{
   exit_code=$exitCode; host_exit_code=$hostExit; ohos_tag_exit_code=$ohosExit
+  listener_exit_code=$listenerExit; listener=$listenerSummary
   host=$hostSummary; ohos_tag=$ohosSummary; inputs_unchanged=$validInputs
   core_after=$afterHead; working_tree_after=$afterDirty; changed_source_hashes=$changed
-  host_log='host-test.jsonl'; ohos_tag_log='ohos-tag-test.jsonl'
+  host_log='host-test.jsonl'; listener_log='listener-test.jsonl'; ohos_tag_log='ohos-tag-test.jsonl'
 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $stage 'result.json') -Encoding utf8NoBOM
 Write-Output "Host: $($hostSummary.top_level_passed) passed, $($hostSummary.top_level_failed.Count) failed; OHOS tag: $($ohosSummary.top_level_passed) passed; inputs unchanged: $validInputs"
+Write-Output "Listener lifecycle: $($listenerSummary.top_level_passed) passed, $($listenerSummary.top_level_failed.Count) failed"
 Write-Output "Evidence: $stage"
 exit $exitCode
