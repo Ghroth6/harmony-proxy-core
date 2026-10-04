@@ -1,6 +1,8 @@
 # harmony-proxy-core：Mihomo 的 OHOS 适配分支
 
-本仓直接派生自 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，用于维护 OHOS 原生核心所需的最小适配。当前程序代码仍为选定的官方基线，移植设计已记录，OHOS 实现、原生库构建和设备验收尚未完成。
+本仓直接派生自 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，用于维护 OHOS 原生核心所需的最小适配。当前在官方基线上加入连接活动时间查询；其余接口移植、原生库构建和设备验收尚未完成。
+
+`Tracker.LastActivity()` 初值为连接建立时间，随后记录 tracker 可确认的 payload I/O，保留单调时钟并发更新不回退。TCP 空操作和失败尝试不刷新，UDP 成功的零长度包刷新；只返回 error 的缓冲写入以及复制回调未上报的部分失败传输无法确认。非空缓冲读取仅在长度增长时确认活动。该查询不改变流量计数或 JSON 结构，也不决定哪些连接应被空闲策略关闭。Windows 宿主验证入口为 `scripts/test-statistic.ps1`（Go 1.24.5；可用 `-ModuleCache` 指定已有依赖缓存），测试和输入回执保存在本仓 `local/`。
 
 工程集成与验证步骤见 [clashbox-meta](https://github.com/Ghroth6/clashbox-meta)（私有，需权限）；标准工作空间中的协调仓位于 `../../meta`。自动化协作入口见 [AGENTS.md](AGENTS.md)。以下保留上游功能、文档和许可说明；上游功能列表不代表已在 OHOS 验证。
 
