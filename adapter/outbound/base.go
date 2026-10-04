@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"runtime"
-	"sync"
 	"syscall"
 
 	N "github.com/metacubex/mihomo/common/net"
@@ -15,7 +13,6 @@ import (
 	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/log"
 
 	"github.com/gofrs/uuid/v5"
 )
@@ -377,50 +374,4 @@ func NewPacketConn(pc net.PacketConn, a ProxyAdapter) C.PacketConn {
 
 type AddRef interface {
 	AddRef(ref any)
-}
-
-type autoCloseProxyAdapter struct {
-	ProxyAdapter
-	closeOnce sync.Once
-	closeErr  error
-}
-
-func (p *autoCloseProxyAdapter) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
-	c, err := p.ProxyAdapter.DialContext(ctx, metadata)
-	if err != nil {
-		return nil, err
-	}
-	if c, ok := c.(AddRef); ok {
-		c.AddRef(p)
-	}
-	return c, nil
-}
-
-func (p *autoCloseProxyAdapter) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (_ C.PacketConn, err error) {
-	pc, err := p.ProxyAdapter.ListenPacketContext(ctx, metadata)
-	if err != nil {
-		return nil, err
-	}
-	if pc, ok := pc.(AddRef); ok {
-		pc.AddRef(p)
-	}
-	return pc, nil
-}
-
-func (p *autoCloseProxyAdapter) Close() error {
-	p.closeOnce.Do(func() {
-		log.Debugln("Closing outdated proxy [%s]", p.Name())
-		runtime.SetFinalizer(p, nil)
-		p.closeErr = p.ProxyAdapter.Close()
-	})
-	return p.closeErr
-}
-
-func NewAutoCloseProxyAdapter(adapter ProxyAdapter) ProxyAdapter {
-	proxy := &autoCloseProxyAdapter{
-		ProxyAdapter: adapter,
-	}
-	// auto close ProxyAdapter
-	runtime.SetFinalizer(proxy, (*autoCloseProxyAdapter).Close)
-	return proxy
 }
