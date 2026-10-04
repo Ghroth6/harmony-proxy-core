@@ -90,6 +90,9 @@ func (gb *GroupBase) setIdentity(proxy C.Proxy, provider P.ProxyProvider) error 
 		if !belongs || selected.resolve(members) != proxy {
 			return errors.New("selected proxy does not belong to the current provider")
 		}
+		// Provider selections bind to its current same-name member. Only static
+		// selections need to retain the original object after a refresh.
+		selected.proxy = nil
 	}
 	gb.selection.Store(selected)
 	return nil

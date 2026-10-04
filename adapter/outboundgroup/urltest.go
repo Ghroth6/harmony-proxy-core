@@ -13,6 +13,8 @@ import (
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
+
+	"golang.org/x/exp/slices"
 )
 
 type URLTestOption struct {
@@ -26,6 +28,7 @@ type URLTest struct {
 	tolerance      uint16
 	disableUDP     bool
 	fastNode       C.Proxy
+	fastProxies    []C.Proxy
 	fastMu         sync.Mutex
 	fastSingle     *singledo.Single[C.Proxy]
 }
@@ -116,17 +119,23 @@ func (u *URLTest) fast(touch bool) C.Proxy {
 	// across both cached automatic choices and uncached identity preferences.
 	u.fastMu.Lock()
 	defer u.fastMu.Unlock()
+	// The timed result may outlive a provider refresh. Observe membership before
+	// consulting it, so an old same-name object cannot receive new connections.
+	proxies := u.GetProxies(touch)
+	if !slices.Equal(proxies, u.fastProxies) {
+		u.fastProxies = proxies
+		u.fastSingle.Reset()
+	}
 	// Resolve qualified preferences outside the timed cache: refreshes may replace
 	// their objects or introduce another provider with the same display name.
 	if selected := u.selection.Load(); selected != nil && selected.qualified {
-		if proxy := selected.resolve(u.GetProxies(touch)); proxy != nil && proxy.AliveForTestUrl(u.testUrl) {
+		if proxy := selected.resolve(proxies); proxy != nil && proxy.AliveForTestUrl(u.testUrl) {
 			u.fastNode = proxy
 			return proxy
 		}
 		u.fastSingle.Reset()
 	}
-	elm, _, shared := u.fastSingle.Do(func() (C.Proxy, error) {
-		proxies := u.GetProxies(touch)
+	elm, _, _ := u.fastSingle.Do(func() (C.Proxy, error) {
 		selected := u.selection.Load()
 		if selected != nil && !selected.qualified {
 			for _, proxy := range proxies {
@@ -166,10 +175,6 @@ func (u *URLTest) fast(touch bool) C.Proxy {
 		}
 		return u.fastNode, nil
 	})
-	if shared && touch { // a shared fastSingle.Do() may cause providers untouched, so we touch them again
-		u.Touch()
-	}
-
 	return elm
 }
 
