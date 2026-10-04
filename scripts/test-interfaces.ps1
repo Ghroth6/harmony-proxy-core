@@ -17,7 +17,8 @@ if ($dirty.Count -ne 0) { throw 'Commit changes first: interface validation requ
 $packages = @(
   'common/event', 'adapter', 'tunnel/statistic', 'adapter/outbound', 'adapter/outboundgroup',
   'hub/executor', 'component/platformnetwork', 'component/iface',
-  'component/dialer', 'dns'
+  'component/dialer', 'dns', 'component/forwarding', 'component/http',
+  'tunnel', 'listener/inner', 'hub/route'
 )
 $imports = @($packages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })
 $listenerPackages = @('listener', 'listener/inbound', 'listener/http', 'listener/tproxy')

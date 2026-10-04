@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	URL "net/url"
@@ -74,14 +75,30 @@ func HttpRequest(ctx context.Context, url, method string, header map[string][]st
 		IdleConnTimeout:       30 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		DialContext: func(dialCtx context.Context, network, address string) (net.Conn, error) {
 			if opt.dialer != nil {
-				return opt.dialer.DialContext(ctx, network, address)
+				return opt.dialer.DialContext(dialCtx, network, address)
 			}
-			if conn, err := inner.HandleTcp(inner.GetTunnel(), address, opt.specialProxy); err == nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			// Transport may detach request cancellation from its dialing context.
+			// This transport serves one request, so give the internal root request
+			// the original caller context instead of the pooled-dial context.
+			conn, err := inner.HandleTcpContext(ctx, inner.GetTunnel(), address, opt.specialProxy)
+			if err == nil {
 				return conn, nil
 			}
-			return dialer.DialContext(ctx, network, address)
+			// Bootstrap without an initialized tunnel historically uses the normal
+			// dialer. A selected proxy or a cancelled/rejected request must never
+			// silently change its routing policy to DIRECT.
+			if opt.specialProxy != "" || !errors.Is(err, inner.ErrTunnelUninitialized) {
+				return nil, err
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return dialer.DialContext(dialCtx, network, address)
 		},
 		TLSClientConfig: tlsConfig,
 	}
