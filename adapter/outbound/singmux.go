@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"errors"
 
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
@@ -86,10 +87,11 @@ func (s *SingMux) ProxyInfo() C.ProxyInfo {
 
 // Close implements C.ProxyAdapter
 func (s *SingMux) Close() error {
+	var err error
 	if s.client != nil {
-		_ = s.client.Close()
+		err = s.client.Close()
 	}
-	return s.ProxyAdapter.Close()
+	return errors.Join(err, s.ProxyAdapter.Close())
 }
 
 func NewSingMux(option SingMuxOption, proxy ProxyAdapter) (ProxyAdapter, error) {

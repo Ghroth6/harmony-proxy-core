@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/netip"
@@ -82,8 +83,31 @@ func ParseWithBytes(buf []byte) (*config.Config, error) {
 
 // ApplyConfig dispatch configure to all parts without ExternalController
 func ApplyConfig(cfg *config.Config, force bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := ApplyConfigContext(ctx, cfg, force); err != nil {
+		log.Errorln("Apply configuration: %v", err)
+	}
+}
+
+// ApplyConfigContext retires non-reused configuration resources before any new
+// routing/provider map is published. Retirement failure preserves old ownership.
+func ApplyConfigContext(ctx context.Context, cfg *config.Config, force bool) error {
+	if cfg == nil {
+		return fmt.Errorf("nil configuration")
+	}
 	mux.Lock()
 	defer mux.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	reused := providerSet(&config.Config{Providers: tunnel.Providers(), RuleProviders: tunnel.RuleProviders()})
+	if err := retireConfigLocked(ctx, cfg); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	generation := configGeneration.Add(1)
 	log.SetLevel(cfg.General.LogLevel)
 
@@ -113,14 +137,15 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	tunnel.OnInnerLoading()
 
 	initInnerTcp()
-	loadProvider(cfg.Providers, generation)
+	loadProvider(cfg.Providers, generation, reused)
 	updateProfile(cfg)
-	loadProvider(cfg.RuleProviders, generation)
-	runtime.GC()
+	loadProvider(cfg.RuleProviders, generation, reused)
 	tunnel.OnRunning()
 	updateUpdater(cfg)
 
 	resolver.ResetConnection()
+	retiringConfig = nil
+	return nil
 }
 
 func initInnerTcp() {
@@ -320,7 +345,7 @@ func updateRules(rules []C.Rule, subRules map[string][]C.Rule, ruleProviders map
 	tunnel.UpdateRules(rules, subRules, ruleProviders)
 }
 
-func loadProvider[T P.Provider](providers map[string]T, generation uint64) {
+func loadProvider[T P.Provider](providers map[string]T, generation uint64, retained ...map[P.Provider]struct{}) {
 	load := func(pv T) {
 		name := pv.Name()
 		if pv.VehicleType() == P.Compatible {
@@ -351,6 +376,11 @@ func loadProvider[T P.Provider](providers map[string]T, generation uint64) {
 	wg := sync.WaitGroup{}
 	ch := make(chan struct{}, concurrentCount)
 	for _, pv := range providers {
+		if len(retained) != 0 {
+			if _, reused := retained[0][pv]; reused {
+				continue
+			}
+		}
 		pv := pv
 		wg.Add(1)
 		ch <- struct{}{}

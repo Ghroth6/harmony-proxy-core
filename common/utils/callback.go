@@ -34,6 +34,20 @@ func (c *Callback[T]) Emit(item T) {
 	}
 }
 
+// EmitSync joins the selected callbacks. Unlike Emit, it gives a resource owner
+// a completion boundary without changing the existing asynchronous API.
+func (c *Callback[T]) EmitSync(item T) {
+	c.mutex.RLock()
+	callbacks := make([]func(T), 0, c.list.Len())
+	for element := c.list.Front(); element != nil; element = element.Next() {
+		callbacks = append(callbacks, element.Value)
+	}
+	c.mutex.RUnlock()
+	for _, callback := range callbacks {
+		callback(item)
+	}
+}
+
 type callbackCloser[T any] struct {
 	element  *list.Element[func(T)]
 	callback *Callback[T]

@@ -1,10 +1,12 @@
 package hub
 
 import (
+	"context"
 	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/hub/executor"
 	"github.com/metacubex/mihomo/hub/route"
 	"github.com/metacubex/mihomo/log"
+	"time"
 )
 
 type Option func(*config.Config)
@@ -53,8 +55,19 @@ func WithSecret(secret string) Option {
 
 // ApplyConfig dispatch configure to all parts include ExternalController
 func ApplyConfig(cfg *config.Config) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := ApplyConfigContext(ctx, cfg); err != nil {
+		log.Errorln("Apply configuration: %v", err)
+	}
+}
+
+func ApplyConfigContext(ctx context.Context, cfg *config.Config) error {
+	if err := executor.ApplyConfigContext(ctx, cfg, true); err != nil {
+		return err
+	}
 	applyRoute(cfg)
-	executor.ApplyConfig(cfg, true)
+	return nil
 }
 
 func applyRoute(cfg *config.Config) {
@@ -101,6 +114,7 @@ func Parse(configBytes []byte, options ...Option) error {
 		option(cfg)
 	}
 
-	ApplyConfig(cfg)
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return ApplyConfigContext(ctx, cfg)
 }

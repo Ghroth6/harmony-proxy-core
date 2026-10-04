@@ -2,6 +2,8 @@ package kcptun
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -26,10 +28,13 @@ type Client struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	numconn uint16
-	muxes   []timedSession
-	rr      uint16
-	connMu  sync.Mutex
+	numconn       uint16
+	muxes         []timedSession
+	rr            uint16
+	connMu        sync.Mutex
+	closed        bool
+	sessions      map[*smux.Session]struct{}
+	scavengerDone sync.WaitGroup
 
 	chScavenger chan timedSession
 }
@@ -50,10 +55,24 @@ func NewClient(config Config) *Client {
 
 func (c *Client) Close() error {
 	c.cancel()
-	return nil
+	c.connMu.Lock()
+	c.closed = true
+	var errs []error
+	for session := range c.sessions {
+		if err := session.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+			errs = append(errs, err)
+		}
+	}
+	c.connMu.Unlock()
+	c.scavengerDone.Wait()
+	return errors.Join(errs...)
 }
 
 func (c *Client) createConn(ctx context.Context, dial DialFn) (*smux.Session, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.ctx, cancel)
+	defer stop()
+	defer cancel()
 	ctx, release := forwarding.SharedDialContext(ctx)
 	defer release()
 	conn, addr, err := dial(ctx)
@@ -103,19 +122,24 @@ func (c *Client) createConn(ctx context.Context, dial DialFn) (*smux.Session, er
 }
 
 func (c *Client) OpenStream(ctx context.Context, dial DialFn) (*smux.Stream, error) {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	if c.closed || c.ctx.Err() != nil {
+		return nil, net.ErrClosed
+	}
 	c.once.Do(func() {
 		// start scavenger if autoexpire is set
 		c.chScavenger = make(chan timedSession, 128)
 		if c.config.AutoExpire > 0 {
-			go scavenger(c.ctx, c.chScavenger, &c.config)
+			c.scavengerDone.Add(1)
+			go func() { defer c.scavengerDone.Done(); scavenger(c.ctx, c.chScavenger, &c.config) }()
 		}
 
 		c.numconn = uint16(c.config.Conn)
 		c.muxes = make([]timedSession, c.config.Conn)
 		c.rr = uint16(0)
+		c.sessions = make(map[*smux.Session]struct{})
 	})
-
-	c.connMu.Lock()
 	idx := c.rr % c.numconn
 
 	// do auto expiration && reconnection
@@ -124,18 +148,30 @@ func (c *Client) OpenStream(ctx context.Context, dial DialFn) (*smux.Stream, err
 		var err error
 		c.muxes[idx].session, err = c.createConn(ctx, dial)
 		if err != nil {
-			c.connMu.Unlock()
 			return nil, err
+		}
+		for session := range c.sessions {
+			if session.IsClosed() {
+				delete(c.sessions, session)
+			}
+		}
+		c.sessions[c.muxes[idx].session] = struct{}{}
+		if c.ctx.Err() != nil {
+			_ = c.muxes[idx].session.Close()
+			return nil, net.ErrClosed
 		}
 		c.muxes[idx].expiryDate = time.Now().Add(time.Duration(c.config.AutoExpire) * time.Second)
 		if c.config.AutoExpire > 0 { // only when autoexpire set
-			c.chScavenger <- c.muxes[idx]
+			select {
+			case c.chScavenger <- c.muxes[idx]:
+			case <-c.ctx.Done():
+				return nil, net.ErrClosed
+			}
 		}
 
 	}
 	c.rr++
 	session := c.muxes[idx].session
-	c.connMu.Unlock()
 
 	return session.OpenStream()
 }

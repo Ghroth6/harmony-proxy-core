@@ -59,6 +59,7 @@ type Listener struct {
 
 	ruleUpdateCallbackCloser io.Closer
 	ruleUpdateMutex          sync.Mutex
+	routeProviders           map[string]P.RuleProvider
 	routeAddressMap          map[string]*netipx.IPSet
 	routeExcludeAddressMap   map[string]*netipx.IPSet
 	routeAddressSet          []*netipx.IPSet
@@ -454,6 +455,10 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 				return
 			}
 			l.updateRule(rp, false, false)
+			if l.routeProviders == nil {
+				l.routeProviders = make(map[string]P.RuleProvider)
+			}
+			l.routeProviders[routeAddressSet] = rp
 			markMode = true
 		}
 		for _, routeExcludeAddressSet := range options.RouteExcludeAddressSet {
@@ -463,6 +468,10 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 				return
 			}
 			l.updateRule(rp, true, false)
+			if l.routeProviders == nil {
+				l.routeProviders = make(map[string]P.RuleProvider)
+			}
+			l.routeProviders[routeExcludeAddressSet] = rp
 			markMode = true
 		}
 		if markMode {
@@ -550,6 +559,10 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 
 func (l *Listener) ruleUpdateCallback(ruleProvider P.RuleProvider) {
 	name := ruleProvider.Name()
+	// A same-name provider from a retired configuration is a different owner.
+	if l.routeProviders[name] != ruleProvider {
+		return
+	}
 	if slices.Contains(l.options.RouteAddressSet, name) {
 		l.updateRule(ruleProvider, false, true)
 		return

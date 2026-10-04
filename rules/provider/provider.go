@@ -2,11 +2,13 @@ package provider
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/pool"
@@ -87,7 +89,51 @@ func (bp *baseProvider) Strategy() any {
 type ruleSetProvider struct {
 	baseProvider
 	*resource.Fetcher[ruleStrategy]
-	format P.RuleFormat
+	format       P.RuleFormat
+	notifyMu     sync.Mutex
+	notifyClosed bool
+	notifyWG     sync.WaitGroup
+	notifyDone   chan struct{}
+}
+
+func (rp *ruleSetProvider) Cancel() {
+	rp.notifyMu.Lock()
+	if !rp.notifyClosed {
+		rp.notifyClosed = true
+		go func() { rp.notifyWG.Wait(); close(rp.notifyDone) }()
+	}
+	rp.notifyMu.Unlock()
+	rp.Fetcher.Cancel()
+}
+
+func (rp *ruleSetProvider) Wait(ctx context.Context) error {
+	if err := rp.Fetcher.Wait(ctx); err != nil {
+		return err
+	}
+	select {
+	case <-rp.notifyDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (rp *ruleSetProvider) Close() error { rp.Cancel(); return rp.Wait(context.Background()) }
+
+func (rp *ruleSetProvider) notify(owner P.RuleProvider) {
+	rp.notifyMu.Lock()
+	if rp.notifyClosed {
+		rp.notifyMu.Unlock()
+		return
+	}
+	rp.notifyWG.Add(1)
+	rp.notifyMu.Unlock()
+	go func() {
+		defer rp.notifyWG.Done()
+		if rp.Context().Err() == nil && tunnel != nil {
+			tunnel.RuleUpdateCallback().EmitSync(owner)
+		}
+	}()
 }
 
 type RuleSetProvider struct {
@@ -127,12 +173,16 @@ func NewRuleSetProvider(name string, behavior P.RuleBehavior, format P.RuleForma
 		baseProvider: baseProvider{
 			behavior: behavior,
 		},
-		format: format,
+		format:     format,
+		notifyDone: make(chan struct{}),
 	}
 
+	var wrapper *RuleSetProvider
 	onUpdate := func(strategy ruleStrategy) {
 		rp.strategy = strategy
-		tunnel.RuleUpdateCallback().Emit(rp)
+		// Register before leaving the short fetcher commit. The provider joins
+		// selected observers without holding the fetcher's commit lock.
+		rp.notify(wrapper)
 	}
 
 	rp.strategy = newStrategy(behavior, parse)
@@ -143,7 +193,7 @@ func NewRuleSetProvider(name string, behavior P.RuleBehavior, format P.RuleForma
 		return rulesParse(bytes, newStrategy(behavior, parse), format)
 	}, onUpdate)
 
-	wrapper := &RuleSetProvider{
+	wrapper = &RuleSetProvider{
 		rp,
 	}
 
