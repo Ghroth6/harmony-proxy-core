@@ -1,6 +1,7 @@
 package constant
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -188,6 +189,11 @@ func (t Type) MarshalJSON() ([]byte, error) {
 
 // Metadata is used to store connection address
 type Metadata struct {
+	// Root ownership survives INNER/dialer-proxy hops and metadata copies.
+	// It is deliberately separate from Type and traffic-accounting flags.
+	RequestContext       context.Context `json:"-"`
+	ForwardingGeneration uint64          `json:"-"`
+
 	NetWork      NetWork    `json:"network"`
 	Type         Type       `json:"type"`
 	SrcIP        netip.Addr `json:"sourceIP"`

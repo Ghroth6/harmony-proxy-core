@@ -1,6 +1,7 @@
 package inner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -35,22 +36,37 @@ type innerUDPDatagram struct {
 }
 
 type innerUDPPacketConn struct {
-	tunnel    C.Tunnel
-	proxy     string
-	localAddr net.Addr
-	readChan  chan innerUDPDatagram
-	done      chan struct{}
-	closeOnce sync.Once
-	mu        sync.Mutex
-	closed    bool
+	ctx        context.Context
+	cancel     context.CancelFunc
+	stopCancel func() bool
+	tunnel     C.Tunnel
+	proxy      string
+	localAddr  net.Addr
+	readChan   chan innerUDPDatagram
+	done       chan struct{}
+	closeOnce  sync.Once
+	mu         sync.Mutex
+	closed     bool
 
 	readDeadline  deadline.PipeDeadline
 	writeDeadline deadline.PipeDeadline
 }
 
 func HandleUdp(tunnel C.Tunnel, network, address, proxy string) (net.PacketConn, net.Addr, error) {
+	return HandleUdpContext(context.Background(), tunnel, network, address, proxy)
+}
+
+func HandleUdpContext(ctx context.Context, tunnel C.Tunnel, network, address, proxy string) (net.PacketConn, net.Addr, error) {
+	if scoped, ok := tunnel.(interface {
+		BindContext(context.Context) context.Context
+	}); ok {
+		ctx = scoped.BindContext(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	if tunnel == nil {
-		return nil, nil, fmt.Errorf("tunnel uninitialized")
+		return nil, nil, ErrTunnelUninitialized
 	}
 	switch network {
 	case "udp", "udp4", "udp6":
@@ -61,8 +77,11 @@ func HandleUdp(tunnel C.Tunnel, network, address, proxy string) (net.PacketConn,
 		return nil, nil, fmt.Errorf("invalid target address %s", address)
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
 	id := innerUDPConnID.Add(1)
 	conn := &innerUDPPacketConn{
+		ctx:           ctx,
+		cancel:        cancel,
 		tunnel:        tunnel,
 		proxy:         proxy,
 		localAddr:     innerUDPAddr{network: network, address: fmt.Sprintf("inner-udp-%d", id)},
@@ -71,6 +90,9 @@ func HandleUdp(tunnel C.Tunnel, network, address, proxy string) (net.PacketConn,
 		readDeadline:  deadline.MakePipeDeadline(),
 		writeDeadline: deadline.MakePipeDeadline(),
 	}
+	conn.mu.Lock()
+	conn.stopCancel = context.AfterFunc(ctx, func() { _ = conn.Close() })
+	conn.mu.Unlock()
 	return conn, innerUDPAddr{network: network, address: address}, nil
 }
 
@@ -113,6 +135,7 @@ func (c *innerUDPPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	metadata.DNSMode = C.DNSNormal
 	metadata.Process = C.MihomoName
 	metadata.SpecialProxy = c.proxy
+	metadata.RequestContext = c.ctx
 	c.tunnel.HandleUDPPacket(packet, metadata)
 	return len(p), nil
 }
@@ -120,6 +143,10 @@ func (c *innerUDPPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 func (c *innerUDPPacketConn) Close() error {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
+		if c.stopCancel != nil {
+			c.stopCancel()
+		}
+		c.cancel()
 		c.closed = true
 		close(c.done)
 		for {

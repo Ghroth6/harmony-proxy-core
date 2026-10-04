@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/tunnel/statistic"
 )
@@ -22,7 +23,12 @@ func New(proxy C.ProxyAdapter, statistic bool) C.Dialer {
 }
 
 func (p proxyDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	currentMeta := &C.Metadata{Type: C.INNER}
+	ctx, finish, err := forwarding.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	currentMeta := &C.Metadata{Type: C.INNER, RequestContext: ctx, ForwardingGeneration: forwarding.Generation(ctx)}
 	if err := currentMeta.SetRemoteAddress(address); err != nil {
 		return nil, err
 	}
@@ -44,6 +50,10 @@ func (p proxyDialer) DialContext(ctx context.Context, network, address string) (
 	if err != nil {
 		return nil, err
 	}
+	conn, err = forwarding.OwnTCP(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
 	if p.statistic {
 		conn = statistic.NewTCPTracker(conn, statistic.DefaultManager, currentMeta, nil, 0, 0, false)
 	}
@@ -51,16 +61,25 @@ func (p proxyDialer) DialContext(ctx context.Context, network, address string) (
 }
 
 func (p proxyDialer) ListenPacket(ctx context.Context, network, address string, rAddrPort netip.AddrPort) (net.PacketConn, error) {
+	ctx, finish, err := forwarding.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	if !strings.HasPrefix(network, "udp") {
 		return nil, fmt.Errorf("proxyDialer only support udp network, but got: %s", network)
 	}
-	currentMeta := &C.Metadata{Type: C.INNER, DstIP: rAddrPort.Addr(), DstPort: rAddrPort.Port()}
+	currentMeta := &C.Metadata{Type: C.INNER, DstIP: rAddrPort.Addr(), DstPort: rAddrPort.Port(), RequestContext: ctx, ForwardingGeneration: forwarding.Generation(ctx)}
 	return p.listenPacket(ctx, currentMeta)
 }
 
 func (p proxyDialer) listenPacket(ctx context.Context, currentMeta *C.Metadata) (C.PacketConn, error) {
 	currentMeta.NetWork = C.UDP
 	pc, err := p.proxy.ListenPacketContext(ctx, currentMeta)
+	if err != nil {
+		return nil, err
+	}
+	pc, err = forwarding.OwnUDP(ctx, pc)
 	if err != nil {
 		return nil, err
 	}

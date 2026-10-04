@@ -8,6 +8,7 @@ import (
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	authStore "github.com/metacubex/mihomo/listener/auth"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -55,6 +56,7 @@ func NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additi
 }
 
 func NewWithConfig(config LC.AuthServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
+	lc = forwarding.WrapListenConfig(lc)
 	isDefault := false
 	if len(additions) == 0 {
 		isDefault = true

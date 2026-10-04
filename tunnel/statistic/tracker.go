@@ -9,6 +9,7 @@ import (
 	"github.com/metacubex/mihomo/common/buf"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/gofrs/uuid/v5"
@@ -60,6 +61,7 @@ type tcpTracker struct {
 
 	pushToManager bool `json:"-"`
 	proxyTraffic  bool
+	closeOwned    func() error
 }
 
 // Classify the established outbound, never its display name or a group's
@@ -167,6 +169,9 @@ func (tt *tcpTracker) UnwrapWriter() (io.Writer, []N.CountFunc) {
 }
 
 func (tt *tcpTracker) Close() error {
+	if tt.closeOwned != nil {
+		return tt.closeOwned()
+	}
 	tt.manager.Leave(tt)
 	return tt.Conn.Close()
 }
@@ -204,6 +209,7 @@ func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.R
 		t.TrackerInfo.RulePayload = rule.Payload()
 	}
 
+	t.closeOwned = forwarding.Cleanup(metadata.RequestContext, func() error { manager.Leave(t); return t.Conn.Close() })
 	manager.Join(t)
 	return t
 }
@@ -215,6 +221,7 @@ type udpTracker struct {
 
 	pushToManager bool `json:"-"`
 	proxyTraffic  bool
+	closeOwned    func() error
 }
 
 func (ut *udpTracker) ID() string {
@@ -265,6 +272,9 @@ func (ut *udpTracker) WriteTo(b []byte, addr net.Addr) (int, error) {
 }
 
 func (ut *udpTracker) Close() error {
+	if ut.closeOwned != nil {
+		return ut.closeOwned()
+	}
 	ut.manager.Leave(ut)
 	return ut.PacketConn.Close()
 }
@@ -302,6 +312,7 @@ func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, ru
 		ut.TrackerInfo.RulePayload = rule.Payload()
 	}
 
+	ut.closeOwned = forwarding.Cleanup(metadata.RequestContext, func() error { manager.Leave(ut); return ut.PacketConn.Close() })
 	manager.Join(ut)
 	return ut
 }

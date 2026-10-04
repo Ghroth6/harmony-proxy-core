@@ -15,6 +15,7 @@ import (
 	"github.com/metacubex/mihomo/common/atomic"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/loopback"
 	"github.com/metacubex/mihomo/component/nat"
 	"github.com/metacubex/mihomo/component/process"
@@ -97,6 +98,13 @@ func initUDP() {
 }
 
 func (t tunnel) HandleUDPPacket(packet C.UDPPacket, metadata *C.Metadata) {
+	ctx, finish, err := forwarding.Acquire(metadata.RequestContext)
+	if err != nil {
+		packet.Drop()
+		return
+	}
+	metadata.RequestContext, metadata.ForwardingGeneration = ctx, forwarding.Generation(ctx)
+	packet = &ownedPacket{UDPPacket: packet, finish: finish}
 	udpInit.Do(initUDP)
 
 	packetAdapter := C.NewPacketAdapter(packet, metadata)
@@ -336,7 +344,7 @@ func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err erro
 	helper := C.RuleMatchHelper{
 		ResolveIP: func() {
 			if !resolved && metadata.Host != "" && !metadata.Resolved() {
-				ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDNSTimeout)
+				ctx, cancel := context.WithTimeout(requestContext(metadata), resolver.DefaultDNSTimeout)
 				defer cancel()
 				ip, err := resolver.ResolveIP(ctx, metadata.Host)
 				if err != nil {
@@ -418,6 +426,10 @@ func processUDP(queue chan C.PacketAdapter) {
 }
 
 func handleUDPConn(packet C.PacketAdapter) {
+	if err := requestContext(packet.Metadata()).Err(); err != nil {
+		packet.Drop()
+		return
+	}
 	if !isHandle(packet.Metadata().Type) {
 		packet.Drop()
 		return
@@ -439,16 +451,24 @@ func handleUDPConn(packet C.PacketAdapter) {
 
 	key := packet.Key()
 	sender, loaded := natTable.GetOrCreate(key, func() C.PacketSender {
-		sender := newPacketSender()
+		sender := newPacketSenderContext(requestContext(metadata))
 		if sniffingEnable && snifferDispatcher.Enable() {
 			return snifferDispatcher.UDPSniff(packet, sender)
 		}
 		return sender
 	})
 	if !loaded {
+		ctx, finish, err := forwarding.Acquire(metadata.RequestContext)
+		if err != nil {
+			sender.Close()
+			natTable.Delete(key)
+			packet.Drop()
+			return
+		}
+		stopSender := context.AfterFunc(ctx, sender.Close)
 		dial := func() (C.PacketConn, C.WriteBackProxy, error) {
-			originMetadata := metadata  // save origin metadata
-			metadata = metadata.Clone() // don't modify PacketAdapter's metadata
+			originMetadata := metadata   // save origin metadata
+			metadata := metadata.Clone() // don't modify PacketAdapter's metadata
 
 			if err := sender.DoSniff(metadata); err != nil {
 				log.Warnln("[UDP] DoSniff error: %s", err.Error())
@@ -464,13 +484,17 @@ func handleUDPConn(packet C.PacketAdapter) {
 			}
 
 			dialMetadata := metadata.Pure()
-			ctx, cancel := context.WithTimeout(context.Background(), C.DefaultUDPTimeout)
+			dialCtx, cancel := context.WithTimeout(ctx, C.DefaultUDPTimeout)
 			defer cancel()
-			rawPc, err := retry(ctx, func(ctx context.Context) (C.PacketConn, error) {
+			rawPc, err := retry(dialCtx, func(ctx context.Context) (C.PacketConn, error) {
 				return proxy.ListenPacketContext(ctx, dialMetadata)
 			}, func(err error) {
 				logMetadataErr(metadata, rule, proxy, err)
 			})
+			if err != nil {
+				return nil, nil, err
+			}
+			rawPc, err = forwarding.OwnUDP(ctx, rawPc)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -482,11 +506,23 @@ func handleUDPConn(packet C.PacketAdapter) {
 			oAddrPort := dialMetadata.AddrPort()
 			writeBackProxy := nat.NewWriteBackProxy(packet)
 
-			go handleUDPToLocal(writeBackProxy, pc, sender, key, oAddrPort)
+			_, finishRead, err := forwarding.Acquire(ctx)
+			if err != nil {
+				_ = pc.Close()
+				return nil, nil, err
+			}
+			stopRead := context.AfterFunc(ctx, func() { _ = pc.Close() })
+			go func() {
+				defer finishRead()
+				defer stopRead()
+				handleUDPToLocal(writeBackProxy, pc, sender, key, oAddrPort)
+			}()
 			return pc, writeBackProxy, nil
 		}
 
 		go func() {
+			defer finish()
+			defer stopSender()
 			pc, proxy, err := dial()
 			if err != nil {
 				sender.Close()
@@ -500,16 +536,23 @@ func handleUDPConn(packet C.PacketAdapter) {
 }
 
 func handleTCPConn(connCtx C.ConnContext) {
-	if !isHandle(connCtx.Metadata().Type) {
+	ctx, finish, err := forwarding.Acquire(connCtx.Metadata().RequestContext)
+	if err != nil {
 		_ = connCtx.Conn().Close()
 		return
 	}
-
-	defer func(conn net.Conn) {
-		_ = conn.Close()
-	}(connCtx.Conn())
-
+	defer finish()
 	metadata := connCtx.Metadata()
+	metadata.RequestContext, metadata.ForwardingGeneration = ctx, forwarding.Generation(ctx)
+	ownedInbound, err := forwarding.OwnConn(ctx, connCtx.Conn())
+	if err != nil {
+		return
+	}
+	defer ownedInbound.Close()
+	if !isHandle(connCtx.Metadata().Type) {
+		return
+	}
+
 	if !metadata.Valid() {
 		log.Warnln("[Metadata] not valid: %#v", metadata)
 		return
@@ -571,10 +614,14 @@ func handleTCPConn(connCtx C.ConnContext) {
 	var peekBytes []byte
 	var peekLen int
 
-	ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTCPTimeout)
+	dialCtx, cancel := context.WithTimeout(ctx, C.DefaultTCPTimeout)
 	defer cancel()
-	remoteConn, err := retry(ctx, func(ctx context.Context) (remoteConn C.Conn, err error) {
+	remoteConn, err := retry(dialCtx, func(ctx context.Context) (remoteConn C.Conn, err error) {
 		remoteConn, err = proxy.DialContext(ctx, dialMetadata)
+		if err != nil {
+			return
+		}
+		remoteConn, err = forwarding.OwnTCP(ctx, remoteConn)
 		if err != nil {
 			return
 		}
@@ -621,7 +668,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 	peekMutex.Lock()
 	defer peekMutex.Unlock()
 	_ = conn.SetReadDeadline(time.Time{}) // reset
-	handleSocket(conn, remoteConn)
+	handleSocket(ownedInbound, remoteConn)
 }
 
 func logMetadataErr(metadata *C.Metadata, rule C.Rule, proxy C.ProxyAdapter, err error) {
@@ -695,7 +742,7 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 				return rematchProxy, rematchRule, nil
 			}
 			rematchChain = append(rematchChain, rematchProxy.Name())
-			conn, err := rematchProxy.DialContext(context.Background(), metadata) // not a real connection, just for metadata update
+			conn, err := rematchProxy.DialContext(requestContext(metadata), metadata) // not a real connection, just for metadata update
 			if conn != nil {
 				_ = conn.Close()
 			}

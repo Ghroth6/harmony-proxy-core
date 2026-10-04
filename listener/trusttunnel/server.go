@@ -10,6 +10,7 @@ import (
 	"github.com/metacubex/mihomo/common/sockopt"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/internal/lifecycle"
@@ -31,6 +32,7 @@ type Listener struct {
 }
 
 func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+	lc = forwarding.WrapListenConfig(lc)
 	var sl *Listener
 	var err error
 	if len(additions) == 0 {

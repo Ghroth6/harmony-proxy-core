@@ -8,6 +8,7 @@ import (
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/event"
 	"github.com/metacubex/mihomo/common/xsync"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/memory"
 )
 
@@ -45,7 +46,10 @@ func (c *trafficCounters) add(up, down int64) {
 }
 
 func (m *Manager) Join(c Tracker) {
-	m.connections.Store(c.ID(), c)
+	if !forwarding.Publish(c.Info().Metadata.RequestContext, func() { m.connections.Store(c.ID(), c) }) {
+		_ = c.Close()
+		return
+	}
 	m.created.Emit(c)
 }
 

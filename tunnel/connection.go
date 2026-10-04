@@ -17,6 +17,7 @@ type packetSender struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	ch     chan C.PacketAdapter
+	sendMu sync.Mutex
 
 	// destination NAT mapping
 	originToTarget map[string]netip.Addr
@@ -27,7 +28,11 @@ type packetSender struct {
 // newPacketSender return a chan based C.PacketSender
 // It ensures that packets can be sent sequentially and without blocking
 func newPacketSender() C.PacketSender {
-	ctx, cancel := context.WithCancel(context.Background())
+	return newPacketSenderContext(context.Background())
+}
+
+func newPacketSenderContext(parent context.Context) C.PacketSender {
+	ctx, cancel := context.WithCancel(parent)
 	ch := make(chan C.PacketAdapter, senderCapacity)
 	return &packetSender{
 		ctx:    ctx,
@@ -102,6 +107,7 @@ func (s *packetSender) processPacket(pc C.PacketConn, packet C.PacketAdapter) {
 }
 
 func (s *packetSender) Process(pc C.PacketConn, proxy C.WriteBackProxy) {
+	defer func() { s.sendMu.Lock(); defer s.sendMu.Unlock(); s.dropAll() }()
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -127,6 +133,8 @@ func (s *packetSender) dropAll() {
 }
 
 func (s *packetSender) Send(packet C.PacketAdapter) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
 	select {
 	case <-s.ctx.Done():
 		packet.Drop() // sender closed before Send()
@@ -146,6 +154,8 @@ func (s *packetSender) Send(packet C.PacketAdapter) {
 
 func (s *packetSender) Close() {
 	s.cancel()
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
 	s.dropAll()
 }
 

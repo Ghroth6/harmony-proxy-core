@@ -10,6 +10,7 @@ import (
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/internal/lifecycle"
@@ -44,6 +45,7 @@ type Listener struct {
 var _listener *Listener
 
 func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
+	lc = forwarding.WrapListenConfig(lc)
 	var sl *Listener
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
@@ -260,6 +262,7 @@ func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 				_ = pc.Close()
 				return nil, err
 			}
+			l = forwarding.WrapListener(l)
 		} else {
 			l, err = lc.Listen(context.Background(), "tcp", addr)
 			if err != nil {

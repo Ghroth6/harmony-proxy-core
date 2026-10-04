@@ -5,6 +5,7 @@ import (
 	"net"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/keepalive"
 	"github.com/metacubex/mihomo/component/mptcp"
 	C "github.com/metacubex/mihomo/constant"
@@ -70,6 +71,7 @@ func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listen
 	if err != nil {
 		return nil, err
 	}
+	l = forwarding.WrapListener(l)
 
 	rl := &Listener{
 		listener: l,

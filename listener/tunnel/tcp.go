@@ -6,6 +6,7 @@ import (
 	"net"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/socks5"
 )
@@ -39,6 +40,7 @@ func (l *Listener) handleTCP(conn net.Conn, tunnel C.Tunnel, additions ...inboun
 }
 
 func New(addr, target, proxy string, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+	lc = forwarding.WrapListenConfig(lc)
 	l, err := lc.Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, err

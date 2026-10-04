@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/metacubex/mihomo/transport/socks5"
+	"github.com/metacubex/sing/common"
 
 	"golang.org/x/sys/unix"
 )
@@ -19,7 +20,7 @@ const (
 )
 
 func parserPacket(conn net.Conn) (socks5.Addr, error) {
-	c, ok := conn.(*net.TCPConn)
+	c, ok := common.Cast[*net.TCPConn](conn)
 	if !ok {
 		return nil, errors.New("only work with TCP connection")
 	}
