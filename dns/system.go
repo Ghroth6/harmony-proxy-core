@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -47,10 +48,18 @@ func (c *systemClient) getDnsClients() ([]dnsClient, error) {
 			c.platformClients = transform(nameservers, nil)
 			c.platformGeneration = snapshot.Generation
 		}
-		if len(c.platformClients) == 0 {
+		clients := make([]dnsClient, 0, len(c.platformClients))
+		for i, client := range c.platformClients {
+			endpoint := snapshot.DNS[i]
+			host := netip.MustParseAddrPort(endpoint).Addr().String()
+			if !resolver.IsSystemDnsBlacklisted(host, endpoint) {
+				clients = append(clients, client)
+			}
+		}
+		if len(clients) == 0 {
 			return nil, ErrNoSystemDNS
 		}
-		return c.platformClients, nil
+		return clients, nil
 	}
 	c.mu.Unlock()
 	return c.getNativeDnsClients()

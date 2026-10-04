@@ -47,7 +47,8 @@ func localDNSServer(t *testing.T, answer string) string {
 func TestPlatformDNSAllClientsFollowNetworkAndOfflineNeverFallsBack(t *testing.T) {
 	first := localDNSServer(t, "192.0.2.1")
 	second := localDNSServer(t, "192.0.2.2")
-	snapshot := platformnetwork.Snapshot{Generation: 1, Online: true, NetworkID: 11, DNS: []string{first}, Interfaces: []platformnetwork.Interface{{Name: "synthetic", Up: true}}}
+	generation, _ := platformnetwork.Generation()
+	snapshot := platformnetwork.Snapshot{Generation: generation + 1, Online: true, NetworkID: 11, DNS: []string{first}, Interfaces: []platformnetwork.Interface{{Name: "synthetic", Up: true}}}
 	if err := platformnetwork.Publish(snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func TestPlatformDNSAllClientsFollowNetworkAndOfflineNeverFallsBack(t *testing.T
 	assertAnswer(client, "192.0.2.1")
 	assertAnswer(configured, "192.0.2.1")
 	assertAnswer(resolver.SystemResolver, "192.0.2.1")
-	snapshot.Generation, snapshot.NetworkID, snapshot.DNS = 2, 12, []string{second}
+	snapshot.Generation, snapshot.NetworkID, snapshot.DNS = snapshot.Generation+1, 12, []string{second}
 	if err := platformnetwork.Publish(snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -83,12 +84,20 @@ func TestPlatformDNSAllClientsFollowNetworkAndOfflineNeverFallsBack(t *testing.T
 	assertAnswer(configured, "192.0.2.2")
 	assertAnswer(resolver.SystemResolver, "192.0.2.2")
 	bad := snapshot
-	bad.Generation, bad.DNS = 3, []string{"not-an-IP"}
+	bad.Generation, bad.DNS = snapshot.Generation+1, []string{"not-an-IP"}
 	if err := platformnetwork.Publish(bad); err == nil {
 		t.Fatal("accepted bad DNS")
 	}
 	assertAnswer(client, "192.0.2.2")
-	if err := platformnetwork.Publish(platformnetwork.Snapshot{Generation: 3}); err != nil {
+	// A TUN DNS blacklist change must be observed without a new platform event.
+	resolver.AddSystemDnsBlacklist("127.0.0.1")
+	_, blockedErr := client.getDnsClients()
+	resolver.RemoveSystemDnsBlacklist("127.0.0.1")
+	if !errors.Is(blockedErr, ErrNoSystemDNS) {
+		t.Fatalf("ignored system DNS blacklist: %v", blockedErr)
+	}
+	assertAnswer(client, "192.0.2.2")
+	if err := platformnetwork.Publish(platformnetwork.Snapshot{Generation: snapshot.Generation + 1}); err != nil {
 		t.Fatal(err)
 	}
 	for name, exchange := range map[string]interface {
