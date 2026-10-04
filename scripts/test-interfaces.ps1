@@ -18,7 +18,7 @@ $packages = @(
   'common/event', 'adapter', 'tunnel/statistic', 'adapter/outbound', 'adapter/outboundgroup',
   'hub/executor', 'component/platformnetwork', 'component/iface',
   'component/dialer', 'dns', 'component/forwarding', 'component/http',
-  'tunnel', 'listener/inner', 'hub/route', 'listener/sing_tun',
+  'tunnel', 'hub/route', 'listener/sing_tun',
   'listener/sing_hysteria2', 'transport/anytls/session', 'transport/tuic',
   'transport/shadowquic', 'transport/kcptun'
 )
