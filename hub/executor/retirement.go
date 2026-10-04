@@ -231,7 +231,8 @@ func retireConfigLocked(ctx context.Context, next *config.Config) error {
 }
 
 // RetireConfig joins all current configuration tasks and owned proxy pools.
-// It leaves old maps available for diagnosis; they must not be restarted.
+// Failure preserves old maps for diagnosis; success clears the active maps and
+// restores the internal bootstrap entry. Retired objects cannot be reused.
 func RetireConfig(ctx context.Context) error {
 	mux.Lock()
 	defer mux.Unlock()

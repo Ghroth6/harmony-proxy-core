@@ -59,6 +59,7 @@ type Listener struct {
 
 	ruleUpdateCallbackCloser io.Closer
 	ruleUpdateMutex          sync.Mutex
+	ruleUpdatesClosed        bool
 	routeProviders           map[string]P.RuleProvider
 	routeAddressMap          map[string]*netipx.IPSet
 	routeExcludeAddressMap   map[string]*netipx.IPSet
@@ -558,17 +559,22 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 }
 
 func (l *Listener) ruleUpdateCallback(ruleProvider P.RuleProvider) {
+	l.ruleUpdateMutex.Lock()
+	defer l.ruleUpdateMutex.Unlock()
+	if l.ruleUpdatesClosed {
+		return
+	}
 	name := ruleProvider.Name()
 	// A same-name provider from a retired configuration is a different owner.
 	if l.routeProviders[name] != ruleProvider {
 		return
 	}
 	if slices.Contains(l.options.RouteAddressSet, name) {
-		l.updateRule(ruleProvider, false, true)
+		l.updateRuleLocked(ruleProvider, false, true)
 		return
 	}
 	if slices.Contains(l.options.RouteExcludeAddressSet, name) {
-		l.updateRule(ruleProvider, true, true)
+		l.updateRuleLocked(ruleProvider, true, true)
 		return
 	}
 }
@@ -580,6 +586,10 @@ type toIpCidr interface {
 func (l *Listener) updateRule(ruleProvider P.RuleProvider, exclude bool, update bool) {
 	l.ruleUpdateMutex.Lock()
 	defer l.ruleUpdateMutex.Unlock()
+	l.updateRuleLocked(ruleProvider, exclude, update)
+}
+
+func (l *Listener) updateRuleLocked(ruleProvider P.RuleProvider, exclude bool, update bool) {
 	name := ruleProvider.Name()
 	switch rp := ruleProvider.Strategy().(type) {
 	case toIpCidr:
@@ -682,6 +692,11 @@ func parseRange[T constraints.Integer](uidRanges []ranges.Range[T], rangeList []
 
 func (l *Listener) Close() error {
 	l.closed = true
+	// Selected callback snapshots may outlive unregistration. Join the active
+	// update and reject those snapshots before closing the auto-redirect owner.
+	l.ruleUpdateMutex.Lock()
+	l.ruleUpdatesClosed = true
+	l.ruleUpdateMutex.Unlock()
 	resolver.RemoveSystemDnsBlacklist(l.dnsServerIp...)
 	if l.autoRedirectOutputMark != 0 {
 		dialer.DefaultRoutingMark.CompareAndSwap(l.autoRedirectOutputMark, 0)

@@ -122,6 +122,16 @@ func (c *Client) createConn(ctx context.Context, dial DialFn) (*smux.Session, er
 }
 
 func (c *Client) OpenStream(ctx context.Context, dial DialFn) (*smux.Stream, error) {
+	session, err := c.getSession(ctx, dial)
+	if err != nil {
+		return nil, err
+	}
+	// Opening a stream can perform I/O. Close must retain access to connMu
+	// and the session so it can interrupt that I/O.
+	return session.OpenStream()
+}
+
+func (c *Client) getSession(ctx context.Context, dial DialFn) (*smux.Session, error) {
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
 	if c.closed || c.ctx.Err() != nil {
@@ -173,7 +183,7 @@ func (c *Client) OpenStream(ctx context.Context, dial DialFn) (*smux.Stream, err
 	c.rr++
 	session := c.muxes[idx].session
 
-	return session.OpenStream()
+	return session, nil
 }
 
 // timedSession is a wrapper for smux.Session with expiry date
