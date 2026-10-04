@@ -1,12 +1,14 @@
 package http
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
 	"net"
 	stdhttp "net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -83,5 +85,50 @@ func TestHTTPRequestCancellationReachesInternalTunnel(t *testing.T) {
 	case <-probe.closed:
 	case <-time.After(time.Second):
 		t.Fatal("HTTP transport detached cancellation from the internal root request")
+	}
+}
+
+func TestHTTPRequestDeadlineKeepsTimeoutClassification(t *testing.T) {
+	previous := inner.GetTunnel()
+	probe := &contextTunnel{started: make(chan *C.Metadata, 1), closed: make(chan struct{})}
+	inner.New(probe)
+	t.Cleanup(func() { inner.New(previous) })
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := HttpRequest(ctx, "http://127.0.0.1:9", "GET", nil, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline was replaced by a transport result: %v", err)
+	}
+	var requestErr *url.Error
+	if !errors.As(err, &requestErr) || !requestErr.Timeout() || requestErr.URL != "http://127.0.0.1:9" {
+		t.Fatalf("deadline lost HTTP error details or timeout classification: %v", err)
+	}
+	select {
+	case <-probe.closed:
+	case <-time.After(time.Second):
+		t.Fatal("deadline did not close the internal request")
+	}
+}
+
+type eofTunnel struct{}
+
+func (*eofTunnel) HandleTCPConn(conn net.Conn, _ *C.Metadata) {
+	defer conn.Close()
+	// A remote peer accepts the request and closes without a response. This
+	// remains a real EOF when the caller has not canceled its request.
+	_, _ = stdhttp.ReadRequest(bufio.NewReader(conn))
+}
+func (*eofTunnel) HandleUDPPacket(C.UDPPacket, *C.Metadata) {}
+func (*eofTunnel) NatTable() C.NatTable                     { return nil }
+
+func TestHTTPRequestDoesNotReplaceLiveContextTransportFailure(t *testing.T) {
+	previous := inner.GetTunnel()
+	inner.New(&eofTunnel{})
+	t.Cleanup(func() { inner.New(previous) })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := HttpRequest(ctx, "http://127.0.0.1:9", "GET", nil, nil)
+	if ctx.Err() != nil || !errors.Is(err, io.EOF) {
+		t.Fatalf("ordinary remote EOF was replaced: ctx=%v err=%v", ctx.Err(), err)
 	}
 }

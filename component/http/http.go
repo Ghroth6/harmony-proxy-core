@@ -104,7 +104,23 @@ func HttpRequest(ctx context.Context, url, method string, header map[string][]st
 	}
 
 	client := http.Client{Transport: transport}
-	return client.Do(req)
+	response, err := client.Do(req)
+	if err != nil {
+		if cause := ctx.Err(); cause != nil {
+			// Cancellation closes the internal pipe as well as the HTTP request.
+			// Either transport observation may win; report the caller's cause,
+			// not a racing EOF/closed-pipe error produced by that cancellation.
+			var requestErr *URL.Error
+			if errors.As(err, &requestErr) {
+				copy := *requestErr
+				copy.Err = cause
+				err = &copy
+			} else {
+				err = cause
+			}
+		}
+	}
+	return response, err
 }
 
 type Option func(opt *option)
