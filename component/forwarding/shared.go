@@ -22,6 +22,11 @@ func SharedDialContext(caller context.Context) (context.Context, func()) {
 	enabled := lifecycle.enabled
 	lifecycle.Unlock()
 	if !enabled {
+		management.Lock()
+		enabled = management.enabled
+		management.Unlock()
+	}
+	if !enabled {
 		return caller, func() {}
 	}
 	base := context.WithValue(context.WithoutCancel(caller), contextKey{}, (*run)(nil))

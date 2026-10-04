@@ -40,6 +40,7 @@ type Session struct {
 
 	// pool
 	seq       uint64
+	networkID uint64
 	idleSince time.Time
 	padding   *atomic.Pointer[padding.PaddingFactory]
 

@@ -78,13 +78,17 @@ func (c *Client) CreateStream(ctx context.Context) (net.Conn, error) {
 	c.creating.Add(1)
 	c.sessionsLock.Unlock()
 	defer c.creating.Done()
+	ctx, finishNetwork, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finishNetwork()
 
 	var session *Session
 	var stream *Stream
-	var err error
 
 	if !c.disableReuse {
-		session = c.getIdleSession()
+		session = c.getIdleSession(forwarding.ManagementNetworkGeneration(ctx))
 	}
 	if session == nil {
 		session, err = c.createSession(ctx)
@@ -126,15 +130,24 @@ func (c *Client) CreateStream(ctx context.Context) (net.Conn, error) {
 	return stream, nil
 }
 
-func (c *Client) getIdleSession() (idle *Session) {
-	c.idleSessionLock.Lock()
-	if !c.idleSession.IsEmpty() {
-		it := c.idleSession.Iterate()
-		idle = it.Value()
-		c.idleSession.Remove(it.Key())
+func (c *Client) getIdleSession(networkID uint64) *Session {
+	for {
+		c.idleSessionLock.Lock()
+		var idle *Session
+		if !c.idleSession.IsEmpty() {
+			it := c.idleSession.Iterate()
+			idle = it.Value()
+			c.idleSession.Remove(it.Key())
+		}
+		c.idleSessionLock.Unlock()
+		if idle == nil || idle.networkID == networkID {
+			return idle
+		}
+		// Its physical network path has already been retired. The receiver
+		// may observe EOF later, so IsClosed alone cannot protect reuse. Keep
+		// the normal session cleanup registration; never retry protocol errors.
+		idle.close()
 	}
-	c.idleSessionLock.Unlock()
-	return
 }
 
 func (c *Client) createSession(ctx context.Context) (*Session, error) {
@@ -154,6 +167,7 @@ func (c *Client) createSession(ctx context.Context) (*Session, error) {
 
 	session := NewClientSession(underlying, c.padding, c.clientMetadata)
 	session.seq = c.sessionCounter.Add(1)
+	session.networkID = forwarding.ManagementNetworkGeneration(ctx)
 	c.sessionsLock.Lock()
 	c.sessions[session.seq] = session
 	c.reaping.Add(1)
