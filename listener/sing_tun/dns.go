@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/listener/sing"
@@ -29,14 +30,29 @@ func (h *ListenerHandler) ShouldHijackDns(targetAddr netip.AddrPort) bool {
 
 func (h *ListenerHandler) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
 	if h.ShouldHijackDns(metadata.Destination.AddrPort()) {
+		ctx, finish, err := h.acquireForwarding(ctx)
+		if err != nil {
+			_ = conn.Close()
+			return err
+		}
+		defer finish()
+		conn, err = forwarding.OwnConn(ctx, conn)
+		if err != nil {
+			return err
+		}
 		log.Debugln("[DNS] hijack tcp:%s", metadata.Destination.String())
-		return resolver.RelayDnsConn(ctx, conn, resolver.DefaultDnsReadTimeout)
+		return resolver.RelayDnsConn(ctx, &dnsReplyConn{Conn: conn, ctx: ctx}, resolver.DefaultDnsReadTimeout)
 	}
 	return h.ListenerHandler.NewConnection(ctx, conn, metadata)
 }
 
 func (h *ListenerHandler) NewPacket(ctx context.Context, key netip.AddrPort, buffer *buf.Buffer, metadata M.Metadata, init func(natConn network.PacketConn) network.PacketWriter) {
 	if h.ShouldHijackDns(metadata.Destination.AddrPort()) {
+		ctx, finish, err := h.acquireForwarding(ctx)
+		if err != nil {
+			buffer.Release()
+			return
+		}
 		log.Debugln("[DNS] hijack udp:%s from %s", metadata.Destination.String(), metadata.Source.String())
 		writer := init(nil)
 		rwOptions := network.ReadWaitOptions{
@@ -44,7 +60,10 @@ func (h *ListenerHandler) NewPacket(ctx context.Context, key netip.AddrPort, buf
 			RearHeadroom:  network.CalculateRearHeadroom(writer),
 			MTU:           resolver.SafeDnsPacketSize,
 		}
-		go relayDnsPacket(ctx, buffer, rwOptions, metadata.Destination, nil, &writer)
+		go func() {
+			defer finish()
+			relayDnsPacket(ctx, buffer, rwOptions, metadata.Destination, nil, &writer)
+		}()
 		return
 	}
 	h.ListenerHandler.NewPacket(ctx, key, buffer, metadata, init)
@@ -52,8 +71,15 @@ func (h *ListenerHandler) NewPacket(ctx context.Context, key netip.AddrPort, buf
 
 func (h *ListenerHandler) NewPacketConnection(ctx context.Context, conn network.PacketConn, metadata M.Metadata) error {
 	if h.ShouldHijackDns(metadata.Destination.AddrPort()) {
+		ctx, finish, err := h.acquireForwarding(ctx)
+		if err != nil {
+			_ = conn.Close()
+			return err
+		}
+		defer finish()
+		closeOwned := forwarding.Cleanup(ctx, conn.Close)
 		log.Debugln("[DNS] hijack udp:%s from %s", metadata.Destination.String(), metadata.Source.String())
-		defer func() { _ = conn.Close() }()
+		defer closeOwned()
 		mutex := sync.Mutex{}
 		var writer network.PacketWriter = conn // a new interface to set nil in defer
 		defer func() {
@@ -96,7 +122,15 @@ func (h *ListenerHandler) NewPacketConnection(ctx context.Context, conn network.
 				}
 				return err
 			}
-			go relayDnsPacket(ctx, readBuff, rwOptions, dest, &mutex, &writer)
+			packetCtx, finishPacket, err := forwarding.Acquire(ctx)
+			if err != nil {
+				readBuff.Release()
+				return err
+			}
+			go func() {
+				defer finishPacket()
+				relayDnsPacket(packetCtx, readBuff, rwOptions, dest, &mutex, &writer)
+			}()
 		}
 		return nil
 	}
@@ -126,7 +160,7 @@ func relayDnsPacket(ctx context.Context, readBuff *buf.Buffer, rwOptions network
 		defer mutex.Unlock()
 	}
 	conn := *writer
-	if conn == nil {
+	if conn == nil || ctx.Err() != nil {
 		writeBuff.Release()
 		return
 	}
