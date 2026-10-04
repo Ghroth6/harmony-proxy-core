@@ -8,6 +8,7 @@ import (
 
 	"github.com/metacubex/mihomo/common/singledo"
 	"github.com/metacubex/mihomo/component/iface/anet"
+	"github.com/metacubex/mihomo/component/platformnetwork"
 
 	"github.com/metacubex/bart"
 )
@@ -24,6 +25,7 @@ type Interface struct {
 var (
 	ErrIfaceNotFound = errors.New("interface not found")
 	ErrAddrNotFound  = errors.New("addr not found")
+	ErrIndexUnknown  = errors.New("interface OS index is unknown")
 )
 
 type ifaceCache struct {
@@ -35,6 +37,9 @@ type ifaceCache struct {
 var caches = singledo.NewSingle[*ifaceCache](time.Second * 20)
 
 func getCache() (*ifaceCache, error) {
+	if snapshot, enabled := platformnetwork.Current(); enabled {
+		return platformCache(snapshot), nil
+	}
 	value, err, _ := caches.Do(func() (*ifaceCache, error) {
 		ifaces, err := anet.Interfaces()
 		if err != nil {

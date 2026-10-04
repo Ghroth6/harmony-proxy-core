@@ -12,7 +12,7 @@ import (
 	"golang.org/x/exp/slices"
 )
 
-func (c *systemClient) getDnsClients() ([]dnsClient, error) {
+func (c *systemClient) getNativeDnsClients() ([]dnsClient, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var err error

@@ -82,6 +82,9 @@ func bindIfaceToDialer(ifaceName string, dialer *net.Dialer, _ string, destinati
 		return err
 	}
 
+	if ifaceObj.Index <= 0 {
+		return iface.ErrIndexUnknown
+	}
 	addControlToDialer(dialer, bindControl(ifaceObj.Index, netip.AddrPortFrom(destination, 0)))
 	return nil
 }
@@ -92,6 +95,9 @@ func bindIfaceToListenConfig(ifaceName string, lc *net.ListenConfig, _, address 
 		return "", err
 	}
 
+	if ifaceObj.Index <= 0 {
+		return "", iface.ErrIndexUnknown
+	}
 	addControlToListenConfig(lc, bindControl(ifaceObj.Index, rAddrPort))
 	return address, nil
 }

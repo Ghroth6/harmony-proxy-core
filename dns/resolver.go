@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strconv"
 	"time"
 
 	"github.com/metacubex/mihomo/common/arc"
 	"github.com/metacubex/mihomo/common/lru"
 	"github.com/metacubex/mihomo/common/singleflight"
+	"github.com/metacubex/mihomo/component/platformnetwork"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/trie"
 	C "github.com/metacubex/mihomo/constant"
@@ -166,7 +168,7 @@ func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, e
 
 	q := m.Question[0]
 	domain := msgToDomain(m)
-	msg, expireTime, hit := getMsgFromCache(r.cache, q)
+	msg, expireTime, hit := getMsgFromCache(r.cache, networkQuestionKey(q))
 	if hit {
 		log.Debugln("[DNS] cache hit %s --> %s, expire at %s", domain, msgToLogString(msg), expireTime.Format("2006-01-02 15:04:05"))
 		now := time.Now()
@@ -185,6 +187,7 @@ func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, e
 // ExchangeWithoutCache a batch of dns request, and it do NOT GET from cache
 func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {
 	q := m.Question[0]
+	key := networkQuestionKey(q)
 
 	retryNum := 0
 	retryMax := 3
@@ -202,7 +205,7 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 			}
 
 			if cache {
-				putMsgToCache(r.cache, q, result)
+				putMsgToCache(r.cache, q, key, result)
 			}
 		}()
 
@@ -220,7 +223,7 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 		return
 	}
 
-	ch := r.group.DoChan(q.String(), fn)
+	ch := r.group.DoChan(key, fn)
 
 	var result singleflight.Result[*D.Msg]
 
@@ -236,7 +239,7 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 				result := <-ch
 				ret, err, shared := result.Val, result.Err, result.Shared
 				if err != nil && !shared && ret.Opcode < retryMax { // retry
-					r.group.DoChan(q.String(), fn)
+					r.group.DoChan(key, fn)
 				}
 			}()
 			return nil, ctx.Err()
@@ -245,7 +248,7 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 
 	ret, err, shared := result.Val, result.Err, result.Shared
 	if err != nil && !shared && ret.Opcode < retryMax { // retry
-		r.group.DoChan(q.String(), fn)
+		r.group.DoChan(key, fn)
 	}
 
 	if err == nil {
@@ -256,6 +259,13 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 	}
 
 	return
+}
+
+func networkQuestionKey(q D.Question) string {
+	if generation, enabled := platformnetwork.Generation(); enabled {
+		return "network:" + strconv.FormatUint(generation, 10) + ":" + q.String()
+	}
+	return q.String()
 }
 
 func (r *Resolver) matchPolicy(m *D.Msg) []dnsClient {
