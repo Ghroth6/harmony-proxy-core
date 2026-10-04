@@ -1,14 +1,18 @@
 package adapter
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/structure"
+	"github.com/metacubex/mihomo/component/configresources"
 	C "github.com/metacubex/mihomo/constant"
 )
 
-func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {
+func ParseProxy(mapping map[string]any, options ...ProxyOption) (_ C.Proxy, retErr error) {
 	decoder := structure.NewDecoder(structure.Option{TagName: "proxy", WeaklyTypedInput: true, KeyReplacer: structure.DefaultKeyReplacer})
 	proxyType, existType := mapping["type"].(string)
 	if !existType {
@@ -230,6 +234,18 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	if err != nil {
 		return nil, err
 	}
+	// A constructor error may leave a typed nil in proxy. Only successful
+	// construction transfers ownership here; later wrapping failures must release
+	// that adapter without relying on a finalizer that has not been installed yet.
+	defer func() {
+		if retErr != nil {
+			var candidate configresources.Set
+			candidate.AddAdapter(proxy)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			retErr = errors.Join(retErr, candidate.Close(ctx))
+		}
+	}()
 
 	if muxMapping, muxExist := mapping["smux"].(map[string]any); muxExist {
 		muxOption := &outbound.SingMuxOption{}
@@ -238,10 +254,11 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 			return nil, err
 		}
 		if muxOption.Enabled {
-			proxy, err = outbound.NewSingMux(*muxOption, proxy)
+			wrapped, err := outbound.NewSingMux(*muxOption, proxy)
 			if err != nil {
 				return nil, err
 			}
+			proxy = wrapped
 		}
 	}
 

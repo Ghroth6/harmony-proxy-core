@@ -19,6 +19,7 @@ import (
 type Client struct {
 	die       context.Context
 	dieCancel context.CancelFunc
+	idleDone  <-chan struct{}
 
 	dialOut util.DialOutFunc
 
@@ -57,7 +58,7 @@ func NewClient(ctx context.Context, dialOut util.DialOutFunc, _padding *atomic.P
 	c.die, c.dieCancel = context.WithCancel(ctx)
 	c.idleSession = skiplist.NewSkipList[uint64, *Session]()
 	if !c.disableReuse {
-		util.StartRoutine(c.die, idleSessionCheckInterval, c.idleCleanup)
+		c.idleDone = util.StartRoutine(c.die, idleSessionCheckInterval, c.idleCleanup)
 	}
 	return c
 }
@@ -155,6 +156,9 @@ func (c *Client) createSession(ctx context.Context) (*Session, error) {
 
 func (c *Client) Close() error {
 	c.dieCancel()
+	if c.idleDone != nil {
+		<-c.idleDone
+	}
 
 	c.sessionsLock.Lock()
 	sessionToClose := make([]*Session, 0, len(c.sessions))

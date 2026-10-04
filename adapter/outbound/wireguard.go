@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
+	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/component/resolver"
@@ -281,15 +282,13 @@ func newWireguardDevice(stack ipStack) (wireguardDevice, error) {
 	if wgDevice, ok := stack.(wireguardDevice); ok {
 		return wgDevice, nil
 	}
-	// mipstack must start at here
-	err := stack.Start()
-	if err != nil {
-		return nil, err
-	}
-	return &ipStackWireguardDevice{
+	device := &ipStackWireguardDevice{
 		ipStack: stack,
 		events:  make(chan tun.Event, 1),
-	}, nil
+	}
+	// Keep the device's ownership even when Start fails so the caller can join
+	// cleanup and retain an unfinished close, rather than lose the stack.
+	return device, stack.Start()
 }
 
 type wgSingErrorHandler struct {
@@ -463,6 +462,15 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	if len(outbound.localPrefixes) == 0 {
 		return nil, E.New("missing local address")
 	}
+	// DNS syntax is fallible configuration work. Validate it before creating the
+	// IP stack and WireGuard device, whose constructors start background workers.
+	var nss []dns.NameServer
+	if option.RemoteDnsResolve && len(option.Dns) > 0 {
+		nss, err = dns.ParseNameServer(option.Dns)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	stack, err := newIPStack(option.IPStack, outbound.localPrefixes, uint32(mtu))
 	if err != nil {
@@ -470,8 +478,11 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	}
 	outbound.tunDevice, err = newWireguardDevice(stack)
 	if err != nil {
-		_ = stack.Close()
-		return nil, E.Cause(err, "create WireGuard device")
+		var candidate configresources.Set
+		candidate.AddAdapter(outbound)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return nil, errors.Join(E.Cause(err, "create WireGuard device"), candidate.Close(ctx))
 	}
 
 	logger := &device.Logger{
@@ -501,11 +512,7 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 		}
 	}
 
-	if option.RemoteDnsResolve && len(option.Dns) > 0 {
-		nss, err := dns.ParseNameServer(option.Dns)
-		if err != nil {
-			return nil, err
-		}
+	if len(nss) > 0 {
 		for i := range nss {
 			nss[i].ProxyAdapter = outbound
 		}
@@ -783,8 +790,18 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 func (w *WireGuard) Close() error {
 	if w.device != nil {
 		w.device.Close()
+		return nil
 	}
-	return nil
+	// A rejected construction may own a stack before a WireGuard device takes
+	// responsibility for closing both the stack and bind.
+	var err error
+	if w.tunDevice != nil {
+		err = w.tunDevice.Close()
+	}
+	if w.bind != nil {
+		err = errors.Join(err, w.bind.Close())
+	}
+	return err
 }
 
 func (w *WireGuard) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
