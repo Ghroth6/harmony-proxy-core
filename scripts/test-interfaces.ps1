@@ -16,10 +16,10 @@ if ($dirty.Count -ne 0) { throw 'Commit changes first: interface validation requ
 
 $packages = @(
   'common/event', 'adapter', 'tunnel/statistic', 'adapter/outbound', 'adapter/outboundgroup',
-  'hub/executor', 'component/platformnetwork', 'component/iface',
+  'hub/executor', 'config', 'component/configresources', 'component/platformnetwork', 'component/iface',
   'component/dialer', 'dns', 'component/forwarding', 'component/http',
   'tunnel', 'hub/route', 'listener/sing_tun',
-  'listener/sing_hysteria2', 'transport/anytls/session', 'transport/tuic',
+  'listener/sing_hysteria2', 'transport/anytls/session', 'transport/anytls/util', 'transport/tuic',
   'transport/shadowquic', 'transport/kcptun', 'component/resource',
   'adapter/provider', 'rules/provider', 'component/updater'
 )
