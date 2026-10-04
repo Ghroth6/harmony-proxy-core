@@ -44,13 +44,24 @@ func externalTestSetup(t *testing.T) {
 }
 func externalFreeAddress(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	// Windows may reserve different port ranges for TCP and UDP. A free TCP
+	// ephemeral port alone does not prove that UDP may bind the same number.
+	for attempt := 0; attempt < 32; attempt++ {
+		p, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := p.LocalAddr().String()
+		l, err := net.Listen("tcp", addr)
+		_ = p.Close()
+		if err != nil {
+			continue
+		}
+		_ = l.Close()
+		return addr
 	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	return addr
+	t.Fatal("could not acquire a port available to both DNS protocols")
+	return ""
 }
 func externalQuery(t *testing.T, network, addr string) error {
 	t.Helper()
@@ -159,7 +170,7 @@ func (l *externalFailListenConfig) ListenPacket(ctx context.Context, network, ad
 }
 func TestExternalIngressRetainsPartialBindCloseFailure(t *testing.T) {
 	externalTestSetup(t)
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	occupied, err := net.Listen("tcp", externalFreeAddress(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +361,13 @@ func TestExternalIngressStopCancelsPendingBindBeforeOperationLock(t *testing.T) 
 	}
 	started := make(chan error, 1)
 	go func() { started <- StartExternalIngress(context.Background()) }()
-	<-lc.entered
+	select {
+	case <-lc.entered:
+	case err := <-started:
+		t.Fatalf("Start failed before pending bind: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("Start did not reach pending bind")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := StopExternalIngress(ctx); err != nil {
