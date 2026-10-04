@@ -15,6 +15,7 @@ import (
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/common/yaml"
 	"github.com/metacubex/mihomo/component/age"
+	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/resource"
 	C "github.com/metacubex/mihomo/constant"
@@ -196,15 +197,18 @@ func (pp *proxySetProvider) Close() error {
 }
 
 func (pp *proxySetProvider) Cancel() {
-	pp.baseProvider.Cancel()
+	// Close the publication fence before baseProvider starts rejecting updates;
+	// otherwise a committed fetch could silently lose ownership in setProxies.
 	pp.Fetcher.Cancel()
+	pp.baseProvider.Cancel()
 }
 
 func (pp *proxySetProvider) Wait(ctx context.Context) error {
 	return errors.Join(pp.baseProvider.Wait(ctx), pp.Fetcher.Wait(ctx))
 }
 
-func NewProxySetProvider(name string, interval time.Duration, payload []map[string]any, parser resource.Parser[[]C.Proxy], vehicle P.Vehicle, hc *HealthCheck) (*ProxySetProvider, error) {
+func NewProxySetProvider(name string, interval time.Duration, payload []map[string]any, parser resource.Parser[[]C.Proxy], vehicle P.Vehicle, hc *HealthCheck) (_ *ProxySetProvider, err error) {
+	defer closeFailedHealthCheck(hc, &err)
 	pd := &proxySetProvider{
 		baseProvider: baseProvider{
 			name:        name,
@@ -228,7 +232,8 @@ func NewProxySetProvider(name string, interval time.Duration, payload []map[stri
 		hc.setProxies(proxies)
 	}
 
-	fetcher := resource.NewFetcher[[]C.Proxy](name, interval, vehicle, nil, parser, pd.setProxies)
+	fetcher := resource.NewFetcher[[]C.Proxy](name, interval, vehicle, nil, parser, pd.setProxies,
+		resource.WithDiscard(func(proxies []C.Proxy) error { return closeCandidateProxies(proxies, pd.Proxies()) }))
 	pd.Fetcher = fetcher
 	if httpVehicle, ok := vehicle.(*resource.HTTPVehicle); ok {
 		httpVehicle.SetInRead(func(resp *http.Response) {
@@ -291,7 +296,8 @@ func (ip *inlineProvider) Update() error {
 	return nil
 }
 
-func NewInlineProvider(name string, payload []map[string]any, parser resource.Parser[[]C.Proxy], hc *HealthCheck) (*InlineProvider, error) {
+func NewInlineProvider(name string, payload []map[string]any, parser resource.Parser[[]C.Proxy], hc *HealthCheck) (_ *InlineProvider, err error) {
+	defer closeFailedHealthCheck(hc, &err)
 	ps := ProxySchema{Proxies: payload}
 	buf, err := yaml.Marshal(ps)
 	if err != nil {
@@ -355,7 +361,8 @@ func (cp *compatibleProvider) VehicleType() P.VehicleType {
 	return P.Compatible
 }
 
-func NewCompatibleProvider(name string, proxies []C.Proxy, hc *HealthCheck) (*CompatibleProvider, error) {
+func NewCompatibleProvider(name string, proxies []C.Proxy, hc *HealthCheck) (_ *CompatibleProvider, err error) {
+	defer closeFailedHealthCheck(hc, &err)
 	if len(proxies) == 0 {
 		return nil, errors.New("provider need one proxy at least")
 	}
@@ -410,11 +417,11 @@ func NewProxiesParser(pdName string, tunnel C.Tunnel, filter string, excludeFilt
 		}
 	}
 
-	return func(buf []byte) ([]C.Proxy, error) {
+	return func(buf []byte) (_ []C.Proxy, err error) {
 		schema := &ProxySchema{}
 
 		// decrypt config
-		buf, err := age.DecryptBytes(buf, ageSecretKey)
+		buf, err = age.DecryptBytes(buf, ageSecretKey)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt config error: %w", err)
 		}
@@ -432,6 +439,11 @@ func NewProxiesParser(pdName string, tunnel C.Tunnel, filter string, excludeFilt
 		}
 
 		proxies := []C.Proxy{}
+		defer func() {
+			if err != nil {
+				err = errors.Join(err, closeCandidateProxies(proxies, nil))
+			}
+		}()
 		proxiesSet := map[string]struct{}{}
 		for _, filterReg := range filterRegs {
 		LOOP1:
@@ -503,4 +515,42 @@ func NewProxiesParser(pdName string, tunnel C.Tunnel, filter string, excludeFilt
 
 		return proxies, nil
 	}, nil
+}
+
+// Only these newly constructed results belong to this failed parse/update.
+// Keep currently published adapters even when a custom parser reuses them.
+func closeCandidateProxies(proxies, keep []C.Proxy) error {
+	retained := make(map[C.ProxyAdapter]struct{}, len(keep))
+	for _, proxy := range keep {
+		if proxy != nil {
+			retained[proxy.Adapter()] = struct{}{}
+		}
+	}
+	var owned configresources.Set
+	count := 0
+	for _, proxy := range proxies {
+		if proxy == nil {
+			continue
+		}
+		if _, ok := retained[proxy.Adapter()]; ok {
+			continue
+		}
+		owned.AddProxy(proxy)
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return owned.Close(ctx)
+}
+
+// Constructors transfer their health checker only when returning a provider.
+// Before Initial it has no workers, but cancellation also releases its context.
+func closeFailedHealthCheck(hc *HealthCheck, err *error) {
+	if *err != nil {
+		hc.cancel()
+		*err = errors.Join(*err, hc.wait(context.Background()))
+	}
 }

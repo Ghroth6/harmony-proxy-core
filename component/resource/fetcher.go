@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/slowdown"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
@@ -18,6 +19,16 @@ import (
 
 type Parser[V any] func([]byte) (V, error)
 type BundleFile func() (fs.File, error)
+
+type FetcherOption[V any] func(*Fetcher[V])
+
+// WithDiscard gives the fetcher ownership of successful parser results until
+// publication. The callback disposes only the unpublished result, not values
+// from earlier successful updates. A parser retains responsibility for partial
+// results when it returns an error.
+func WithDiscard[V any](discard func(V) error) FetcherOption[V] {
+	return func(f *Fetcher[V]) { f.discard = discard }
+}
 
 type Fetcher[V any] struct {
 	ctx          context.Context
@@ -30,6 +41,7 @@ type Fetcher[V any] struct {
 	parser       Parser[V]
 	interval     time.Duration
 	onUpdate     func(V)
+	discard      func(V) error
 	loadBufMutex sync.Mutex
 	stateMutex   sync.RWMutex
 	startMutex   sync.Mutex
@@ -42,6 +54,7 @@ type Fetcher[V any] struct {
 	active         int
 	done           chan struct{}
 	closeErr       error
+	cleanupErr     error
 }
 
 func (f *Fetcher[V]) Name() string               { return f.name }
@@ -111,8 +124,9 @@ func (f *Fetcher[V]) Wait(ctx context.Context) error {
 		}
 	}
 	f.lifecycleMutex.Lock()
-	defer f.lifecycleMutex.Unlock()
-	return f.closeErr
+	closeErr, cleanupErr := f.closeErr, f.cleanupErr
+	f.lifecycleMutex.Unlock()
+	return errors.Join(closeErr, configresources.WaitCleanup(ctx, cleanupErr))
 }
 func (f *Fetcher[V]) Close() error {
 	f.Cancel()
@@ -126,6 +140,20 @@ func (f *Fetcher[V]) recordCloseError(err error) {
 	}
 }
 
+// Failed candidate cleanup is a resource retirement condition, not an ordinary
+// parse failure. Stop admitting updates and retain the actual close operation.
+func (f *Fetcher[V]) recordCleanupError(err error) bool {
+	var cleanup *configresources.CleanupError
+	if !errors.As(err, &cleanup) {
+		return false
+	}
+	f.lifecycleMutex.Lock()
+	f.cleanupErr = errors.Join(f.cleanupErr, err)
+	f.lifecycleMutex.Unlock()
+	f.Cancel()
+	return true
+}
+
 func (f *Fetcher[V]) Initial() (V, error) {
 	if err := f.begin(); err != nil {
 		return lo.Empty[V](), err
@@ -134,6 +162,9 @@ func (f *Fetcher[V]) Initial() (V, error) {
 	if stat, err := os.Stat(f.vehicle.Path()); err == nil {
 		if buf, err := os.ReadFile(f.vehicle.Path()); err == nil {
 			contents, _, err := f.loadBuf(buf, utils.MakeHash(buf), false)
+			if err != nil && f.ctx.Err() != nil {
+				return lo.Empty[V](), errors.Join(err, f.ctx.Err())
+			}
 			if err == nil {
 				if err := f.setInitialTime(stat.ModTime()); err != nil {
 					return lo.Empty[V](), err
@@ -161,6 +192,9 @@ func (f *Fetcher[V]) Initial() (V, error) {
 			if err == nil {
 				contents, _, err = f.loadBuf(buf, utils.MakeHash(buf), true)
 			}
+			if err != nil && f.ctx.Err() != nil {
+				return lo.Empty[V](), errors.Join(err, f.ctx.Err())
+			}
 			if err == nil {
 				if err := f.setInitialTime(modTime); err != nil {
 					return lo.Empty[V](), err
@@ -182,7 +216,7 @@ func (f *Fetcher[V]) Initial() (V, error) {
 	contents, _, updateErr := f.update()
 	// A failed read still starts the normal retry loop, unless retired.
 	if err := f.startPullLoop(false); err != nil {
-		return lo.Empty[V](), err
+		return lo.Empty[V](), errors.Join(err, updateErr)
 	}
 	if updateErr != nil {
 		return lo.Empty[V](), updateErr
@@ -255,6 +289,7 @@ func (f *Fetcher[V]) loadBuf(buf []byte, hash utils.HashType, updateFile bool) (
 	}
 	contents, err := f.parser(buf)
 	if err != nil {
+		f.recordCleanupError(err)
 		_ = f.Commit(func() error { f.backoff.AddAttempt(); return nil })
 		return lo.Empty[V](), false, err
 	}
@@ -275,6 +310,14 @@ func (f *Fetcher[V]) loadBuf(buf []byte, hash utils.HashType, updateFile bool) (
 		return nil
 	})
 	if err != nil {
+		if f.discard != nil {
+			discardErr := f.discard(contents)
+			if discardErr != nil && !f.recordCleanupError(discardErr) {
+				f.recordCloseError(discardErr)
+				f.Cancel()
+			}
+			err = errors.Join(err, discardErr)
+		}
 		return lo.Empty[V](), false, err
 	}
 	return contents, false, nil
@@ -350,7 +393,7 @@ func (f *Fetcher[V]) updateWithLog() {
 	log.Infoln("[Provider] %s's content update", f.Name())
 }
 
-func NewFetcher[V any](name string, interval time.Duration, vehicle P.Vehicle, bundleFile BundleFile, parser Parser[V], onUpdate func(V)) *Fetcher[V] {
+func NewFetcher[V any](name string, interval time.Duration, vehicle P.Vehicle, bundleFile BundleFile, parser Parser[V], onUpdate func(V), options ...FetcherOption[V]) *Fetcher[V] {
 	ctx, cancel := context.WithCancel(context.Background())
 	minBackoff := 10 * time.Second
 	if interval < minBackoff {
@@ -360,6 +403,9 @@ func NewFetcher[V any](name string, interval time.Duration, vehicle P.Vehicle, b
 		ctxCancel: cancel, done: make(chan struct{}), name: name, bundleFile: bundleFile,
 		vehicle: vehicle, parser: parser, onUpdate: onUpdate, interval: interval,
 		backoff: slowdown.Backoff{Factor: 2, Jitter: false, Min: minBackoff, Max: interval},
+	}
+	for _, option := range options {
+		option(f)
 	}
 	f.ctx = WithCommitGuard(ctx, f.Commit)
 	return f
