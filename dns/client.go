@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
@@ -48,7 +49,12 @@ func (c *client) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) 
 		err error
 	}
 	ch := make(chan result, 1)
+	ctx, finish, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
+		return nil, err
+	}
 	go func() {
+		defer finish()
 		dClient := &D.Client{
 			UDPSize: 4096,
 			Timeout: 5 * time.Second,

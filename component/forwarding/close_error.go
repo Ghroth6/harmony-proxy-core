@@ -2,13 +2,14 @@ package forwarding
 
 import (
 	"errors"
+	"io"
 	"net"
 )
 
 // Match the ingress cleanup rule: an already-closed socket is harmless, but it
 // must not hide a sibling failure in a protocol's aggregate Close result.
 func closeError(err error) error {
-	if err == nil || err == net.ErrClosed {
+	if err == nil || err == net.ErrClosed || err == io.ErrClosedPipe {
 		return nil
 	}
 	if multi, ok := err.(interface{ Unwrap() []error }); ok {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/geodata"
 	_ "github.com/metacubex/mihomo/component/geodata/standard"
 	"github.com/metacubex/mihomo/component/mmdb"
@@ -49,9 +50,11 @@ func UpdateMMDB() (err error) {
 }
 
 func UpdateMMDBContext(ctx context.Context) (err error) {
-	if err := ctx.Err(); err != nil {
+	ctx, finish, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
 		return err
 	}
+	defer finish()
 	vehicle := resource.NewHTTPVehicle(geodata.MmdbUrl(), C.Path.MMDB(), "", nil, defaultHttpTimeout, 0)
 	var oldHash utils.HashType
 	if buf, err := os.ReadFile(vehicle.Path()); err == nil {
@@ -89,9 +92,11 @@ func UpdateASN() (err error) {
 }
 
 func UpdateASNContext(ctx context.Context) (err error) {
-	if err := ctx.Err(); err != nil {
+	ctx, finish, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
 		return err
 	}
+	defer finish()
 	vehicle := resource.NewHTTPVehicle(geodata.ASNUrl(), C.Path.ASN(), "", nil, defaultHttpTimeout, 0)
 	var oldHash utils.HashType
 	if buf, err := os.ReadFile(vehicle.Path()); err == nil {
@@ -129,9 +134,11 @@ func UpdateGeoIp() (err error) {
 }
 
 func UpdateGeoIpContext(ctx context.Context) (err error) {
-	if err := ctx.Err(); err != nil {
+	ctx, finish, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
 		return err
 	}
+	defer finish()
 	geoLoader, err := geodata.GetGeoDataLoader("standard")
 	if err != nil {
 		return err
@@ -171,9 +178,11 @@ func UpdateGeoSite() (err error) {
 }
 
 func UpdateGeoSiteContext(ctx context.Context) (err error) {
-	if err := ctx.Err(); err != nil {
+	ctx, finish, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
 		return err
 	}
+	defer finish()
 	geoLoader, err := geodata.GetGeoDataLoader("standard")
 	if err != nil {
 		return err

@@ -1,6 +1,9 @@
 package resource
 
-import "context"
+import (
+	"context"
+	"github.com/metacubex/mihomo/component/forwarding"
+)
 
 type commitGuardKey struct{}
 
@@ -23,11 +26,12 @@ func WithCommitGuard(ctx context.Context, guard func(func() error) error) contex
 // retain ordinary context cancellation semantics. Callers that also need to
 // reject a request timeout must check ctx.Err before committing.
 func Commit(ctx context.Context, action func() error) error {
+	commit := func() error { return forwarding.CommitManagementNetwork(ctx, action) }
 	if guard, ok := ctx.Value(commitGuardKey{}).(func(func() error) error); ok {
-		return guard(action)
+		return guard(commit)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return action()
+	return commit()
 }

@@ -38,6 +38,11 @@ func GetTcpConcurrent() bool {
 }
 
 func DialContext(ctx context.Context, network, address string, options ...Option) (net.Conn, error) {
+	ctx, finish, _, err := acquireNetwork(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	opt := applyOptions(options...)
 
 	if opt.network == 4 || opt.network == 6 {
@@ -77,13 +82,25 @@ func DialContext(ctx context.Context, network, address string, options ...Option
 }
 
 func ListenPacket(ctx context.Context, network, address string, rAddrPort netip.AddrPort, options ...Option) (net.PacketConn, error) {
+	ctx, finish, lifecycle, err := acquireNetwork(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	opt := applyOptions(options...)
 
 	lc, address, err := listenConfig(network, address, rAddrPort, opt)
 	if err != nil {
 		return nil, err
 	}
-	return lc.ListenPacket(ctx, network, address)
+	conn, err := lc.ListenPacket(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	if lifecycle != nil {
+		return lifecycle.OwnPacketConn(ctx, conn)
+	}
+	return conn, nil
 }
 
 // Listen creates a TCP listener with the same socket policy as ListenPacket.
@@ -137,7 +154,17 @@ func listenConfig(network, address string, rAddrPort netip.AddrPort, opt option)
 	return lc, address, nil
 }
 
-func dialContext(ctx context.Context, network string, destination netip.Addr, port string, opt option) (net.Conn, error) {
+func dialContext(ctx context.Context, network string, destination netip.Addr, port string, opt option) (conn net.Conn, err error) {
+	ctx, finish, lifecycle, err := acquireNetwork(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	defer func() {
+		if lifecycle != nil && err == nil && conn != nil {
+			conn, err = lifecycle.OwnConn(ctx, conn)
+		}
+	}()
 	var address string
 	destination, port = resolver.LookupIP4P(destination, port)
 	address = net.JoinHostPort(destination.String(), port)

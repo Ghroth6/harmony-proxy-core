@@ -21,6 +21,7 @@ type contextKey struct{}
 type run struct {
 	mu         sync.Mutex
 	id         uint64
+	networkID  uint64
 	ctx        context.Context
 	cancel     context.CancelFunc
 	stopped    bool

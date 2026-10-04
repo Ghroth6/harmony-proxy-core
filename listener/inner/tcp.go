@@ -6,6 +6,7 @@ import (
 	"net"
 
 	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 )
 
@@ -51,12 +52,16 @@ func HandleTcpContext(ctx context.Context, tunnel C.Tunnel, address string, prox
 	if err = metadata.SetRemoteAddress(address); err != nil {
 		return nil, err
 	}
+	ctx, finish, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	metadata.RequestContext = ctx
 	conn1, conn2 := N.Pipe()
 	stop := context.AfterFunc(ctx, func() { _ = conn1.Close(); _ = conn2.Close() })
-	go func() { defer cancel(); defer stop(); tunnel.HandleTCPConn(conn2, metadata) }()
+	go func() { defer finish(); defer cancel(); defer stop(); tunnel.HandleTCPConn(conn2, metadata) }()
 	return &innerTCPConn{Conn: conn1, cancel: cancel}, nil
 }
 

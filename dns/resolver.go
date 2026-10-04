@@ -10,6 +10,7 @@ import (
 	"github.com/metacubex/mihomo/common/arc"
 	"github.com/metacubex/mihomo/common/lru"
 	"github.com/metacubex/mihomo/common/singleflight"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/platformnetwork"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/trie"
@@ -156,10 +157,11 @@ func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, e
 		return nil, errors.New("should have one question at least")
 	}
 	continueFetch := false
+	sharedCtx := forwarding.SharedManagementNetworkContext(ctx)
 	defer func() {
 		if continueFetch || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDNSTimeout)
+				ctx, cancel := context.WithTimeout(sharedCtx, resolver.DefaultDNSTimeout)
 				defer cancel()
 				_, _ = r.exchangeWithoutCache(ctx, m) // ignore result, just for putMsgToCache
 			}()
@@ -191,21 +193,30 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 
 	retryNum := 0
 	retryMax := 3
+	sharedCtx := forwarding.SharedManagementNetworkContext(ctx)
+	groupKey := strconv.FormatUint(forwarding.ManagementNetworkGeneration(sharedCtx), 10) + ":" + key
 	fn := func() (result *D.Msg, err error) {
-		ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDNSTimeout) // reset timeout in singleflight
+		ctx, finish, err := forwarding.AcquireManagementNetwork(sharedCtx)
+		if err != nil {
+			return &D.Msg{MsgHdr: D.MsgHdr{Opcode: retryMax}}, err
+		}
+		defer finish()
+		ctx, cancel := context.WithTimeout(ctx, resolver.DefaultDNSTimeout) // independent of individual waiters
 		defer cancel()
 		cache := false
 
 		defer func() {
+			if err == nil && cache {
+				err = forwarding.CommitManagementNetwork(ctx, func() error {
+					putMsgToCache(r.cache, q, key, result)
+					return nil
+				})
+			}
 			if err != nil {
 				result = &D.Msg{}
 				result.Opcode = retryNum
 				retryNum++
 				return
-			}
-
-			if cache {
-				putMsgToCache(r.cache, q, key, result)
 			}
 		}()
 
@@ -223,7 +234,7 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 		return
 	}
 
-	ch := r.group.DoChan(key, fn)
+	ch := r.group.DoChan(groupKey, fn)
 
 	var result singleflight.Result[*D.Msg]
 
@@ -239,7 +250,7 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 				result := <-ch
 				ret, err, shared := result.Val, result.Err, result.Shared
 				if err != nil && !shared && ret.Opcode < retryMax { // retry
-					r.group.DoChan(key, fn)
+					r.group.DoChan(groupKey, fn)
 				}
 			}()
 			return nil, ctx.Err()
@@ -248,7 +259,7 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 
 	ret, err, shared := result.Val, result.Err, result.Shared
 	if err != nil && !shared && ret.Opcode < retryMax { // retry
-		r.group.DoChan(key, fn)
+		r.group.DoChan(groupKey, fn)
 	}
 
 	if err == nil {
@@ -385,7 +396,13 @@ func (r *Resolver) lookupIP(ctx context.Context, host string, dnsType uint16) (i
 
 func (r *Resolver) asyncExchange(ctx context.Context, client []dnsClient, msg *D.Msg) <-chan *result {
 	ch := make(chan *result, 1)
+	ctx, finish, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
+		ch <- &result{Error: err}
+		return ch
+	}
 	go func() {
+		defer finish()
 		res, _, err := batchExchange(ctx, client, msg)
 		ch <- &result{Msg: res, Error: err}
 	}()

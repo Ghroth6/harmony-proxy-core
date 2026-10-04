@@ -16,6 +16,7 @@ import (
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/common/xsync"
 	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
@@ -111,16 +112,24 @@ func (p *Proxy) beginURLTest(parent context.Context) (context.Context, func(), e
 }
 
 func (p *Proxy) commitURLTest(ctx context.Context, action func()) bool {
-	p.testMu.Lock()
-	defer p.testMu.Unlock()
-	if p.testClosed {
-		return false
-	}
-	if guard, ok := ctx.Value(urlTestCommitGuardKey{}).(func(func()) bool); ok {
-		return guard(action)
-	}
-	action()
-	return true
+	accepted := false
+	err := forwarding.CommitManagementNetwork(ctx, func() error {
+		// Network publication is the outer guard, matching provider refresh
+		// which can cancel this proxy's measurements while holding that guard.
+		p.testMu.Lock()
+		defer p.testMu.Unlock()
+		if p.testClosed {
+			return nil
+		}
+		if guard, ok := ctx.Value(urlTestCommitGuardKey{}).(func(func()) bool); ok {
+			accepted = guard(action)
+		} else {
+			action()
+			accepted = true
+		}
+		return nil
+	})
+	return err == nil && accepted
 }
 
 type urlTestCommitGuardKey struct{}
@@ -274,6 +283,11 @@ func (p *Proxy) MarshalJSON() ([]byte, error) {
 // URLTest get the delay for the specified URL
 // implements C.Proxy
 func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {
+	ctx, finishNetwork, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer finishNetwork()
 	ctx, finish, err := p.beginURLTest(ctx)
 	if err != nil {
 		return 0, err
@@ -342,6 +356,10 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 
 	start := time.Now()
 	instance, err := p.DialContext(ctx, &addr)
+	if err != nil {
+		return
+	}
+	instance, err = forwarding.OwnTCP(ctx, instance)
 	if err != nil {
 		return
 	}

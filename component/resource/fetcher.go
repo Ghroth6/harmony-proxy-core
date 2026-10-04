@@ -11,6 +11,7 @@ import (
 
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/configresources"
+	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/slowdown"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
@@ -240,18 +241,20 @@ func (f *Fetcher[V]) Update() (V, bool, error) {
 	return f.update()
 }
 func (f *Fetcher[V]) update() (V, bool, error) {
-	if err := f.ctx.Err(); err != nil {
+	ctx, finish, err := forwarding.AcquireManagementNetwork(f.ctx)
+	if err != nil {
 		return lo.Empty[V](), false, err
 	}
+	defer finish()
 	f.stateMutex.RLock()
 	oldHash := f.hash
 	f.stateMutex.RUnlock()
-	buf, hash, err := f.vehicle.Read(f.ctx, oldHash)
+	buf, hash, err := f.vehicle.Read(ctx, oldHash)
 	if err != nil {
 		_ = f.Commit(func() error { f.backoff.AddAttempt(); return nil })
 		return lo.Empty[V](), false, err
 	}
-	return f.loadBuf(buf, hash, f.vehicle.Type() != P.File)
+	return f.loadBufContext(ctx, buf, hash, f.vehicle.Type() != P.File)
 }
 func (f *Fetcher[V]) SideUpdate(buf []byte) (V, bool, error) {
 	if err := f.begin(); err != nil {
@@ -262,16 +265,20 @@ func (f *Fetcher[V]) SideUpdate(buf []byte) (V, bool, error) {
 }
 
 func (f *Fetcher[V]) loadBuf(buf []byte, hash utils.HashType, updateFile bool) (V, bool, error) {
+	return f.loadBufContext(f.ctx, buf, hash, updateFile)
+}
+
+func (f *Fetcher[V]) loadBufContext(ctx context.Context, buf []byte, hash utils.HashType, updateFile bool) (V, bool, error) {
 	f.loadBufMutex.Lock()
 	defer f.loadBufMutex.Unlock()
-	if err := f.ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return lo.Empty[V](), false, err
 	}
 	f.stateMutex.RLock()
 	same := f.hash.Equal(hash)
 	f.stateMutex.RUnlock()
 	if same {
-		err := f.Commit(func() error {
+		err := Commit(ctx, func() error {
 			now := time.Now()
 			if updateFile {
 				_ = os.Chtimes(f.vehicle.Path(), now, now)
@@ -285,7 +292,7 @@ func (f *Fetcher[V]) loadBuf(buf []byte, hash utils.HashType, updateFile bool) (
 		return lo.Empty[V](), true, err
 	}
 	if buf == nil {
-		return lo.Empty[V](), true, f.ctx.Err()
+		return lo.Empty[V](), true, ctx.Err()
 	}
 	contents, err := f.parser(buf)
 	if err != nil {
@@ -293,7 +300,7 @@ func (f *Fetcher[V]) loadBuf(buf []byte, hash utils.HashType, updateFile bool) (
 		_ = f.Commit(func() error { f.backoff.AddAttempt(); return nil })
 		return lo.Empty[V](), false, err
 	}
-	err = f.Commit(func() error {
+	err = Commit(ctx, func() error {
 		if updateFile {
 			if err := f.vehicle.Write(buf); err != nil {
 				return err
