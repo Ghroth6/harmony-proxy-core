@@ -42,6 +42,9 @@ type clientImpl struct {
 
 	openStreams atomic.Int64
 	closed      atomic.Bool
+	tasks       types.ClientTasks
+	closeOnce   sync.Once
+	closeErr    error
 
 	udpInputMap xsync.Map[uint16, net.Conn]
 
@@ -64,6 +67,9 @@ func (t *clientImpl) SetLastVisited(last time.Time) {
 func (t *clientImpl) getQuicConn(ctx context.Context) (*quic.Conn, error) {
 	t.connMutex.Lock()
 	defer t.connMutex.Unlock()
+	if t.closed.Load() {
+		return nil, types.ClientClosed
+	}
 	if t.quicConn != nil {
 		return t.quicConn, nil
 	}
@@ -74,18 +80,18 @@ func (t *clientImpl) getQuicConn(ctx context.Context) (*quic.Conn, error) {
 		return nil, err
 	}
 
-	go func() {
+	t.tasks.Go(func() {
 		_ = t.sendAuthentication(quicConn)
-	}()
+	})
 
 	if t.udp && t.UdpRelayMode == types.QUIC {
-		go func() {
+		t.tasks.Go(func() {
 			_ = t.handleUniStream(quicConn)
-		}()
+		})
 	}
-	go func() {
+	t.tasks.Go(func() {
 		_ = t.handleMessage(quicConn) // always handleMessage because tuicV5 using datagram to send the Heartbeat
-	}()
+	})
 
 	t.quicConn = quicConn
 	t.openStreams.Store(0)
@@ -131,44 +137,46 @@ func (t *clientImpl) handleUniStream(quicConn *quic.Conn) (err error) {
 		if err != nil {
 			return err
 		}
-		go func() (err error) {
-			var assocId uint16
-			defer func() {
-				t.deferQuicConn(quicConn, err)
-				if err != nil && assocId != 0 {
-					if val, ok := t.udpInputMap.LoadAndDelete(assocId); ok {
-						if conn, ok := val.(net.Conn); ok {
-							_ = conn.Close()
+		t.tasks.Go(func() {
+			_ = func() (err error) {
+				var assocId uint16
+				defer func() {
+					t.deferQuicConn(quicConn, err)
+					if err != nil && assocId != 0 {
+						if val, ok := t.udpInputMap.LoadAndDelete(assocId); ok {
+							if conn, ok := val.(net.Conn); ok {
+								_ = conn.Close()
+							}
 						}
 					}
-				}
-				stream.CancelRead(0)
-			}()
-			reader := bufio.NewReader(stream)
-			commandHead, err := ReadCommandHead(reader)
-			if err != nil {
-				return
-			}
-			switch commandHead.TYPE {
-			case PacketType:
-				var packet Packet
-				packet, err = ReadPacketWithHead(commandHead, reader)
+					stream.CancelRead(0)
+				}()
+				reader := bufio.NewReader(stream)
+				commandHead, err := ReadCommandHead(reader)
 				if err != nil {
 					return
 				}
-				if t.udp && t.UdpRelayMode == types.QUIC {
-					assocId = packet.ASSOC_ID
-					if val, ok := t.udpInputMap.Load(assocId); ok {
-						if conn, ok := val.(net.Conn); ok {
-							writer := bufio.NewWriterSize(conn, packet.BytesLen())
-							_ = packet.WriteTo(writer)
-							_ = writer.Flush()
+				switch commandHead.TYPE {
+				case PacketType:
+					var packet Packet
+					packet, err = ReadPacketWithHead(commandHead, reader)
+					if err != nil {
+						return
+					}
+					if t.udp && t.UdpRelayMode == types.QUIC {
+						assocId = packet.ASSOC_ID
+						if val, ok := t.udpInputMap.Load(assocId); ok {
+							if conn, ok := val.(net.Conn); ok {
+								writer := bufio.NewWriterSize(conn, packet.BytesLen())
+								_ = packet.WriteTo(writer)
+								_ = writer.Flush()
+							}
 						}
 					}
 				}
-			}
-			return
-		}()
+				return
+			}()
+		})
 	}
 }
 
@@ -182,48 +190,50 @@ func (t *clientImpl) handleMessage(quicConn *quic.Conn) (err error) {
 		if err != nil {
 			return err
 		}
-		go func() (err error) {
-			var assocId uint16
-			defer func() {
-				t.deferQuicConn(quicConn, err)
-				if err != nil && assocId != 0 {
-					if val, ok := t.udpInputMap.LoadAndDelete(assocId); ok {
-						if conn, ok := val.(net.Conn); ok {
-							_ = conn.Close()
+		t.tasks.Go(func() {
+			_ = func() (err error) {
+				var assocId uint16
+				defer func() {
+					t.deferQuicConn(quicConn, err)
+					if err != nil && assocId != 0 {
+						if val, ok := t.udpInputMap.LoadAndDelete(assocId); ok {
+							if conn, ok := val.(net.Conn); ok {
+								_ = conn.Close()
+							}
 						}
 					}
+				}()
+				reader := bytes.NewBuffer(message)
+				commandHead, err := ReadCommandHead(reader)
+				if err != nil {
+					return
 				}
-			}()
-			reader := bytes.NewBuffer(message)
-			commandHead, err := ReadCommandHead(reader)
-			if err != nil {
+				switch commandHead.TYPE {
+				case PacketType:
+					var packet Packet
+					packet, err = ReadPacketWithHead(commandHead, reader)
+					if err != nil {
+						return
+					}
+					if t.udp && t.UdpRelayMode == types.NATIVE {
+						assocId = packet.ASSOC_ID
+						if val, ok := t.udpInputMap.Load(assocId); ok {
+							if conn, ok := val.(net.Conn); ok {
+								_, _ = conn.Write(message)
+							}
+						}
+					}
+				case HeartbeatType:
+					var heartbeat Heartbeat
+					heartbeat, err = ReadHeartbeatWithHead(commandHead, reader)
+					if err != nil {
+						return
+					}
+					heartbeat.BytesLen()
+				}
 				return
-			}
-			switch commandHead.TYPE {
-			case PacketType:
-				var packet Packet
-				packet, err = ReadPacketWithHead(commandHead, reader)
-				if err != nil {
-					return
-				}
-				if t.udp && t.UdpRelayMode == types.NATIVE {
-					assocId = packet.ASSOC_ID
-					if val, ok := t.udpInputMap.Load(assocId); ok {
-						if conn, ok := val.(net.Conn); ok {
-							_, _ = conn.Write(message)
-						}
-					}
-				}
-			case HeartbeatType:
-				var heartbeat Heartbeat
-				heartbeat, err = ReadHeartbeatWithHead(commandHead, reader)
-				if err != nil {
-					return
-				}
-				heartbeat.BytesLen()
-			}
-			return
-		}()
+			}()
+		})
 	}
 }
 
@@ -234,7 +244,7 @@ func (t *clientImpl) deferQuicConn(quicConn *quic.Conn, err error) {
 	}
 }
 
-func (t *clientImpl) forceClose(quicConn *quic.Conn, err error) {
+func (t *clientImpl) forceClose(quicConn *quic.Conn, err error) error {
 	t.connMutex.Lock()
 	defer t.connMutex.Unlock()
 	if quicConn == nil {
@@ -250,22 +260,28 @@ func (t *clientImpl) forceClose(quicConn *quic.Conn, err error) {
 		errStr = err.Error()
 	}
 	if quicConn != nil {
-		_ = quicConn.CloseWithError(ProtocolError, errStr)
+		t.closeErr = errors.Join(t.closeErr, quicConn.CloseWithError(ProtocolError, errStr))
 	}
 	udpInputMap := &t.udpInputMap
 	udpInputMap.Range(func(key uint16, value net.Conn) bool {
 		conn := value
-		_ = conn.Close()
+		t.closeErr = errors.Join(t.closeErr, conn.Close())
 		udpInputMap.Delete(key)
 		return true
 	})
+	return t.closeErr
 }
 
-func (t *clientImpl) Close() {
-	t.closed.Store(true)
-	if t.openStreams.Load() == 0 {
-		t.forceClose(nil, types.ClientClosed)
-	}
+func (t *clientImpl) Close() error {
+	t.closeOnce.Do(func() {
+		t.closed.Store(true)
+		t.tasks.Stop()
+		_ = t.forceClose(nil, types.ClientClosed)
+		t.tasks.Wait()
+	})
+	t.connMutex.Lock()
+	defer t.connMutex.Unlock()
+	return t.closeErr
 }
 
 func (t *clientImpl) DialContext(ctx context.Context, metadata *C.Metadata) (net.Conn, error) {
@@ -299,7 +315,7 @@ func (t *clientImpl) DialContext(ctx context.Context, metadata *C.Metadata) (net
 			quicConn.LocalAddr(),
 			quicConn.RemoteAddr(),
 			func() {
-				time.AfterFunc(C.DefaultTCPTimeout, func() {
+				t.tasks.After(C.DefaultTCPTimeout, func() {
 					openStreams := t.openStreams.Add(-1)
 					if openStreams == 0 && t.closed.Load() {
 						t.forceClose(quicConn, types.ClientClosed)
@@ -326,6 +342,11 @@ func (t *clientImpl) ListenPacket(ctx context.Context, metadata *C.Metadata) (ne
 	if err != nil {
 		return nil, err
 	}
+	t.connMutex.Lock()
+	defer t.connMutex.Unlock()
+	if t.closed.Load() || quicConn.Context().Err() != nil {
+		return nil, types.ClientClosed
+	}
 	openStreams := t.openStreams.Add(1)
 	if openStreams >= t.MaxOpenStreams {
 		t.openStreams.Add(-1)
@@ -350,7 +371,7 @@ func (t *clientImpl) ListenPacket(ctx context.Context, metadata *C.Metadata) (ne
 		deferQuicConnFn:       t.deferQuicConn,
 		closeDeferFn: func() {
 			t.udpInputMap.Delete(connId)
-			time.AfterFunc(C.DefaultUDPTimeout, func() {
+			t.tasks.After(C.DefaultUDPTimeout, func() {
 				openStreams := t.openStreams.Add(-1)
 				if openStreams == 0 && t.closed.Load() {
 					t.forceClose(quicConn, types.ClientClosed)
@@ -399,5 +420,5 @@ func NewClient(clientOption *ClientOption, udp bool, dialFn types.DialFunc) *Cli
 
 func closeClient(client *Client) {
 	log.Debugln("Close TuicV5 Client at %p", client)
-	client.forceClose()
+	_ = client.Close()
 }

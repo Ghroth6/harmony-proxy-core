@@ -110,6 +110,8 @@ func (t *Tuic) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (_
 	return NewPacketConn(pc, t), nil
 }
 
+func (t *Tuic) Close() error { return t.client.Close() }
+
 func (t *Tuic) dial(ctx context.Context) (quicConn *quic.Conn, err error) {
 	_, quicConn, err = common.DialQuic(ctx, t.addr, t.DialOptions(), t.dialer, t.tlsConfig, t.quicConfig, common.DialQuicOption{Early: t.option.ReduceRtt})
 	if err != nil {

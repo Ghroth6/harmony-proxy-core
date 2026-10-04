@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -23,6 +24,7 @@ import (
 	"github.com/metacubex/mihomo/transport/socks5"
 	"github.com/metacubex/mihomo/transport/tuic"
 	"github.com/metacubex/mihomo/transport/tuic/common"
+	"github.com/metacubex/mihomo/transport/tuic/types"
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/tls"
 )
@@ -166,6 +168,94 @@ func TestSharedTUICPoolSurvivesForwardingStopAfterManagementReuse(t *testing.T) 
 				t.Fatal("forwarding stream remained open")
 			} else if e, ok := err.(net.Error); ok && e.Timeout() {
 				t.Fatal("forwarding stream only returned after read timeout")
+			}
+			// Retiring the whole pool is stronger than stopping one forwarding
+			// generation: both TCP and UDP transports and active streams end.
+			udp, err := client.ListenPacket(context.Background(), metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer udp.Close()
+			udpRead := make(chan error, 1)
+			go func() { _, _, err := udp.ReadFrom(make([]byte, 32)); udpRead <- err }()
+			if err := client.Close(); err != nil {
+				t.Fatal(err)
+			}
+			for _, transport := range transports {
+				if transport.Context().Err() == nil {
+					t.Fatal("pool returned before its QUIC connection ended")
+				}
+			}
+			select {
+			case err := <-udpRead:
+				if err == nil {
+					t.Fatal("UDP reader survived retirement")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("pool did not close its UDP reader")
+			}
+			_ = management.SetReadDeadline(time.Now().Add(time.Second))
+			if _, err := management.Read(make([]byte, 1)); err == nil {
+				t.Fatal("TCP stream survived pool retirement")
+			}
+			if _, err := client.DialContext(context.Background(), metadata); !errors.Is(err, types.ClientClosed) {
+				t.Fatalf("retired pool admitted TCP: %v", err)
+			}
+			if _, err := client.ListenPacket(context.Background(), metadata); !errors.Is(err, types.ClientClosed) {
+				t.Fatalf("retired pool admitted UDP: %v", err)
+			}
+			if dials != 2 {
+				t.Fatalf("retired pool reconnected: %d", dials)
+			}
+			if err := client.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestTUICPoolCloseCancelsAndJoinsPendingDial(t *testing.T) {
+	for _, version := range []int{4, 5} {
+		t.Run(strconv.Itoa(version), func(t *testing.T) {
+			started, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			dial := func(ctx context.Context) (*quic.Conn, error) {
+				close(started)
+				<-ctx.Done()
+				close(canceled)
+				<-release
+				return nil, ctx.Err()
+			}
+			var client *tuic.PoolClient
+			if version == 4 {
+				client = tuic.NewPoolClientV4(&tuic.ClientOptionV4{MaxOpenStreams: 100}, dial)
+			} else {
+				client = tuic.NewPoolClientV5(&tuic.ClientOptionV5{MaxOpenStreams: 100}, dial)
+			}
+			dialResult := make(chan error, 1)
+			go func() { _, err := client.DialContext(context.Background(), &C.Metadata{}); dialResult <- err }()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("dial did not start")
+			}
+			closeResult := make(chan error, 1)
+			go func() { closeResult <- client.Close() }()
+			select {
+			case <-canceled:
+			case <-time.After(time.Second):
+				t.Fatal("pool did not cancel pending dial")
+			}
+			select {
+			case err := <-closeResult:
+				t.Fatalf("pool forgot unfinished dial: %v", err)
+			default:
+			}
+			close(release)
+			if err := <-dialResult; !errors.Is(err, context.Canceled) {
+				t.Fatalf("wrong canceled dial result: %v", err)
+			}
+			if err := <-closeResult; err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

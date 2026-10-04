@@ -26,7 +26,7 @@ type Client interface {
 	OpenStreams() int64
 	LastVisited() time.Time
 	SetLastVisited(last time.Time)
-	Close()
+	Close() error
 }
 
 type ServerHandler interface {
