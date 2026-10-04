@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -30,6 +31,11 @@ type Client struct {
 
 	sessions     map[uint64]*Session
 	sessionsLock sync.Mutex
+	closed       bool
+	creating     sync.WaitGroup
+	reaping      sync.WaitGroup
+	closeOnce    sync.Once
+	closeErr     error
 
 	padding *atomic.Pointer[padding.PaddingFactory]
 
@@ -64,11 +70,14 @@ func NewClient(ctx context.Context, dialOut util.DialOutFunc, _padding *atomic.P
 }
 
 func (c *Client) CreateStream(ctx context.Context) (net.Conn, error) {
-	select {
-	case <-c.die.Done():
+	c.sessionsLock.Lock()
+	if c.closed || c.die.Err() != nil {
+		c.sessionsLock.Unlock()
 		return nil, io.ErrClosedPipe
-	default:
 	}
+	c.creating.Add(1)
+	c.sessionsLock.Unlock()
+	defer c.creating.Done()
 
 	var session *Session
 	var stream *Stream
@@ -85,29 +94,33 @@ func (c *Client) CreateStream(ctx context.Context) (net.Conn, error) {
 	}
 	stream, err = session.OpenStream()
 	if err != nil {
-		session.Close()
-		return nil, fmt.Errorf("failed to create stream: %w", err)
+		return nil, fmt.Errorf("failed to create stream: %w", errors.Join(err, session.Close()))
 	}
 
-	stream.dieHook = func() {
+	stream.setDieHook(func() {
 		// If Session is not closed, put this Stream to pool
 		if !session.IsClosed() {
 			if c.disableReuse {
-				session.Close()
+				session.close()
 				return
 			}
 
 			select {
 			case <-c.die.Done():
 				// Now client has been closed
-				session.Close()
+				session.close()
 			default:
 				c.idleSessionLock.Lock()
-				session.idleSince = time.Now()
-				c.idleSession.Insert(math.MaxUint64-session.seq, session)
+				if !session.IsClosed() && c.die.Err() == nil {
+					session.idleSince = time.Now()
+					c.idleSession.Insert(math.MaxUint64-session.seq, session)
+				}
 				c.idleSessionLock.Unlock()
 			}
 		}
+	})
+	if c.die.Err() != nil || session.IsClosed() {
+		return nil, errors.Join(io.ErrClosedPipe, session.Close())
 	}
 
 	return stream, nil
@@ -125,16 +138,32 @@ func (c *Client) getIdleSession() (idle *Session) {
 }
 
 func (c *Client) createSession(ctx context.Context) (*Session, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.die, cancel)
+	if c.die.Err() != nil {
+		cancel()
+	}
 	ctx, release := forwarding.SharedDialContext(ctx)
 	defer release()
 	underlying, err := c.dialOut(ctx)
-	if err != nil {
+	if underlying == nil {
+		stop()
+		cancel()
 		return nil, err
 	}
 
 	session := NewClientSession(underlying, c.padding, c.clientMetadata)
 	session.seq = c.sessionCounter.Add(1)
-	session.dieHook = func() {
+	c.sessionsLock.Lock()
+	c.sessions[session.seq] = session
+	c.reaping.Add(1)
+	closed := c.closed || c.die.Err() != nil
+	c.sessionsLock.Unlock()
+	go func() {
+		defer c.reaping.Done()
+		<-session.done
+		stop()
+		cancel()
 		if !c.disableReuse {
 			c.idleSessionLock.Lock()
 			c.idleSession.Remove(math.MaxUint64 - session.seq)
@@ -142,37 +171,61 @@ func (c *Client) createSession(ctx context.Context) (*Session, error) {
 		}
 
 		c.sessionsLock.Lock()
-		delete(c.sessions, session.seq)
+		if session.closeErr == nil {
+			delete(c.sessions, session.seq)
+		} else {
+			// Preserve the failed session and its underlying handle. Further
+			// creation is unsafe; Client.Close will return the retained error.
+			c.closed = true
+			c.dieCancel()
+		}
 		c.sessionsLock.Unlock()
+	}()
+	if closed || err != nil || ctx.Err() != nil {
+		if err == nil {
+			err = ctx.Err()
+			if closed || err == nil {
+				err = io.ErrClosedPipe
+			}
+		}
+		return nil, errors.Join(err, session.Close())
 	}
-
-	c.sessionsLock.Lock()
-	c.sessions[session.seq] = session
-	c.sessionsLock.Unlock()
 
 	session.Run()
 	return session, nil
 }
 
 func (c *Client) Close() error {
-	c.dieCancel()
-	if c.idleDone != nil {
-		<-c.idleDone
-	}
-
-	c.sessionsLock.Lock()
-	sessionToClose := make([]*Session, 0, len(c.sessions))
-	for _, session := range c.sessions {
-		sessionToClose = append(sessionToClose, session)
-	}
-	c.sessions = make(map[uint64]*Session)
-	c.sessionsLock.Unlock()
-
-	for _, session := range sessionToClose {
-		session.Close()
-	}
-
-	return nil
+	c.closeOnce.Do(func() {
+		c.sessionsLock.Lock()
+		c.closed = true
+		c.dieCancel()
+		for _, session := range c.sessions {
+			session.close()
+		}
+		c.sessionsLock.Unlock()
+		if c.idleDone != nil {
+			<-c.idleDone
+		}
+		// A dialer may ignore cancellation and return a connection late. Its
+		// creator closes that connection before releasing this registration.
+		c.creating.Wait()
+		c.reaping.Wait()
+		c.sessionsLock.Lock()
+		sessions := make([]*Session, 0, len(c.sessions))
+		for _, session := range c.sessions {
+			sessions = append(sessions, session)
+		}
+		c.sessionsLock.Unlock()
+		var failures []error
+		for _, session := range sessions {
+			if err := session.Close(); err != nil {
+				failures = append(failures, err)
+			}
+		}
+		c.closeErr = errors.Join(failures...)
+	})
+	return c.closeErr
 }
 
 func (c *Client) idleCleanup() {

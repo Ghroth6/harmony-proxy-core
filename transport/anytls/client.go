@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"net"
 	"sync/atomic"
 	"time"
@@ -59,8 +60,7 @@ func (c *Client) CreateProxy(ctx context.Context, destination M.Socksaddr) (net.
 	}
 	err = M.SocksaddrSerializer.WriteAddrPort(conn, destination)
 	if err != nil {
-		conn.Close()
-		return nil, err
+		return nil, errors.Join(err, conn.Close())
 	}
 	return conn, nil
 }
@@ -68,7 +68,7 @@ func (c *Client) CreateProxy(ctx context.Context, destination M.Socksaddr) (net.
 func (c *Client) createOutboundTLSConnection(ctx context.Context) (net.Conn, error) {
 	conn, err := c.dialer.DialContext(ctx, N.NetworkTCP, c.server)
 	if err != nil {
-		return nil, err
+		return conn, err
 	}
 
 	b := buf.NewPacket()
@@ -86,14 +86,14 @@ func (c *Client) createOutboundTLSConnection(ctx context.Context) (net.Conn, err
 
 	tlsConn, err := vmess.StreamTLSConn(ctx, conn, c.tlsConfig)
 	if err != nil {
-		conn.Close()
-		return nil, err
+		// The session client adopts even a failed dial's connection so its
+		// cleanup error and handle cannot disappear before Client.Close.
+		return conn, err
 	}
 
 	_, err = b.WriteTo(tlsConn)
 	if err != nil {
-		tlsConn.Close()
-		return nil, err
+		return tlsConn, err
 	}
 	return tlsConn, nil
 }

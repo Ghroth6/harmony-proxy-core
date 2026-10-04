@@ -27,9 +27,13 @@ type Session struct {
 	streamId   atomic.Uint32
 	streamLock sync.RWMutex
 
-	dieOnce sync.Once
-	die     chan struct{}
-	dieHook func()
+	die           chan struct{}
+	done          chan struct{}
+	closeErr      error
+	lifecycleLock sync.Mutex
+	workers       sync.WaitGroup
+	running       bool
+	openLock      sync.Mutex
 
 	synDone     func()
 	synDoneLock sync.Mutex
@@ -39,7 +43,7 @@ type Session struct {
 	idleSince time.Time
 	padding   *atomic.Pointer[padding.PaddingFactory]
 
-	peerVersion byte
+	peerVersion atomic.Uint32
 
 	// client
 	isClient       bool
@@ -62,6 +66,7 @@ func NewClientSession(conn net.Conn, _padding *atomic.Pointer[padding.PaddingFac
 		clientMetadata: clientMetadata,
 	}
 	s.die = make(chan struct{})
+	s.done = make(chan struct{})
 	s.streams = make(map[uint32]*Stream)
 	return s
 }
@@ -73,12 +78,22 @@ func NewServerSession(conn net.Conn, onNewStream func(stream *Stream), _padding 
 		padding:     _padding,
 	}
 	s.die = make(chan struct{})
+	s.done = make(chan struct{})
 	s.streams = make(map[uint32]*Stream)
 	return s
 }
 
 func (s *Session) Run() {
+	s.lifecycleLock.Lock()
+	if s.running || s.IsClosed() {
+		s.lifecycleLock.Unlock()
+		return
+	}
+	s.running = true
+	s.workers.Add(1)
+	s.lifecycleLock.Unlock()
 	if !s.isClient {
+		defer s.workers.Done()
 		s.recvLoop()
 		return
 	}
@@ -90,10 +105,15 @@ func (s *Session) Run() {
 	}
 	f := newFrame(cmdSettings, 0)
 	f.data = settings.ToBytes()
+	s.connLock.Lock()
 	s.buffering = true
+	s.connLock.Unlock()
 	s.writeControlFrame(f)
 
-	go s.recvLoop()
+	go func() {
+		defer s.workers.Done()
+		s.recvLoop()
+	}()
 }
 
 // IsClosed does a safe check to see if we have shutdown
@@ -106,56 +126,38 @@ func (s *Session) IsClosed() bool {
 	}
 }
 
-// Close is used to close the session and all streams.
+// Close closes all streams and waits for the receiver, SYNACK watchers and
+// underlying connection Close. Internal workers use close instead, to avoid
+// joining themselves. Every caller observes the same actual close result.
 func (s *Session) Close() error {
-	var once bool
-	s.dieOnce.Do(func() {
-		_ = s.conn.SetDeadline(time.Now())
-		close(s.die)
-		once = true
-	})
-	if once {
-		if s.dieHook != nil {
-			s.dieHook()
-			s.dieHook = nil
-		}
-		s.streamLock.Lock()
-		for _, stream := range s.streams {
-			stream.closeLocally()
-		}
-		s.streams = make(map[uint32]*Stream)
-		s.streamLock.Unlock()
-		return s.conn.Close()
-	} else {
-		return io.ErrClosedPipe
-	}
+	s.close()
+	<-s.done
+	return s.closeErr
 }
 
 // OpenStream is used to create a new stream for CLIENT
 func (s *Session) OpenStream() (*Stream, error) {
-	if s.IsClosed() {
+	if !s.beginWork() {
 		return nil, io.ErrClosedPipe
 	}
+	defer s.workers.Done()
+	s.openLock.Lock()
+	defer s.openLock.Unlock()
 
 	sid := s.streamId.Add(1)
 	stream := newStream(sid, s)
 
-	if sid >= 2 && s.peerVersion >= 2 {
-		s.synDoneLock.Lock()
-		if s.synDone != nil {
-			s.synDone()
-		}
-		s.synDone = util.NewDeadlineWatcher(time.Second*3, func() {
-			s.Close()
-		})
-		s.synDoneLock.Unlock()
+	if sid >= 2 && s.peerVersion.Load() >= 2 {
+		s.watchSYNACK(3 * time.Second)
 	}
 
 	if _, err := s.writeControlFrame(newFrame(cmdSYN, sid)); err != nil {
 		return nil, err
 	}
 
+	s.connLock.Lock()
 	s.buffering = false // proxy Write it's SocksAddr to flush the buffer
+	s.connLock.Unlock()
 
 	s.streamLock.Lock()
 	defer s.streamLock.Unlock()
@@ -174,7 +176,7 @@ func (s *Session) recvLoop() error {
 			log.Errorln("[BUG] %v %s", r, string(debug.Stack()))
 		}
 	}()
-	defer s.Close()
+	defer s.close()
 
 	var receivedSettingsFromClient bool
 	var hdr rawHeader
@@ -284,7 +286,7 @@ func (s *Session) recvLoop() error {
 						}
 						// check client's version
 						if v, err := strconv.Atoi(m["v"]); err == nil && v >= 2 {
-							s.peerVersion = byte(v)
+							s.peerVersion.Store(uint32(v))
 							// send cmdServerSettings
 							f := newFrame(cmdServerSettings, 0)
 							f.data = util.StringMap{
@@ -345,7 +347,7 @@ func (s *Session) recvLoop() error {
 						// check server's version
 						m := util.StringMapFromBytes(buffer)
 						if v, err := strconv.Atoi(m["v"]); err == nil {
-							s.peerVersion = byte(v)
+							s.peerVersion.Store(uint32(v))
 						}
 					}
 					pool.Put(buffer)
@@ -433,7 +435,7 @@ func (s *Session) writeControlFrame(frame frame) (int, error) {
 	_, err := s.writeConn(buffer.Bytes())
 	buffer.Release()
 	if err != nil {
-		s.Close()
+		s.close()
 		return 0, err
 	}
 

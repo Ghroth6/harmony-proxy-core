@@ -47,6 +47,7 @@ type pipe struct {
 
 	readDeadline  PipeDeadline
 	writeDeadline PipeDeadline
+	deadlineLock  sync.Mutex // Serializes deadline installation with pipe close.
 }
 
 func (p *pipe) read(b []byte) (n int, err error) {
@@ -71,11 +72,15 @@ func (p *pipe) read(b []byte) (n int, err error) {
 }
 
 func (p *pipe) closeRead(err error) error {
+	p.deadlineLock.Lock()
+	defer p.deadlineLock.Unlock()
 	if err == nil {
 		err = io.ErrClosedPipe
 	}
 	p.rerr.Store(err)
 	p.once.Do(func() { close(p.done) })
+	p.readDeadline.Set(time.Time{})
+	p.writeDeadline.Set(time.Time{})
 	return nil
 }
 
@@ -106,11 +111,15 @@ func (p *pipe) write(b []byte) (n int, err error) {
 }
 
 func (p *pipe) closeWrite(err error) error {
+	p.deadlineLock.Lock()
+	defer p.deadlineLock.Unlock()
 	if err == nil {
 		err = io.EOF
 	}
 	p.werr.Store(err)
 	p.once.Do(func() { close(p.done) })
+	p.readDeadline.Set(time.Time{})
+	p.writeDeadline.Set(time.Time{})
 	return nil
 }
 
@@ -216,6 +225,8 @@ func Pipe() (*PipeReader, *PipeWriter) {
 }
 
 func (p *PipeReader) SetReadDeadline(t time.Time) error {
+	p.deadlineLock.Lock()
+	defer p.deadlineLock.Unlock()
 	if isClosedChan(p.done) {
 		return io.ErrClosedPipe
 	}
@@ -224,6 +235,8 @@ func (p *PipeReader) SetReadDeadline(t time.Time) error {
 }
 
 func (p *PipeWriter) SetWriteDeadline(t time.Time) error {
+	p.r.deadlineLock.Lock()
+	defer p.r.deadlineLock.Unlock()
 	if isClosedChan(p.r.done) {
 		return io.ErrClosedPipe
 	}
