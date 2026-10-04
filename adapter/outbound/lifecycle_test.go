@@ -18,6 +18,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	M "github.com/metacubex/sing/common/metadata"
 	SN "github.com/metacubex/sing/common/network"
+	"github.com/metacubex/smux"
 )
 
 type leaseTestAdapter struct {
@@ -749,9 +750,11 @@ func TestAdapterRetirementRetainsUnknownCloseOwnersButNotAlreadyClosed(t *testin
 		retained int
 	}{
 		{"already closed", fmt.Errorf("closed socket: %w", net.ErrClosed), 0},
+		{"already closed pipe", fmt.Errorf("closed stream: %w", io.ErrClosedPipe), 0},
 		{"unknown", unknown, 1},
 		{"joined sibling", errors.Join(net.ErrClosed, unknown), 1},
 		{"wrapped joined sibling", fmt.Errorf("close: %w", errors.Join(net.ErrClosed, unknown)), 1},
+		{"wrapped pipe sibling", fmt.Errorf("close: %w", errors.Join(io.ErrClosedPipe, unknown)), 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newLeaseTestAdapter()
@@ -786,6 +789,83 @@ func TestAdapterRetirementRetainsUnknownCloseOwnersButNotAlreadyClosed(t *testin
 			_ = p.Close()
 			if raw.calls.Load() != 1 || a.closeCalls.Load() != 1 {
 				t.Fatal("unknown cleanup was retried")
+			}
+		})
+	}
+}
+
+func TestAdapterForceRetireSMUXSessionBeforeStreamClose(t *testing.T) {
+	for _, unknown := range []error{nil, errors.New("another stream resource failed to close")} {
+		name := "closed stream"
+		if unknown != nil {
+			name = "closed stream with unknown sibling"
+		}
+		t.Run(name, func(t *testing.T) {
+			left, right := net.Pipe()
+			config := smux.DefaultConfig()
+			config.KeepAliveDisabled = true
+			client, err := smux.Client(left, config)
+			if err != nil {
+				left.Close()
+				right.Close()
+				t.Fatal(err)
+			}
+			defer client.Close()
+			server, err := smux.Server(right, config)
+			if err != nil {
+				right.Close()
+				t.Fatal(err)
+			}
+			defer server.Close()
+			stream, err := client.OpenStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			a := newLeaseTestAdapter()
+			poolClosed := make(chan struct{})
+			streamResult := make(chan error, 1)
+			conn := NewConn(stream, a)
+			raw := &leaseCloseConn{Conn: conn, close: func() error {
+				// Force the legitimate ordering in which the pool closes first.
+				<-poolClosed
+				err := conn.Close()
+				streamResult <- err
+				return errors.Join(err, unknown)
+			}}
+			a.dial = func(context.Context) (C.Conn, error) { return raw, nil }
+			a.close = func() error {
+				err := client.Close()
+				close(poolClosed)
+				return err
+			}
+			p := leaseAdapter(a)
+			if _, err := p.DialContext(context.Background(), &C.Metadata{}); err != nil {
+				t.Fatal(err)
+			}
+			p.ForceRetire()
+			err = waitLeaseRetired(t, p)
+			if streamErr := <-streamResult; streamErr != io.ErrClosedPipe {
+				t.Fatalf("real smux stream Close returned %v, want ErrClosedPipe", streamErr)
+			}
+			if unknown == nil && err != nil {
+				t.Fatalf("already closed smux stream blocked retirement: %v", err)
+			}
+			if unknown != nil && !errors.Is(err, unknown) {
+				t.Fatalf("unknown sibling was hidden: %v", err)
+			}
+			if errors.Is(err, io.ErrClosedPipe) {
+				t.Fatalf("known closed error retained: %v", err)
+			}
+			p.lifetime.mu.Lock()
+			retained := len(p.lifetime.failed)
+			p.lifetime.mu.Unlock()
+			if (unknown != nil) != (retained == 1) {
+				t.Fatalf("unknown owner retained=%d, unknown=%v", retained, unknown)
+			}
+			_ = p.Close()
+			if a.closeCalls.Load() != 1 || raw.calls.Load() != 1 {
+				t.Fatal("already closed stream cleanup was retried")
 			}
 		})
 	}

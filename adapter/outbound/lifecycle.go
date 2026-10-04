@@ -122,10 +122,10 @@ func (s *adapterLifetime) advanceLocked() {
 	}
 }
 
-// Match forwarding/ingress retirement: a known already-closed result is safe,
-// but errors.Join(net.ErrClosed, anotherFailure) must retain the sibling error.
+// Match forwarding/ingress retirement, also accepting smux's known closed
+// stream result (as KcpTun does). An aggregate must retain unknown siblings.
 func adapterCloseError(err error) error {
-	if err == nil || err == net.ErrClosed {
+	if err == nil || err == net.ErrClosed || err == io.ErrClosedPipe {
 		return nil
 	}
 	if multi, ok := err.(interface{ Unwrap() []error }); ok {
