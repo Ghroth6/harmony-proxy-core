@@ -35,10 +35,92 @@ type internalProxyState struct {
 
 type Proxy struct {
 	C.ProxyAdapter
-	historyMu sync.RWMutex
-	alive     atomic.Bool
-	history   *queue.Queue[C.DelayHistory]
-	extra     xsync.Map[string, *internalProxyState]
+	historyMu  sync.RWMutex
+	alive      atomic.Bool
+	history    *queue.Queue[C.DelayHistory]
+	extra      xsync.Map[string, *internalProxyState]
+	testMu     sync.Mutex
+	testCtx    context.Context
+	testCancel context.CancelFunc
+	testClosed bool
+	testActive int
+	testDone   chan struct{}
+}
+
+// CancelURLTests retires measurements on this proxy object without changing its
+// shared transport. A configuration owner cancels all retired objects first,
+// then waits for their measurements before closing transports.
+func (p *Proxy) CancelURLTests() {
+	p.testMu.Lock()
+	defer p.testMu.Unlock()
+	p.initURLTestsLocked()
+	if !p.testClosed {
+		p.testClosed = true
+		p.testCancel()
+		if p.testActive == 0 {
+			close(p.testDone)
+		}
+	}
+}
+
+func (p *Proxy) WaitURLTests(ctx context.Context) error {
+	p.testMu.Lock()
+	p.initURLTestsLocked()
+	done := p.testDone
+	p.testMu.Unlock()
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *Proxy) initURLTestsLocked() {
+	if p.testCtx == nil {
+		p.testCtx, p.testCancel = context.WithCancel(context.Background())
+		p.testDone = make(chan struct{})
+	}
+}
+
+func (p *Proxy) beginURLTest(parent context.Context) (context.Context, func(), error) {
+	p.testMu.Lock()
+	defer p.testMu.Unlock()
+	p.initURLTestsLocked()
+	if p.testClosed {
+		return nil, nil, context.Canceled
+	}
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(p.testCtx, cancel)
+	p.testActive++
+	return ctx, func() {
+		stop()
+		cancel()
+		p.testMu.Lock()
+		defer p.testMu.Unlock()
+		p.testActive--
+		if p.testClosed && p.testActive == 0 {
+			close(p.testDone)
+		}
+	}, nil
+}
+
+func (p *Proxy) commitURLTest(ctx context.Context, action func()) bool {
+	p.testMu.Lock()
+	defer p.testMu.Unlock()
+	if p.testClosed {
+		return false
+	}
+	if guard, ok := ctx.Value(urlTestCommitGuardKey{}).(func(func()) bool); ok {
+		return guard(action)
+	}
+	action()
+	return true
 }
 
 type urlTestCommitGuardKey struct{}
@@ -48,6 +130,13 @@ type urlTestCommitGuardKey struct{}
 // Actions only update local state; event callbacks run outside the guard and
 // remain part of the URLTest call, so the owner's wait also joins them.
 func WithURLTestCommitGuard(ctx context.Context, guard func(action func()) bool) context.Context {
+	if previous, ok := ctx.Value(urlTestCommitGuardKey{}).(func(func()) bool); ok {
+		next := guard
+		guard = func(action func()) bool {
+			accepted := false
+			return previous(func() { accepted = next(action) }) && accepted
+		}
+	}
 	return context.WithValue(ctx, urlTestCommitGuardKey{}, guard)
 }
 
@@ -185,6 +274,11 @@ func (p *Proxy) MarshalJSON() ([]byte, error) {
 // URLTest get the delay for the specified URL
 // implements C.Proxy
 func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {
+	ctx, finish, err := p.beginURLTest(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer finish()
 	var satisfied bool
 	var statusCode int
 
@@ -233,12 +327,8 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 				Succeeded: alive, Err: err,
 			}
 		}
-		if guard, ok := ctx.Value(urlTestCommitGuardKey{}).(func(func()) bool); ok {
-			if !guard(commit) {
-				return
-			}
-		} else {
-			commit()
+		if !p.commitURLTest(ctx, commit) {
+			return
 		}
 		urlTests.Emit(event)
 	}()
