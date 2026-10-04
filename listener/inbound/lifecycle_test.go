@@ -268,7 +268,15 @@ func (*lifecycleRetryCloser) Address() string      { return "test" }
 func (*lifecycleRetryCloser) Config() string       { return "" }
 func (*lifecycleRetryCloser) AddrList() []net.Addr { return nil }
 
+type lifecycleUnwrapNilError struct{}
+
+func (lifecycleUnwrapNilError) Error() string { return "error with no wrapped cause" }
+func (lifecycleUnwrapNilError) Unwrap() error { return nil }
+
 func TestListenerLifecycleCloseRetainsFailedHandles(t *testing.T) {
+	if err := closeListener(&lifecycleRetryCloser{err: lifecycleUnwrapNilError{}}); err == nil {
+		t.Fatal("a nil unwrap cause must not hide a real error")
+	}
 	want := errors.New("transient close error")
 	failed := &lifecycleRetryCloser{err: errors.Join(net.ErrClosed, want)}
 	closed := &lifecycleRetryCloser{err: net.ErrClosed}

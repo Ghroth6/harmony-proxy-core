@@ -18,8 +18,10 @@ func CloseError(err error) error {
 		}
 		return errors.Join(pending...)
 	}
-	if single, ok := err.(interface{ Unwrap() error }); ok && CloseError(single.Unwrap()) == nil {
-		return nil
+	if single, ok := err.(interface{ Unwrap() error }); ok {
+		if child := single.Unwrap(); child != nil && CloseError(child) == nil {
+			return nil
+		}
 	}
 	return err
 }
