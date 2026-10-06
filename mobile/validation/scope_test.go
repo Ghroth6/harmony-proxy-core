@@ -15,22 +15,6 @@ import (
 	"github.com/metacubex/mihomo/mobile/validation"
 )
 
-const staticInput = `proxies:
-  - name: sample-ss
-    type: ss
-    server: 192.0.2.1
-    port: 8388
-    cipher: aes-128-gcm
-    password: documentation-only
-proxy-groups:
-  - name: sample-select
-    type: select
-    proxies: [sample-ss, DIRECT]
-rules:
-  - DOMAIN,example.com,sample-select
-  - MATCH,DIRECT
-`
-
 // Diagnostic descent through the real operation. Phone tests call the same
 // application operation; this host evidence does not replace that acceptance.
 func TestUnpreparedResourceIsReportedWithoutRequestsWhenNetworkIsAvailable(t *testing.T) {
@@ -48,7 +32,7 @@ func TestUnpreparedResourceIsReportedWithoutRequestsWhenNetworkIsAvailable(t *te
 	if hits.Swap(0) != 1 {
 		t.Fatal("local observation endpoint was not reachable")
 	}
-	input := []byte(staticInput + fmt.Sprintf("proxy-providers:\n  unprepared:\n    type: http\n    url: %s\n    path: ./unprepared.yaml\n", server.URL))
+	input := []byte(staticConfig + fmt.Sprintf("proxy-providers:\n  unprepared:\n    type: http\n    url: %s\n    path: ./unprepared.yaml\n", server.URL))
 	result := validation.Validate("resource-available-network", input)
 	if result.Category != "incomplete" || result.Phase != "semantic" {
 		t.Fatalf("unprepared resource must remain incomplete: %#v", result)
@@ -62,7 +46,7 @@ func TestUnpreparedResourceIsReportedWithoutRequestsWhenNetworkIsAvailable(t *te
 }
 
 func TestIgnoredRuleParametersRemainUncovered(t *testing.T) {
-	input := []byte(strings.Replace(staticInput, "DOMAIN,example.com,sample-select", "DOMAIN,example.com,sample-select,no-resolve", 1))
+	input := []byte(strings.Replace(staticConfig, "DOMAIN,example.com,sample-select", "DOMAIN,example.com,sample-select,no-resolve", 1))
 	result := validation.Validate("rule-parameter", input)
 	if result.Category != "incomplete" || result.Phase != "semantic" || len(result.Diagnostics) == 0 || result.Diagnostics[0].Code != "UNSUPPORTED_CAPABILITY" || result.Diagnostics[0].Field != "/rules/0" {
 		t.Fatalf("extra rule parameters must remain uncovered: %#v", result)
@@ -70,7 +54,7 @@ func TestIgnoredRuleParametersRemainUncovered(t *testing.T) {
 }
 
 func TestCustomFieldTagCannotBeSilentlyDiscarded(t *testing.T) {
-	input := []byte(strings.Replace(staticInput, "proxies:", "!uncovered proxies:", 1))
+	input := []byte(strings.Replace(staticConfig, "proxies:", "!uncovered proxies:", 1))
 	result := validation.Validate("custom-tag", input)
 	if result.Category != "incomplete" || result.Phase != "semantic" || len(result.Diagnostics) == 0 || result.Diagnostics[0].Code != "UNSUPPORTED_DOCUMENT" || result.Diagnostics[0].Field != "/proxies" {
 		t.Fatalf("custom YAML field tags must remain uncovered: %#v", result)
@@ -84,8 +68,8 @@ func TestResourceReferenceChangesDiagnosisWithoutWritingCandidate(t *testing.T) 
 	if err := os.WriteFile(resource, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	first := validation.Validate("resource-url", []byte(staticInput+"proxy-providers:\n  source:\n    type: http\n    url: https://example.invalid/unprepared.yaml\n"))
-	second := validation.Validate("resource-file", []byte(staticInput+fmt.Sprintf("proxy-providers:\n  source:\n    type: file\n    path: %s\n", filepath.ToSlash(resource))))
+	first := validation.Validate("resource-url", []byte(staticConfig+"proxy-providers:\n  source:\n    type: http\n    url: https://example.invalid/unprepared.yaml\n"))
+	second := validation.Validate("resource-file", []byte(staticConfig+fmt.Sprintf("proxy-providers:\n  source:\n    type: file\n    path: %s\n", filepath.ToSlash(resource))))
 	if first.Category != "incomplete" || second.Category != "incomplete" || first.InputDigest == second.InputDigest ||
 		first.Diagnostics[0].Field != "/proxy-providers/0/url" || second.Diagnostics[0].Field != "/proxy-providers/0/path" {
 		t.Fatalf("changing actual references must change the scoped diagnosis: %#v / %#v", first, second)
@@ -106,15 +90,18 @@ func TestResourceReferenceChangesDiagnosisWithoutWritingCandidate(t *testing.T) 
 
 func TestUnsupportedContentIsNotDiscardedByTypedYAML(t *testing.T) {
 	cases := []struct{ name, input, code, field string }{
-		{"top-field", staticInput + "untrusted-secret-key: private-value\n", "UNSUPPORTED_FIELD", "/3"},
-		{"node-field", strings.Replace(staticInput, "proxy-groups:", "    plugin: untrusted-secret-value\nproxy-groups:", 1), "UNSUPPORTED_FIELD", "/proxies/0/6"},
-		{"cipher", strings.Replace(staticInput, "aes-128-gcm", "aes-256-gcm", 1), "UNSUPPORTED_CAPABILITY", "/proxies/0/cipher"},
-		{"group-provider", strings.Replace(staticInput, "rules:", "    use: [unprepared]\nrules:", 1), "RESOURCE_UNAVAILABLE", "/proxy-groups/0/use"},
-		{"geodata-rule", strings.Replace(staticInput, "DOMAIN,example.com,sample-select", "GEOIP,ZZ,sample-select", 1), "RESOURCE_UNAVAILABLE", "/rules/0"},
-		{"alias", strings.Replace(strings.Replace(staticInput, "server: 192.0.2.1", "server: &shared 192.0.2.1", 1), "password: documentation-only", "password: *shared", 1), "YAML_ALIAS_UNCHECKED", "/proxies/0/password"},
-		{"merge", strings.Replace(strings.Replace(staticInput, "- name: sample-ss", "- &base\n    name: sample-ss", 1), "proxy-groups:", "  - <<: *base\nproxy-groups:", 1), "YAML_ALIAS_UNCHECKED", "/proxies/1/0"},
-		{"extra-document", staticInput + "---\nproxy-providers: {}\n", "UNSUPPORTED_DOCUMENT", ""},
-		{"custom-root", "!uncovered\n" + staticInput, "UNSUPPORTED_DOCUMENT", ""},
+		{"top-field", staticConfig + "untrusted-secret-key: private-value\n", "UNSUPPORTED_FIELD", "/3"},
+		{"node-field", strings.Replace(staticConfig, "proxy-groups:", "    plugin: untrusted-secret-value\nproxy-groups:", 1), "UNSUPPORTED_FIELD", "/proxies/0/6"},
+		{"cipher", strings.Replace(staticConfig, "aes-128-gcm", "aes-256-gcm", 1), "UNSUPPORTED_CAPABILITY", "/proxies/0/cipher"},
+		{"group-provider", strings.Replace(staticConfig, "rules:", "    use: [unprepared]\nrules:", 1), "RESOURCE_UNAVAILABLE", "/proxy-groups/0/use"},
+		{"geodata-rule", strings.Replace(staticConfig, "DOMAIN,example.com,sample-select", "GEOIP,ZZ,sample-select", 1), "RESOURCE_UNAVAILABLE", "/rules/0"},
+		{"alias", strings.Replace(strings.Replace(staticConfig, "server: 192.0.2.1", "server: &shared 192.0.2.1", 1), "password: documentation-only", "password: *shared", 1), "YAML_ALIAS_UNCHECKED", "/proxies/0/password"},
+		{"merge", strings.Replace(strings.Replace(staticConfig, "- name: sample-ss", "- &base\n    name: sample-ss", 1), "proxy-groups:", "  - <<: *base\nproxy-groups:", 1), "YAML_ALIAS_UNCHECKED", "/proxies/1/0"},
+		{"extra-document", staticConfig + "---\nproxy-providers: {}\n", "UNSUPPORTED_DOCUMENT", ""},
+		{"custom-root", "!uncovered\n" + staticConfig, "UNSUPPORTED_DOCUMENT", ""},
+		{"unknown-builtin-root", "!!uncovered\n" + staticConfig, "UNSUPPORTED_DOCUMENT", ""},
+		{"unknown-builtin-top-key", strings.Replace(staticConfig, "proxies:", "!!uncovered proxies:", 1), "UNSUPPORTED_DOCUMENT", "/proxies"},
+		{"unknown-builtin-node-key", strings.Replace(staticConfig, "server:", "!!uncovered server:", 1), "UNSUPPORTED_DOCUMENT", "/proxies/0/server"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -135,5 +122,26 @@ func TestCyclicAliasCannotPassOrHang(t *testing.T) {
 	result := validation.Validate("cyclic-alias", []byte("proxies: &cycle [*cycle]\n"))
 	if result.Category == "pass" || result.Category == "failure" {
 		t.Fatalf("cyclic aliases must be rejected or remain incomplete: %#v", result)
+	}
+}
+
+func TestUnknownTagSpellingsCannotPassStaticValidation(t *testing.T) {
+	for _, tag := range []string{"!!uncovered", "!<!!uncovered>", "!<tag:yaml.org,2002:uncovered>", "!<tag:example.invalid,2026:uncovered>"} {
+		t.Run(tag, func(t *testing.T) {
+			input := []byte(strings.Replace(staticConfig, "server: 192.0.2.1", "server: "+tag+" 192.0.2.1", 1))
+			result := validation.Validate("unknown-tag", input)
+			if result.Category != "incomplete" || len(result.Diagnostics) == 0 || result.Diagnostics[0].Code != "UNSUPPORTED_DOCUMENT" || result.Diagnostics[0].Field != "/proxies/0/server" {
+				t.Fatalf("unknown tag must remain incomplete at the field: %#v", result)
+			}
+			encoded, err := json.Marshal(result.Diagnostics)
+			if err != nil || strings.Contains(string(encoded), tag) || strings.Contains(string(encoded), "192.0.2.1") {
+				t.Fatal("diagnostic exposed the supplied tag or value")
+			}
+		})
+	}
+	plain := validation.Validate("plain-tag", []byte(staticConfig))
+	standard := validation.Validate("standard-tag", []byte(strings.Replace(staticConfig, "server: 192.0.2.1", "server: !!str 192.0.2.1", 1)))
+	if standard.Category != "pass" || standard.InputDigest == plain.InputDigest {
+		t.Fatalf("recognized !!str mutation must still pass and identify actual bytes: %#v", standard)
 	}
 }
