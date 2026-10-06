@@ -34,7 +34,7 @@ $env:GOMODCACHE=$cache; $env:GOCACHE=Join-Path $core 'local/cache/go-native'
 $env:GOPROXY='off'; $env:GOSUMDB='off'; $env:GOTMPDIR=Join-Path $stage 'tmp'
 $env:TMP=$env:GOTMPDIR; $env:TEMP=$env:GOTMPDIR
 $env:CC=Join-Path $sdk 'llvm/bin/clang.exe'; $env:CXX=Join-Path $sdk 'llvm/bin/clang++.exe'
-$sysroot=(Join-Path $sdk 'sysroot').Replace('\','/')
+$sysroot=(Join-Path $sdk 'sysroot').Replace([IO.Path]::DirectorySeparatorChar, '/')
 $env:CGO_CFLAGS="--target=aarch64-linux-ohos --sysroot=`"$sysroot`" -D__MUSL__ -fPIC"
 $env:CGO_LDFLAGS="--target=aarch64-linux-ohos --sysroot=`"$sysroot`""
 $arguments=@('build','-buildvcs=false','-mod=mod','-tlsmodegd','-buildmode','c-shared','-tags','ohos with_gvisor',
