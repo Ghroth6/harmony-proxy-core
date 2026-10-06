@@ -912,6 +912,7 @@ func parseProxiesInto(cfg *RawConfig, owned *configresources.Set) (proxies map[s
 		AllProxies []string
 		hasGlobal  bool
 	)
+	groupIndexes := make(map[string]int)
 
 	proxies["DIRECT"] = adapter.NewProxy(outbound.NewDirect())
 	proxies["REJECT"] = adapter.NewProxy(outbound.NewReject())
@@ -928,7 +929,7 @@ func parseProxiesInto(cfg *RawConfig, owned *configresources.Set) (proxies map[s
 	for idx, mapping := range proxiesConfig {
 		proxy, err := adapter.ParseProxy(mapping, adapter.WithTunnelForAPI(T.Tunnel))
 		if err != nil {
-			return nil, nil, fmt.Errorf("proxy %d: %w", idx, err)
+			return nil, nil, &semanticParseError{code: "PROXY_INVALID", field: fmt.Sprintf("proxies[%d]", idx), cause: fmt.Errorf("proxy %d: %w", idx, err)}
 		}
 		// Adopt before duplicate-name validation: this object is not yet in the map.
 		owned.AddProxy(proxy)
@@ -950,6 +951,7 @@ func parseProxiesInto(cfg *RawConfig, owned *configresources.Set) (proxies map[s
 		if groupName == "GLOBAL" {
 			hasGlobal = true
 		}
+		groupIndexes[groupName] = idx
 		proxyList = append(proxyList, groupName)
 	}
 
@@ -986,7 +988,11 @@ func parseProxiesInto(cfg *RawConfig, owned *configresources.Set) (proxies map[s
 			ownProvider(owned, pd)
 		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("proxy group[%d]: %w", idx, err)
+			code, field := "GROUP_INVALID", fmt.Sprintf("proxy-groups[%d]", groupIndexes[mapping["name"].(string)])
+			if errors.Is(err, outboundgroup.ErrProxyNotFound) {
+				code, field = "GROUP_REFERENCE_INVALID", field+".proxies"
+			}
+			return nil, nil, &semanticParseError{code: code, field: field, cause: fmt.Errorf("proxy group[%d]: %w", idx, err)}
 		}
 		owned.AddAdapter(group)
 
@@ -1140,12 +1146,12 @@ func parseRules(rulesConfig []string, proxies map[string]C.Proxy, ruleProviders 
 	for idx, line := range rulesConfig {
 		tp, payload, target, params := RC.ParseRulePayload(line, true)
 		if target == "" {
-			return nil, fmt.Errorf("%s[%d] [%s] error: format invalid", format, idx, line)
+			return nil, &semanticParseError{code: "RULE_INVALID", field: fmt.Sprintf("%s[%d]", format, idx), cause: fmt.Errorf("%s[%d] [%s] error: format invalid", format, idx, line)}
 		}
 
 		if _, ok := proxies[target]; !ok {
 			if tp != "SUB-RULE" {
-				return nil, fmt.Errorf("%s[%d] [%s] error: proxy [%s] not found", format, idx, line, target)
+				return nil, &semanticParseError{code: "RULE_REFERENCE_INVALID", field: fmt.Sprintf("%s[%d]", format, idx), cause: fmt.Errorf("%s[%d] [%s] error: proxy [%s] not found", format, idx, line, target)}
 			} else if _, ok = subRules[target]; !ok {
 				return nil, fmt.Errorf("%s[%d] [%s] error: sub-rule [%s] not found", format, idx, line, target)
 			}
@@ -1153,7 +1159,7 @@ func parseRules(rulesConfig []string, proxies map[string]C.Proxy, ruleProviders 
 
 		parsed, parseErr := R.ParseRule(tp, payload, target, params, subRules)
 		if parseErr != nil {
-			return nil, fmt.Errorf("%s[%d] [%s] error: %s", format, idx, line, parseErr.Error())
+			return nil, &semanticParseError{code: "RULE_INVALID", field: fmt.Sprintf("%s[%d]", format, idx), cause: fmt.Errorf("%s[%d] [%s] error: %s", format, idx, line, parseErr.Error())}
 		}
 
 		for _, name := range parsed.ProviderNames() {

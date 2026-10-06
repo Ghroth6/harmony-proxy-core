@@ -1,10 +1,12 @@
 // Package validation exposes the single read-only mobile validation operation.
-// It never applies a configuration or calls the resource-constructing parser.
+// It only constructs and discards the explicitly gated static subset, never
+// applying a configuration or calling the full resource-constructing parser.
 package validation
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 
 	"github.com/metacubex/mihomo/config"
@@ -71,15 +73,57 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		receipt.Diagnostics = []Diagnostic{{Code: "CONFIG_EMPTY", Field: "", Message: "Configuration is empty."}}
 		return
 	}
-	if _, err := config.UnmarshalRawConfig(input); err != nil {
+	raw, err := config.UnmarshalRawConfig(input)
+	if err != nil {
 		receipt.Category = "invalid"
 		// Core errors can echo scalar values (including credentials). Preserve
 		// the classification, never publish the unsanitized parser error.
 		receipt.Diagnostics = []Diagnostic{{Code: "FORMAT_INVALID", Field: "", Message: "Mihomo could not decode the configuration format."}}
 		return
 	}
-	receipt.Category = "incomplete"
 	receipt.Covered = []string{"mihomo-format"}
-	receipt.Diagnostics = []Diagnostic{{Code: "SEMANTICS_NOT_CHECKED", Field: "", Message: "Format check completed; semantics have not been checked."}}
+	receipt.Phase = "semantic"
+	if diagnostics := inspectInputScope(input); len(diagnostics) != 0 {
+		receipt.Category = "incomplete"
+		receipt.Diagnostics = diagnostics
+		for _, diagnostic := range diagnostics {
+			if diagnostic.Field != "" {
+				receipt.Uncovered = append(receipt.Uncovered, diagnostic.Field)
+			}
+		}
+		return
+	}
+	if err := config.ValidateMobileStatic(raw); err != nil {
+		receipt.Category = "invalid"
+		var diagnostic *config.MobileValidationError
+		if errors.As(err, &diagnostic) {
+			if diagnostic.Code == "CANDIDATE_CLEANUP_FAILED" {
+				receipt.Category = "failure"
+			} else if diagnostic.Code == "CAPABILITY_NOT_COVERED" {
+				receipt.Category = "incomplete"
+			}
+			message := "Mihomo rejected a static node or proxy group definition."
+			switch diagnostic.Code {
+			case "GROUP_REFERENCE_INVALID":
+				message = "A select group references a proxy node or group that does not exist."
+			case "RULE_REFERENCE_INVALID":
+				message = "A static rule references a proxy node or group that does not exist."
+			case "RULE_INVALID":
+				message = "A static rule has an invalid definition."
+			case "CAPABILITY_NOT_COVERED":
+				message = "This field or capability is outside the current static validation scope."
+			case "CANDIDATE_CLEANUP_FAILED":
+				message = "Temporary validation objects could not be completely released."
+			}
+			receipt.Diagnostics = []Diagnostic{{Code: diagnostic.Code, Field: diagnostic.Field, Message: message}}
+		} else {
+			receipt.Category = "failure"
+			receipt.Diagnostics = []Diagnostic{{Code: "CORE_FAILURE", Field: "", Message: "Core validation did not complete."}}
+		}
+		return
+	}
+	receipt.Category = "pass"
+	receipt.Covered = append(receipt.Covered, "static-ss-aes-128-gcm", "explicit-select-references", "DOMAIN-MATCH-rule-references", "candidate-resources-closed")
+	receipt.Uncovered = []string{"runtime-connectivity", "other-protocols-fields-and-rule-types"}
 	return
 }

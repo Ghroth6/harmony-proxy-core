@@ -4,9 +4,14 @@ This backend owns `mobile/validation` and the versioned byte-buffer C export in
 `cmd/mobile`. The application operation and receipt contract are authoritative in
 [clashbox-meta docs/m1a-validation.md](https://github.com/Ghroth6/clashbox-meta/blob/integration/m1a-6/docs/m1a-validation.md).
 
-Format decoding invokes real Mihomo `config.UnmarshalRawConfig`. It does not
-invoke `ParseRawConfig`, apply a candidate, start listeners, or obtain resources.
-Format success remains `incomplete`; the semantic slice extends this operation.
+Format decoding invokes real Mihomo `config.UnmarshalRawConfig`. The original
+YAML scope gate runs before semantic constructors. Supported static ss/select/
+DOMAIN/MATCH inputs pass `config.ValidateMobileStatic`, which checks required
+node scalars and integer ports 1..65535, reuses real proxy/group/rule semantics,
+then closes and joins all candidate resources before returning. Missing members
+and targets return sanitized structured diagnostics. Unsupported fields/resources
+remain incomplete. This path never invokes `ParseRawConfig`, temporarily updates
+globals, applies a candidate, starts listeners, or obtains external resources.
 Parser error strings are deliberately not returned because they can echo input.
 
 Build provenance must set `-X github.com/metacubex/mihomo/mobile/validation.SourceRevision=<actual-clean-commit>`.

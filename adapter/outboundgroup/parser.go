@@ -16,6 +16,9 @@ import (
 )
 
 var (
+	// ErrProxyNotFound lets callers report a missing explicit member without
+	// exposing the input value carried in the error text.
+	ErrProxyNotFound     = errors.New("proxy reference not found")
 	errFormat            = errors.New("format error")
 	errType              = errors.New("unsupported type")
 	errMissProxy         = errors.New("`use` or `proxies` missing")
@@ -228,7 +231,7 @@ func getProxies(mapping map[string]C.Proxy, list []string) ([]C.Proxy, error) {
 	for _, name := range list {
 		p, ok := mapping[name]
 		if !ok {
-			return nil, fmt.Errorf("'%s' not found", name)
+			return nil, fmt.Errorf("'%s' not found: %w", name, ErrProxyNotFound)
 		}
 		ps = append(ps, p)
 	}
