@@ -86,6 +86,11 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 	if diagnostics := inspectInputScope(input); len(diagnostics) != 0 {
 		receipt.Category = "incomplete"
 		receipt.Diagnostics = diagnostics
+		for _, diagnostic := range diagnostics {
+			if diagnostic.Field != "" {
+				receipt.Uncovered = append(receipt.Uncovered, diagnostic.Field)
+			}
+		}
 		return
 	}
 	if err := config.ValidateMobileStatic(raw); err != nil {
