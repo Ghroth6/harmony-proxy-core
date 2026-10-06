@@ -2,6 +2,8 @@
 
 本仓直接派生自 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，维护 OHOS 所需的连接活动、流量分类、事件订阅与平台网络快照适配。以下合同已经宿主测试；原生库交付与设备验收状态以协调仓为准。
 
+当前服务于独立应用 **clashoh**，应用与整体设计归 [clashbox-meta](https://github.com/Ghroth6/clashbox-meta)，旧 ClashBox 仅作参考。2026-10-06，M1a 校验实现已在本地合入本仓默认分支 `codex/ohos-adaptation`（`5328a5d`）；应用已合入其 `main`，均尚未推送。导出接口和支持范围见 [mobile/README.md](mobile/README.md)，真机 20/20 行为与记录检查及 25 次 socket 比较未验证的边界见应用仓 `docs/verification/m1a-2026-10-06.md`。模块设计与后续能力分解见应用仓 docs/design.md 和 docs/delivery-plan.md；该结果不证明新应用 VPN 转发或长期后台已实现。下列既有后端合同仍逐项评估是否适用于后续增量，不整体视为新应用已验收能力。
+
 `NowTraffic(onlyProxy)` 返回上一秒的字节桶，读取不清零；`TotalTraffic(onlyProxy)` 保留初始化或 Reset 后的累计，包括已关闭连接。proxy 分类依据连接创建时固定的实际出口类型，不依赖名称或组的后续选择；Direct、Compatible、控制出口、组型和未知类型不算代理。内部 `pushToManager=false` 流量仍排除，计数、轮桶和 Reset 共享一个边界。字节上报保留官方 tracker 的缓冲 API 局限，不代表精确的线上传输字节。
 
 `Tracker.LastActivity()` 初值为连接建立时间，随后记录可确认的 payload I/O，保留单调时钟并发更新不回退。TCP 空操作和失败尝试不刷新，UDP 成功的零长度包刷新；缓冲写入报错或复制回调未上报的部分传输无法确认，非空缓冲读取仅在长度增长时确认活动。该查询不改变 JSON 结构，也不决定空闲关闭策略。
