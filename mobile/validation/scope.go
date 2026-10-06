@@ -2,134 +2,191 @@ package validation
 
 import (
 	"bytes"
-	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
 
+// inspectInputScope examines original bytes rather than Mihomo's typed result,
+// which deliberately ignores unrecognized YAML keys. No resource constructors
+// or resource lookup are called here.
 func inspectInputScope(input []byte) []Diagnostic {
 	decoder := yaml.NewDecoder(bytes.NewReader(input))
 	var document yaml.Node
-	if err := decoder.Decode(&document); err != nil {
-		return []Diagnostic{{Code: "CAPABILITY_NOT_COVERED", Message: "The original YAML document could not be inspected safely."}}
+	if decoder.Decode(&document) != nil {
+		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", "", "The original document could not be inspected within this validation scope.")
 	}
-	var next yaml.Node
-	if err := decoder.Decode(&next); err != io.EOF {
-		return []Diagnostic{{Code: "UNSUPPORTED_DOCUMENT", Message: "Only one YAML configuration document is currently covered."}}
+	var additional yaml.Node
+	if err := decoder.Decode(&additional); err != io.EOF {
+		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", "", "Multiple YAML documents are outside this validation scope.")
 	}
 	return inspectScope(&document)
 }
 
-// inspectScope reads the original syntax tree before any semantic constructor.
-// An unsupported or ambiguous node never reaches the engine constructors.
 func inspectScope(document *yaml.Node) []Diagnostic {
-	unsupported := func(field string) []Diagnostic {
-		return []Diagnostic{{Code: "CAPABILITY_NOT_COVERED", Field: field, Message: "This field or capability is outside the current static validation scope."}}
-	}
-	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
-		return unsupported("")
+	if document == nil || document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", "", "A single configuration mapping is required for this validation scope.")
 	}
 	root := document.Content[0]
-	if root.Kind != yaml.MappingNode {
-		return unsupported("")
+	if root.Tag != "" && !strings.HasPrefix(root.Tag, "!!") {
+		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", "", "Custom YAML tags have not been checked.")
 	}
-	var safeSyntax func(*yaml.Node) bool
-	safeSyntax = func(node *yaml.Node) bool {
-		switch node.Kind {
-		case yaml.MappingNode:
-			if node.Tag != "!!map" {
-				return false
+	for index := 0; index < len(root.Content); index += 2 {
+		key, value := root.Content[index], root.Content[index+1]
+		field := safeField("", key.Value, index/2)
+		if key.Tag != "" && !strings.HasPrefix(key.Tag, "!!") {
+			return scopeDiagnostic("UNSUPPORTED_DOCUMENT", field, "Custom YAML tags have not been checked.")
+		}
+		if unsupported := inspectYAML(value, field, make(map[*yaml.Node]bool), 0); unsupported != nil {
+			return unsupported
+		}
+		if key.Kind != yaml.ScalarNode || key.Value == "<<" || key.Tag == "!!merge" {
+			return scopeDiagnostic("YAML_ALIAS_UNCHECKED", field, "YAML aliases and merge keys have not been checked.")
+		}
+		switch key.Value {
+		case "proxy-providers", "rule-providers":
+			return resourceDiagnostic(value, field)
+		case "geox-url", "external-ui", "external-ui-url":
+			return scopeDiagnostic("RESOURCE_UNAVAILABLE", field, "Referenced configuration resources have not been prepared for validation.")
+		case "proxies":
+			if result := inspectEntries(value, field, true); result != nil {
+				return result
 			}
-		case yaml.SequenceNode:
-			if node.Tag != "!!seq" {
-				return false
+		case "proxy-groups":
+			if result := inspectEntries(value, field, false); result != nil {
+				return result
 			}
-		case yaml.ScalarNode:
-			if node.Tag != "!!str" && node.Tag != "!!int" && node.Tag != "!!bool" && node.Tag != "!!float" {
-				return false
-			}
-		default:
-			return false
-		}
-		for _, child := range node.Content {
-			if !safeSyntax(child) {
-				return false
-			}
-		}
-		return true
-	}
-	if !safeSyntax(root) {
-		return unsupported("")
-	}
-	for i := 0; i < len(root.Content); i += 2 {
-		key, value := root.Content[i], root.Content[i+1]
-		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
-			return unsupported("")
-		}
-		field := key.Value
-		if field != "proxies" && field != "proxy-groups" && field != "rules" {
-			return unsupported(field)
-		}
-		if value.Kind != yaml.SequenceNode {
-			return unsupported(field)
-		}
-		for index, item := range value.Content {
-			path := fmt.Sprintf("%s[%d]", field, index)
-			if field == "rules" {
-				if item.Kind != yaml.ScalarNode || item.Tag != "!!str" {
-					return unsupported(path)
-				}
-				kind := strings.TrimSpace(strings.SplitN(item.Value, ",", 2)[0])
-				if kind != "DOMAIN" && kind != "MATCH" {
-					return unsupported(path)
-				}
-				parts := strings.Split(item.Value, ",")
-				if (kind == "DOMAIN" && len(parts) > 3) || (kind == "MATCH" && len(parts) > 2) {
-					return unsupported(path)
-				}
+		case "rules":
+			if value.Kind != yaml.SequenceNode {
 				continue
-			}
-			if item.Kind != yaml.MappingNode {
-				return unsupported(path)
-			}
-			for j := 0; j < len(item.Content); j += 2 {
-				name, setting := item.Content[j], item.Content[j+1]
-				if name.Kind != yaml.ScalarNode || name.Tag != "!!str" {
-					return unsupported(path)
-				}
-				allowed := name.Value == "name" || name.Value == "type"
-				if field == "proxies" {
-					allowed = allowed || name.Value == "server" || name.Value == "port" || name.Value == "cipher" || name.Value == "password" || name.Value == "udp"
-				} else {
-					allowed = allowed || name.Value == "proxies"
-				}
-				if !allowed {
-					return unsupported(path + "." + name.Value)
-				}
-				if field == "proxy-groups" && name.Value == "proxies" {
-					if setting.Kind != yaml.SequenceNode {
-						return unsupported(path + ".proxies")
-					}
-					for _, reference := range setting.Content {
-						if reference.Kind != yaml.ScalarNode || reference.Tag != "!!str" {
-							return unsupported(path + ".proxies")
-						}
-					}
+			} // Actual type errors belong to Mihomo.
+			for itemIndex, item := range value.Content {
+				if item.Kind != yaml.ScalarNode {
 					continue
 				}
-				if setting.Kind != yaml.ScalarNode {
-					return unsupported(path + "." + name.Value)
+				ruleParts := strings.Split(item.Value, ",")
+				ruleType := ruleParts[0]
+				location := field + "/" + strconv.Itoa(itemIndex)
+				if (ruleType == "DOMAIN" && len(ruleParts) > 3) || (ruleType == "MATCH" && len(ruleParts) > 2) {
+					return scopeDiagnostic("UNSUPPORTED_CAPABILITY", location, "Extra rule parameters have not been checked.")
 				}
-				if name.Value == "type" && ((field == "proxies" && setting.Value != "ss") || (field == "proxy-groups" && setting.Value != "select")) {
-					return unsupported(path + ".type")
+				switch ruleType {
+				case "DOMAIN", "MATCH":
+				case "RULE-SET", "GEOIP", "GEOSITE", "IP-ASN":
+					return scopeDiagnostic("RESOURCE_UNAVAILABLE", location, "Referenced rule resources have not been prepared for validation.")
+				default:
+					return scopeDiagnostic("UNSUPPORTED_CAPABILITY", location, "This rule capability has not been checked.")
 				}
-				if name.Value == "cipher" && setting.Value != "aes-128-gcm" {
-					return unsupported(path + ".cipher")
-				}
+			}
+		default:
+			return scopeDiagnostic("UNSUPPORTED_FIELD", field, "This configuration field has not been checked.")
+		}
+	}
+	return nil
+}
+
+func inspectEntries(sequence *yaml.Node, field string, proxy bool) []Diagnostic {
+	if sequence.Kind != yaml.SequenceNode {
+		return nil
+	}
+	for index, entry := range sequence.Content {
+		if entry.Kind != yaml.MappingNode {
+			continue
+		}
+		location := field + "/" + strconv.Itoa(index)
+		for pairIndex := 0; pairIndex < len(entry.Content); pairIndex += 2 {
+			key, value := entry.Content[pairIndex], entry.Content[pairIndex+1]
+			child := safeField(location, key.Value, pairIndex/2)
+			allowed := key.Value == "name" || key.Value == "type" || (!proxy && key.Value == "proxies") ||
+				(proxy && (key.Value == "server" || key.Value == "port" || key.Value == "cipher" || key.Value == "password" || key.Value == "udp"))
+			if key.Value == "use" || key.Value == "url" || key.Value == "path" {
+				return scopeDiagnostic("RESOURCE_UNAVAILABLE", child, "Referenced configuration resources have not been prepared for validation.")
+			}
+			if !allowed {
+				return scopeDiagnostic("UNSUPPORTED_FIELD", child, "This node or group field has not been checked.")
+			}
+			if key.Value == "type" && value.Kind == yaml.ScalarNode && ((proxy && value.Value != "ss") || (!proxy && value.Value != "select")) {
+				return scopeDiagnostic("UNSUPPORTED_CAPABILITY", child, "This node or group capability has not been checked.")
+			}
+			if proxy && key.Value == "cipher" && value.Kind == yaml.ScalarNode && value.Value != "aes-128-gcm" {
+				return scopeDiagnostic("UNSUPPORTED_CAPABILITY", child, "This encryption capability has not been checked.")
 			}
 		}
 	}
 	return nil
+}
+
+// Aliases are conservatively incomplete, without following links. Anchor cycles
+// therefore cannot recurse forever. Depth limits also keep inspection bounded.
+func inspectYAML(node *yaml.Node, field string, visiting map[*yaml.Node]bool, depth int) []Diagnostic {
+	if node == nil || depth > 32 || visiting[node] {
+		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", field, "The YAML structure exceeds this validation scope.")
+	}
+	if node.Kind == yaml.AliasNode || node.Tag == "!!merge" {
+		return scopeDiagnostic("YAML_ALIAS_UNCHECKED", field, "YAML aliases and merge keys have not been checked.")
+	}
+	if node.Tag != "" && !strings.HasPrefix(node.Tag, "!!") {
+		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", field, "Custom YAML tags have not been checked.")
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+	if node.Kind == yaml.MappingNode {
+		for index := 0; index < len(node.Content); index += 2 {
+			key := node.Content[index]
+			location := safeField(field, key.Value, index/2)
+			if key.Tag != "" && !strings.HasPrefix(key.Tag, "!!") {
+				return scopeDiagnostic("UNSUPPORTED_DOCUMENT", location, "Custom YAML tags have not been checked.")
+			}
+			if key.Kind != yaml.ScalarNode || key.Value == "<<" || key.Tag == "!!merge" {
+				return scopeDiagnostic("YAML_ALIAS_UNCHECKED", location, "YAML aliases and merge keys have not been checked.")
+			}
+			if result := inspectYAML(node.Content[index+1], location, visiting, depth+1); result != nil {
+				return result
+			}
+		}
+	} else {
+		for index, child := range node.Content {
+			if result := inspectYAML(child, field+"/"+strconv.Itoa(index), visiting, depth+1); result != nil {
+				return result
+			}
+		}
+	}
+	return nil
+}
+
+func resourceDiagnostic(node *yaml.Node, field string) []Diagnostic {
+	if node.Kind == yaml.MappingNode {
+		for entryIndex := 0; entryIndex < len(node.Content); entryIndex += 2 {
+			entry := node.Content[entryIndex+1]
+			if entry.Kind != yaml.MappingNode {
+				continue
+			}
+			for _, sought := range []string{"url", "path"} {
+				for pairIndex := 0; pairIndex < len(entry.Content); pairIndex += 2 {
+					if entry.Content[pairIndex].Value == sought {
+						field += "/" + strconv.Itoa(entryIndex/2) + "/" + sought
+						return scopeDiagnostic("RESOURCE_UNAVAILABLE", field, "Referenced configuration resources have not been prepared for validation.")
+					}
+				}
+			}
+		}
+	}
+	return scopeDiagnostic("UNSUPPORTED_CAPABILITY", field, "Provider configuration without an explicit prepared reference has not been checked.")
+}
+
+// Known field names are constants. Arbitrary keys and provider names can contain
+// secrets, so positional mapping indices locate them without echoing their text.
+func safeField(parent, key string, index int) string {
+	switch key {
+	case "proxies", "proxy-groups", "rules", "proxy-providers", "rule-providers", "name", "type", "server", "port", "cipher", "password", "udp", "url", "path", "use", "dns", "mode", "geox-url", "geodata-loader", "geodata-mode", "external-ui", "external-ui-url":
+		return parent + "/" + key
+	default:
+		return parent + "/" + strconv.Itoa(index)
+	}
+}
+
+func scopeDiagnostic(code, field, message string) []Diagnostic {
+	return []Diagnostic{{Code: code, Field: field, Message: message}}
 }
