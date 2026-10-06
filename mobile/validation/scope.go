@@ -30,13 +30,13 @@ func inspectScope(document *yaml.Node) []Diagnostic {
 		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", "", "A single configuration mapping is required for this validation scope.")
 	}
 	root := document.Content[0]
-	if root.Tag != "" && !strings.HasPrefix(root.Tag, "!!") {
+	if !recognizedYAMLTag(root.Tag) {
 		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", "", "Custom YAML tags have not been checked.")
 	}
 	for index := 0; index < len(root.Content); index += 2 {
 		key, value := root.Content[index], root.Content[index+1]
 		field := safeField("", key.Value, index/2)
-		if key.Tag != "" && !strings.HasPrefix(key.Tag, "!!") {
+		if !recognizedYAMLTag(key.Tag) {
 			return scopeDiagnostic("UNSUPPORTED_DOCUMENT", field, "Custom YAML tags have not been checked.")
 		}
 		if unsupported := inspectYAML(value, field, make(map[*yaml.Node]bool), 0); unsupported != nil {
@@ -127,7 +127,7 @@ func inspectYAML(node *yaml.Node, field string, visiting map[*yaml.Node]bool, de
 	if node.Kind == yaml.AliasNode || node.Tag == "!!merge" {
 		return scopeDiagnostic("YAML_ALIAS_UNCHECKED", field, "YAML aliases and merge keys have not been checked.")
 	}
-	if node.Tag != "" && !strings.HasPrefix(node.Tag, "!!") {
+	if !recognizedYAMLTag(node.Tag) {
 		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", field, "Custom YAML tags have not been checked.")
 	}
 	visiting[node] = true
@@ -136,7 +136,7 @@ func inspectYAML(node *yaml.Node, field string, visiting map[*yaml.Node]bool, de
 		for index := 0; index < len(node.Content); index += 2 {
 			key := node.Content[index]
 			location := safeField(field, key.Value, index/2)
-			if key.Tag != "" && !strings.HasPrefix(key.Tag, "!!") {
+			if !recognizedYAMLTag(key.Tag) {
 				return scopeDiagnostic("UNSUPPORTED_DOCUMENT", location, "Custom YAML tags have not been checked.")
 			}
 			if key.Kind != yaml.ScalarNode || key.Value == "<<" || key.Tag == "!!merge" {
@@ -189,4 +189,16 @@ func safeField(parent, key string, index int) string {
 
 func scopeDiagnostic(code, field, message string) []Diagnostic {
 	return []Diagnostic{{Code: code, Field: field, Message: message}}
+}
+
+// yaml.v3 normalizes unknown YAML-namespace tags to !!name too. A prefix is
+// therefore not proof that a tag is built-in. These are its recognized tags;
+// merge remains separately incomplete in the alias/merge guards above.
+func recognizedYAMLTag(tag string) bool {
+	switch tag {
+	case "", "!!null", "!!bool", "!!str", "!!int", "!!float", "!!timestamp", "!!seq", "!!map", "!!binary", "!!merge":
+		return true
+	default:
+		return false
+	}
 }

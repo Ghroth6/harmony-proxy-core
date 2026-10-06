@@ -8,22 +8,6 @@ import (
 	"github.com/metacubex/mihomo/mobile/validation"
 )
 
-const staticConfig = `proxies:
-  - name: sample-ss
-    type: ss
-    server: 192.0.2.1
-    port: 8388
-    cipher: aes-128-gcm
-    password: documentation-only
-proxy-groups:
-  - name: sample-select
-    type: select
-    proxies: [sample-ss, DIRECT]
-rules:
-  - DOMAIN,example.com,sample-select
-  - MATCH,DIRECT
-`
-
 func TestStaticConfigurationPassesRealSemanticValidation(t *testing.T) {
 	result := validation.Validate("semantic-valid", []byte(staticConfig))
 	if result.Category != "pass" || result.Phase != "semantic" {
