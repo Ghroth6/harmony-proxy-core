@@ -80,6 +80,16 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 	}
 	receipt.Category = "incomplete"
 	receipt.Covered = []string{"mihomo-format"}
+	if diagnostics := inspectInputScope(input); len(diagnostics) != 0 {
+		receipt.Phase = "semantic"
+		receipt.Diagnostics = diagnostics
+		for _, diagnostic := range diagnostics {
+			if diagnostic.Field != "" {
+				receipt.Uncovered = append(receipt.Uncovered, diagnostic.Field)
+			}
+		}
+		return
+	}
 	receipt.Diagnostics = []Diagnostic{{Code: "SEMANTICS_NOT_CHECKED", Field: "", Message: "Format check completed; semantics have not been checked."}}
 	return
 }
