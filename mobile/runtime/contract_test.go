@@ -53,3 +53,22 @@ func TestDecodeStartRejectsAmbiguousOrUnsupportedJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeStartBoundedAndUTF8Values(t *testing.T) {
+	for _, generation := range []uint64{0, 0x80000000, ^uint64(0)} {
+		if _, err := R.DecodeStart(generation, 7, sample, []byte(envelope())); err == nil {
+			t.Fatal("unbounded generation accepted")
+		}
+	}
+	for _, request := range [][]byte{[]byte(strings.Repeat(" ", 8193)), append([]byte(envelope()), 0xff)} {
+		if _, err := R.DecodeStart(2, 7, sample, request); err == nil {
+			t.Fatal("unbounded or non-UTF8 request accepted")
+		}
+	}
+	if _, err := R.DecodeStart(2, 7, make([]byte, 65537), []byte(envelope())); err == nil {
+		t.Fatal("unbounded candidate accepted")
+	}
+	if _, err := R.DecodeStart(2, 0, sample, []byte(envelope())); err == nil {
+		t.Fatal("zero transfer accepted")
+	}
+}
