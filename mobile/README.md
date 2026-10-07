@@ -2,13 +2,13 @@
 
 This backend owns `mobile/validation` and the versioned byte-buffer C export in
 `cmd/mobile`. The application operation and receipt contract are authoritative in
-[clashbox-meta docs/m1a-validation.md](https://github.com/Ghroth6/clashbox-meta/blob/main/docs/m1a-validation.md).
+[clashbox-meta docs/design/contracts/core-validation.md](https://github.com/Ghroth6/clashbox-meta/blob/main/docs/design/contracts/core-validation.md).
 
 M1a was merged locally on 2026-10-06 into this repository's existing default
 branch `codex/ohos-adaptation` and the application's `main`; these merges have
 not been pushed, so use the local application checkout for the current contract.
 The accepted device evidence and observation limits are recorded in that
-repository's `docs/verification/m1a-2026-10-06.md`: 20/20 behavior and recording
+repository's `docs/delivery/verification/m1a-2026-10-06.md`: 20/20 behavior and recording
 checks passed, while 25 socket comparisons remain explicitly unverified.
 This milestone validates the configuration operation, not VPN forwarding.
 
@@ -104,6 +104,20 @@ A new runtime export must bridge those differences explicitly instead of assumin
 that calling the existing functions in sequence establishes a safe lifecycle.
 
 ### M1b implementation gate and independent verification
+
+The application repository's `docs/design/contracts/vpn-runtime.md` (draft 0.1,
+2026-10-07) now defines the proposed runtime owner and cross-boundary TUN
+consumption, socket-protection and cleanup semantics. Its platform-evidence section records the SDK/runtime connection discrepancy. These are design
+inputs, not new exports or device verification; consult the local application
+checkout until those documents are published.
+
+The first-runtime audit must cover TUN failures before ownership transfer,
+partial stack Start failures, ignored Close errors and completion of read/write
+tasks after closing their resources. The generic executor updates several
+subsystems and does not propagate every listener error; its successful return
+alone cannot become a mobile TUN-ready receipt. Preserve the existing static
+validation boundary and management/forwarding separation while adding the
+narrow runtime operation.
 
 Before implementation, fix the runtime carrier and callback threads, TUN
 borrow/transfer/duplication and close responsibilities, protection failure and
