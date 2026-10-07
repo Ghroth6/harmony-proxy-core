@@ -37,6 +37,14 @@ type Gate struct {
 	observations []ProbeReceipt
 }
 
+// Ready is a read-only readiness check for a fixed mobile run before opening
+// packet admission. It does not perform a probe or change callback ownership.
+func (g *Gate) Ready(generation uint64) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return generation != 0 && g.generation == generation && g.accepting && g.callback != nil
+}
+
 // ProbeReceipt contains local observations, not platform-protection evidence.
 // -1 means unavailable; descriptor numbers alone never prove socket identity.
 type ProbeReceipt struct {

@@ -1,0 +1,229 @@
+package runtime
+
+import (
+	"context"
+	"github.com/metacubex/mihomo/mobile/protection"
+	"strconv"
+	"sync"
+	"time"
+)
+
+type Manager struct {
+	mu             sync.Mutex
+	system         DescriptorSystem
+	transfers      map[uint64]*Transfer
+	current        *Transfer
+	lastGeneration uint64
+	lastTransfer   uint64
+	fault          bool
+	gate           *protection.Gate
+}
+type Transfer struct {
+	manager         *Manager
+	mu              sync.Mutex
+	receipt         Receipt
+	fd              *descriptorOwner
+	ctx             context.Context
+	cancel          context.CancelFunc
+	done            chan struct{}
+	buildDone       chan struct{}
+	cleanupDone     chan struct{}
+	rejectOnce      sync.Once
+	cleanupOnce     sync.Once
+	buildOnce       sync.Once
+	engine          *runEngine
+	rejected        bool
+	generationFresh bool
+}
+
+func NewManager(system DescriptorSystem, gate ...*protection.Gate) *Manager {
+	m := &Manager{system: system, transfers: map[uint64]*Transfer{}}
+	if len(gate) > 0 {
+		m.gate = gate[0]
+	}
+	return m
+}
+func absent(generation, transfer uint64) Receipt {
+	return Receipt{ContractVersion: ContractVersion, Generation: generation, TransferID: strconv.FormatUint(transfer, 10), TransferState: "not-found", Phase: "absent", Outcome: "rejected", Cleanup: "unknown", FailureCode: "TRANSFER_NOT_FOUND", Stack: StackName, MTU: MTU, Tun: TunReceipt{FD: -1, MetadataBefore: zeroMetadata(), MetadataAfter: zeroMetadata(), CloseResult: -1, AfterClose: "not-observed"}, Resources: []ResourceReceipt{}, Connections: []ConnectionObservation{}}
+}
+
+// Consume must be the first operation at every C start entry, even before output
+// pointer checks. A valid supplied descriptor is owned from this point onward.
+func (m *Manager) Consume(generation, transfer uint64, fd int) *Transfer {
+	owned := consumeDescriptor(m.system, fd)
+	ctx, cancel := context.WithCancel(context.Background())
+	t := &Transfer{manager: m, fd: owned, ctx: ctx, cancel: cancel, done: make(chan struct{}), buildDone: make(chan struct{}), cleanupDone: make(chan struct{})}
+	t.receipt = absent(generation, transfer)
+	t.receipt.TransferConsumed = owned.valid
+	t.receipt.TransferState = "consumed"
+	t.receipt.Phase = "constructing"
+	t.receipt.Outcome = "pending"
+	t.receipt.Cleanup = "pending"
+	t.receipt.FailureCode = ""
+	m.mu.Lock()
+	t.generationFresh = generation > m.lastGeneration && generation <= MaxGeneration
+	if t.generationFresh {
+		m.lastGeneration = generation
+	}
+	if len(m.transfers) >= MaxTransferRecords {
+		var oldest uint64
+		for id, old := range m.transfers {
+			receipt := old.snapshot()
+			if old != m.current && receipt.Cleanup == "complete" && !receipt.OwnershipFault && (oldest == 0 || id < oldest) {
+				oldest = id
+			}
+		}
+		if oldest != 0 {
+			delete(m.transfers, oldest)
+		}
+	}
+	if transfer == 0 || transfer <= m.lastTransfer || m.transfers[transfer] != nil || len(m.transfers) >= MaxTransferRecords {
+		m.fault = true
+		t.receipt.OwnershipFault = true
+		t.receipt.TransferState = "fault"
+		t.receipt.Cleanup = "unknown"
+		if old := m.transfers[transfer]; old != nil {
+			old.mu.Lock()
+			old.receipt.OwnershipFault = true
+			old.receipt.TransferState = "fault"
+			old.receipt.Cleanup = "unknown"
+			old.receipt.FailureCode = "TRANSFER_FAULT"
+			old.mu.Unlock()
+		}
+	} else {
+		m.transfers[transfer] = t
+		m.lastTransfer = transfer
+	}
+	m.mu.Unlock()
+	if t.receipt.OwnershipFault {
+		t.Reject("TRANSFER_FAULT")
+	}
+	return t
+}
+func (t *Transfer) Reject(code string) {
+	t.rejectOnce.Do(func() {
+		t.mu.Lock()
+		t.rejected = true
+		t.receipt.Phase = "failed"
+		t.receipt.Outcome = "rejected"
+		t.receipt.FailureCode = code
+		t.mu.Unlock()
+		t.cancel()
+		go func() {
+			t.fd.close()
+			t.mu.Lock()
+			t.receipt.Cleanup = "complete"
+			if t.receipt.OwnershipFault || !t.fd.valid || t.fd.receipt().CloseResult != 0 {
+				t.receipt.Cleanup = "unknown"
+			}
+			t.mu.Unlock()
+			close(t.done)
+			close(t.cleanupDone)
+		}()
+	})
+}
+func (t *Transfer) snapshot() Receipt {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	receipt := t.receipt
+	receipt.Tun = t.fd.receipt()
+	receipt.Resources = append([]ResourceReceipt{}, receipt.Resources...)
+	receipt.Connections = append([]ConnectionObservation{}, receipt.Connections...)
+	select {
+	case <-t.buildDone:
+		if t.engine != nil {
+			t.engine.fillReceipt(&receipt)
+		}
+	default:
+	}
+	return receipt
+}
+func observe(done <-chan struct{}, deadline time.Duration) {
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+}
+func (m *Manager) Start(t *Transfer, input, request []byte) Receipt {
+	if t == nil || t.manager != m {
+		return absent(0, 0)
+	}
+	m.mu.Lock()
+	var refusal string
+	if m.fault || t.snapshot().OwnershipFault {
+		refusal = "TRANSFER_FAULT"
+	} else if m.current != nil && m.current.snapshot().Cleanup != "complete" {
+		refusal = "PREVIOUS_CLEANUP"
+	} else if !t.fd.valid {
+		refusal = "TUN_DESCRIPTOR"
+	} else if !t.generationFresh || t.receipt.Generation != m.lastGeneration {
+		refusal = "GENERATION_STALE"
+	}
+	if refusal == "" {
+		m.current = t
+	}
+	m.mu.Unlock()
+	if refusal != "" {
+		t.Reject(refusal)
+		observe(t.done, StartObservation)
+		return t.snapshot()
+	}
+	target, err := DecodeStart(t.receipt.Generation, mustTransfer(t.receipt.TransferID), input, request)
+	if err != nil {
+		t.Reject(err.Error())
+		observe(t.done, StartObservation)
+		return t.snapshot()
+	}
+	t.mu.Lock()
+	t.receipt.OperationID = target.OperationID
+	t.receipt.CandidateDigest = target.InputDigest
+	t.receipt.Phase = "validating"
+	t.mu.Unlock()
+	bytes := append([]byte{}, input...)
+	go t.start(target, bytes)
+	observe(t.done, StartObservation)
+	return t.snapshot()
+}
+func mustTransfer(id string) uint64 { value, _ := strconv.ParseUint(id, 10, 64); return value }
+func (m *Manager) Query(generation, transfer uint64) Receipt {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := m.current
+	if transfer != 0 {
+		t = m.transfers[transfer]
+	}
+	if t == nil || t.receipt.Generation != generation {
+		return absent(generation, transfer)
+	}
+	receipt := t.snapshot()
+	if m.fault {
+		receipt.OwnershipFault = true
+		receipt.Cleanup = "unknown"
+		receipt.TransferState = "fault"
+		receipt.FailureCode = "TRANSFER_FAULT"
+	}
+	return receipt
+}
+func (m *Manager) Stop(generation uint64) Receipt {
+	m.mu.Lock()
+	t := m.current
+	m.mu.Unlock()
+	if t == nil || t.receipt.Generation != generation {
+		return absent(generation, 0)
+	}
+	t.mu.Lock()
+	rejected := t.rejected
+	t.mu.Unlock()
+	if !rejected {
+		select {
+		case <-t.cleanupDone:
+			return t.snapshot()
+		default:
+			t.stop()
+		}
+	}
+	observe(t.cleanupDone, StopObservation)
+	return t.snapshot()
+}
