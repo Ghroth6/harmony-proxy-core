@@ -1,4 +1,4 @@
-# Mobile validation export
+# Mobile core boundaries
 
 ## Fixed mobile runtime contract (M1b P3)
 
@@ -36,7 +36,9 @@ Receipt fields are always present: `contractVersion`, `operationId`, `generation
 `pendingOwners`, and `connections`. Phases are absent/validating/constructing/
 starting/running/stopping/stopped/failed; outcomes pending/running/stopped/
 rejected/failed; cleanup pending/complete/unknown. Transfer state is consumed,
-not-found, or fault. An absent specific transfer is unknown, never replaced with
+not-found, or fault. Operation identity and digest are empty before a request
+has been decoded; absence does not fabricate a request identity.
+An absent specific transfer is unknown, never replaced with
 the last run. Duplicate ID or record-capacity faults are retained and block
 new runs, even if a separate rejected descriptor close succeeds. At most 64
 specific transfers are retained: confirmed clean older records may be evicted,
@@ -45,11 +47,14 @@ while any unresolved record remains. A query of an evicted transfer is unknown.
 `tun` contains `fd`, `metadataBefore`, `closeAttempted`, `closeResult`,
 `afterClose`, `metadataAfter`. Metadata contains `observed`, decimal-string
 `device`, `inode`, `rdevice`, and numeric `mode`. These are stat metadata, not a
-unique open-file-description identity. `closeResult` is -1 before the attempt,
+unique open-file-description identity. Unobserved metadata uses decimal "0"
+and mode 0. `closeResult` is -1 before the attempt or while it remains pending,
 0 for returned success, or a positive errno; close occurs at most once.
 `afterClose` is not-observed/not-visible/metadata-same/metadata-different/unknown.
 Each resource has `kind`, `state` (unacquired/acquired/closing/closed/unknown),
-and `closeResult`. `pendingOwners` has bounded counts for `pumps`, `tcpCallbacks`,
+and `closeResult`. Resource kinds are candidate, forwarding, wake-read, wake-write,
+packet-stack and tun; an unexpected constructor panic retains construction/unknown.
+`pendingOwners` has bounded counts for `pumps`, `tcpCallbacks`,
 `constructions`, `forwarding`. `connections` contains at most 16 safe observations
 with `sequence`, `targetIPv4`, `targetPort`, `rule`, `node`, `upload`, `download`;
 it contains neither credentials, payloads nor full parser errors.
@@ -77,7 +82,7 @@ not download, alter a cache, or rewrite upstream manifests. Each ignored batch
 records source/lock hashes, tool version, arguments and results. It runs real
 gVisor SYN/handshake/cancellation and real Mihomo candidate/dialer/retirement
 behavior through an injected descriptor syscall boundary, plus the affected
-validation, protection, forwarding, config, executor and statistics regressions.
+validation, protection, forwarding, tunnel, config, executor and statistics regressions.
 It does not use a race detector or execute real Linux/OHOS descriptor syscalls.
 Build actual ARM64 bytes with the existing `scripts/build-mobile.ps1` entry.
 
@@ -100,10 +105,16 @@ proxies/rules and explicit IPv4/process/sniffer settings, without entering the
 generic DNS/listener/provider-init/profile/updater application path. Entry
 activation is separate; unpublished candidates use Discard and published ones
 use RetireConfig. Every forwarded root carries the fixed protection generation.
-Unknown closes block a new run. A terminal failed/stopped receipt with nonpending
-cleanup, no ownership fault, zero pending owners and forwardingActive=false
-establishes joined core TUN users, allowing the service to attempt independent
-platform destroy while preserving any core cleanup error.
+Binding an unmarked caller inherits its cancellation and keeps that fixed scope's
+policy values. Failed proxy dialing closes and joins its background peek reader
+before releasing the forwarding lease, as does successful relay completion.
+Unknown closes block a new run. Run-only Query(g,0), matched to the actual current
+operation/generation/transfer, with terminal failed/stopped, nonpending cleanup,
+zero pending owners and forwardingActive=false establishes joined core TUN users.
+The service can independently destroy that run's platform TUN while preserving
+core cleanup errors. A historical global ownership fault can remain on this
+actual run's query and still blocks restart; an absent or arbitrary fault transfer
+with zero counts never establishes this current-run barrier.
 
 This backend owns `mobile/validation` and the versioned byte-buffer C export in
 `cmd/mobile`. The application operation and receipt contract are authoritative in
@@ -146,8 +157,10 @@ their own relevant validation.
 The application design, section 15, defines the product-facing responsibilities.
 This section owns the core's internal structure. Existing code below is evidence
 of implementation, not evidence that the new application's VPN path works.
-The runtime design is a proposal for M1b and later increments; it does not add
-exports or change the accepted M1a ABI.
+The fixed M1b P3 implementation and runtime exports are documented above and
+preserve the accepted M1a validation ABI. Broader runtime responsibilities below
+remain outside this increment unless their own implementation and evidence are
+identified explicitly.
 
 ### Implemented validation operation
 
@@ -174,7 +187,7 @@ invalid references, unsupported fields and construction/cleanup failures. C
 boundary and application tests separately verify buffer ownership and propagation.
 Only the recorded target-app validation proves the accepted device behavior.
 
-### Proposed runtime structure
+### Broader runtime responsibilities
 
 Use the engine's existing protocol, rule, DNS and connection implementations.
 Do not rebuild every upstream package to imitate the application's module list.
@@ -208,13 +221,14 @@ event unsubscribe does not necessarily wait for an already selected callback.
 A new runtime export must bridge those differences explicitly instead of assuming
 that calling the existing functions in sequence establishes a safe lifecycle.
 
-### M1b implementation gate and independent verification
+### M1b contract and independent verification
 
-The application repository's `docs/design/contracts/vpn-runtime.md` (draft 0.1,
-2026-10-07) now defines the proposed runtime owner and cross-boundary TUN
-consumption, socket-protection and cleanup semantics. Its platform-evidence section records the SDK/runtime connection discrepancy. These are design
-inputs, not new exports or device verification; consult the local application
-checkout until those documents are published.
+The application's `docs/design/contracts/vpn-runtime.md` defines runtime ownership
+and cross-boundary TUN consumption, socket protection and cleanup semantics.
+Its platform-evidence section records the SDK/runtime connection discrepancy.
+The fixed compiled header/value contract above is implemented, while those
+design inputs and host tests do not establish device acceptance. Consult the local
+application checkout for unpublished contract and verification changes.
 
 The first-runtime audit must cover TUN failures before ownership transfer,
 partial stack Start failures, ignored Close errors and completion of read/write
@@ -224,14 +238,12 @@ alone cannot become a mobile TUN-ready receipt. Preserve the existing static
 validation boundary and management/forwarding separation while adding the
 narrow runtime operation.
 
-Before implementation, fix the runtime carrier and callback threads, TUN
-borrow/transfer/duplication and close responsibilities, protection failure and
-shutdown ordering, applied-configuration identity, and the minimal supported
-configuration fields. Define the actual versioned runtime ABI with the application
-in its M1b contract; this README describes internals rather than duplicating that
-wire contract. M1a's validation entry point establishes no runtime export. The
-P2 protection boundary below is separate and does not start a TUN or forwarding
-runtime.
+The fixed runtime ABI/value contract, transfer ledger, candidate identity,
+protection marker, constructor barriers and joined cleanup above implement the
+minimal M1b carrier. Broader configuration and entry capabilities need their own
+ownership and verification before extending it. The P2 protection boundary below
+remains an independent capability; registration alone does not start a TUN or
+forwarding runtime.
 
 The first runtime increment needs one controlled configuration and one VPN entry.
 It does not require all node management, provider updates or explicit listeners.

@@ -103,8 +103,9 @@ func Context(generation uint64) (context.Context, error) {
 	return r.ctx, nil
 }
 
-// Bind preserves a caller's cancellation while fixing the owner to a particular
-// listener generation. It is used once per internal connection, not per packet.
+// Bind preserves a caller's cancellation while fixing the owner and policy
+// values to a particular listener generation. An unmarked caller must not erase
+// the scope's socket-protection marker. It is used once per connection.
 func Bind(parent, scope context.Context) context.Context {
 	if Generation(parent) == Generation(scope) {
 		return parent
@@ -112,10 +113,13 @@ func Bind(parent, scope context.Context) context.Context {
 	if parent == nil || parent.Done() == nil {
 		return scope
 	}
-	ctx, cancel := context.WithCancel(parent)
-	stop := context.AfterFunc(scope, cancel)
+	ctx, cancel := context.WithCancel(scope)
+	stop := context.AfterFunc(parent, cancel)
 	context.AfterFunc(ctx, func() { stop() })
-	return context.WithValue(ctx, contextKey{}, owner(scope))
+	if parent.Err() != nil {
+		cancel()
+	}
+	return ctx
 }
 
 func current() *run { lifecycle.Lock(); defer lifecycle.Unlock(); return lifecycle.current }
