@@ -124,8 +124,9 @@ borrow/transfer/duplication and close responsibilities, protection failure and
 shutdown ordering, applied-configuration identity, and the minimal supported
 configuration fields. Define the actual versioned runtime ABI with the application
 in its M1b contract; this README describes internals rather than duplicating that
-wire contract. There is currently no such mobile runtime export established by
-M1a's validation entry point.
+wire contract. M1a's validation entry point establishes no runtime export. The
+P2 protection boundary below is separate and does not start a TUN or forwarding
+runtime.
 
 The first runtime increment needs one controlled configuration and one VPN entry.
 It does not require all node management, provider updates or explicit listeners.
@@ -158,3 +159,59 @@ listener or download path was introduced.
 of broken YAML, invalid references, missing resources and unsupported capability.
 The actual phone app must use the new core artifact and preparation assembly;
 backend-only test success does not complete clashbox-meta #13 or #11.
+
+### P2 socket protection boundary
+
+`mobile/protection.Gate` owns callback admission and synchronous borrowing.
+`cmd/mobile` initializes one immutable context-aware outbound socket policy;
+registration only changes synchronized Gate state. The versioned C functions
+and scalar ownership are declared in `mobile/include/cb_protection.h`. Validation
+ABI 1 and its buffer ownership remain unchanged. No Go pointer crosses either
+boundary; the platform retains its C callback/context until unregister succeeds.
+
+The platform callback runs inside the real `RawConn.Control` validity interval.
+It must immediately duplicate the borrowed original, bound its wait, and retain
+any submitted duplicate until the actual platform operation completes. The core
+never closes a borrowed production original; `net.Dialer` owns it. Callback
+statuses 1 through 10, an unknown status, panic, invalid raw connection, closed
+admission and stale generation all forbid connecting. Unregister closes admission
+first and returns busy while a callback still uses the registration. A late
+success during unregister becomes inactive, and replacement is refused until
+in-flight callbacks finish and unregister succeeds.
+
+`protection.WithGeneration(ctx, generation)` is the public context marker for
+the future mobile runtime. Every mobile forwarding root must carry it before
+entering the real engine dialer; child contexts retain it. Marked zero or stale
+generations never bypass protection. An unmarked context is independent work
+and keeps its existing policy, so the runtime assembler must not submit
+unmarked forwarding or infer that a lost marker is management. P3 must verify
+that propagation before admitting traffic. Required protection rejects a custom
+`NetDialer` that cannot expose the physical socket boundary. The hook preserves
+the existing global hook and interface/mark options rather than replacing them.
+M1b's selected ss/aes-128-gcm IPv4 TCP transport uses this real dialer; this
+increment does not claim all other protocols are integrated.
+
+The diagnostic probe creates only an unconnected IPv4 TCP socket, performs no
+bind/connect/send, reuses `ProtectSocket`, and closes its original once. Probe
+IDs use the low half of uint64; production IDs use the high bit and a monotonic
+process counter. Each registration uses a strictly increasing generation from
+1 through INT32_MAX. The platform bridge owns its finite queue and wait policy;
+the Gate has no asynchronous platform queue or unbounded core-owned waiter.
+
+The latest 32 completed probes expose actual local observations through the C
+scalar observation function, also readable after unregister. POSIX reads the
+original inode and checks device/inode/socket type after close; unavailable
+observations are -1. Windows observes live socket type and the actual close
+return, but exposes identity and post-close same-object observation as -1:
+it has no stable socket cookie here, and querying a closed Winsock handle can
+raise STATUS_INVALID_HANDLE under strict handle verification. Winsock startup
+has process lifetime, as in Go's net package. A failed OS close yields cleanup
+unknown, never a successful probe. These local observations complement the
+platform bridge's duplicate observations; they do not prove that protect ran.
+
+Public module tests cover the real probe socket, failure propagation, bounded
+observation history, close admission with an in-flight callback, callback status
+validation, marked generation rejection, an actual protected dial to a loopback
+listener, independent management, custom transport refusal and preserved
+interface policy. Host tests and ARM64 compilation remain separate from target
+platform protect, TSFN/environment lifetime and complete phone acceptance.
