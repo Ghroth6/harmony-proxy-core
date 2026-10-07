@@ -170,6 +170,8 @@ func dialContext(ctx context.Context, network string, destination netip.Addr, po
 	address = net.JoinHostPort(destination.String(), port)
 
 	netDialer := opt.netDialer
+	policy := outboundSocketPolicy.Load()
+	protected := policy != nil && policy.Required(ctx)
 	switch netDialer.(type) {
 	case nil:
 		netDialer = &net.Dialer{}
@@ -177,12 +179,18 @@ func dialContext(ctx context.Context, network string, destination netip.Addr, po
 		_netDialer := *netDialer.(*net.Dialer)
 		netDialer = &_netDialer // make a copy
 	default:
+		if protected {
+			return nil, ErrUnsupportedSocketPolicyDialer
+		}
 		return netDialer.DialContext(ctx, network, address)
 	}
 
 	dialer := netDialer.(*net.Dialer)
 	keepalive.SetNetDialer(dialer)
 	mptcp.SetNetDialer(dialer, opt.mpTcp)
+	if protected {
+		addControlToDialer(dialer, policy.Control)
+	}
 
 	if DefaultSocketHook != nil { // ignore interfaceName, routingMark and tfo when DefaultSocketHook not null (in CMFA)
 		socketHookToToDialer(dialer)
