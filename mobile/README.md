@@ -1,5 +1,64 @@
 # Mobile validation export
 
+## Fixed mobile runtime contract (M1b P3)
+
+`mobile/include/cb_runtime.h` and `mobile/runtime/contract.go` are the versioned
+runtime value boundary. `cb_runtime_contract_version_v1` returns 1 independently
+of the existing validation ABI. The contract commit defines the three operation
+signatures and strict request decoder; it does not claim TUN execution or target
+acceptance. Resolve all runtime symbols and the contract version before dup.
+
+The start request contains exactly `contractVersion`, `operationId`, `generation`,
+`transferId`, `inputRevision`, `inputDigest`, `runtimeOptions`, `platformPolicy`,
+and `tunPolicy`. Generation is a JSON integer 1..INT32_MAX and matches the scalar
+C argument. `transferId` is a canonical positive decimal string matching the
+independent uint64 C argument; the native adapter allocates strictly increasing
+IDs. Input digest is `sha256:` plus 64 lowercase hex digits for the exact bytes.
+Operation/input/policy revision identifiers are `[A-Za-z0-9:_-]`, 1..128 bytes.
+Duplicate, unknown, missing, null or trailing JSON fields are rejected.
+
+`runtimeOptions` has exactly `entry:"system-vpn"`, `transport:"tcp"`, and false
+`dns`, `ipv6`, `udp`, `explicitListeners`, `resourceDownloads`. `platformPolicy`
+has `revision`, `addressFamily:"ipv4"`, and `applicationIds` (1..16 distinct valid
+bundle IDs, each <=128 bytes). The independent immutable `tunPolicy` is exactly
+`{address:"10.111.0.1",prefixLength:30,route:"0.0.0.0",routePrefixLength:0,mtu:1500}`.
+Input is <=65536 bytes, request UTF-8 JSON <=8192 bytes, receipt <=32768 bytes.
+Queue size is 128, MTU 1500, TCP tuple capacity 32, transfer record capacity 64;
+start observes up to 5 seconds and stop up to 10 seconds. Actual cleanup retains
+ownership beyond those observation limits.
+
+Receipt fields are always present: `contractVersion`, `operationId`, `generation`,
+`transferId`, `transferConsumed`, `transferState`, `ownershipFault`,
+`candidateDigest`, `phase`, `outcome`, `cleanup`, `failureCode`,
+`stack:"gvisor-ipv4-tcp"`, `mtu:1500`, `forwardingActive`, `tun`, `resources`,
+`pendingOwners`, and `connections`. Phases are absent/validating/constructing/
+starting/running/stopping/stopped/failed; outcomes pending/running/stopped/
+rejected/failed; cleanup pending/complete/unknown. Transfer state is consumed,
+not-found, or fault. An absent specific transfer is unknown, never replaced with
+the last run. Duplicate ID or record-capacity faults are retained and block
+new runs, even if a separate rejected descriptor close succeeds.
+
+`tun` contains `fd`, `metadataBefore`, `closeAttempted`, `closeResult`,
+`afterClose`, `metadataAfter`. Metadata contains `observed`, decimal-string
+`device`, `inode`, `rdevice`, and numeric `mode`. These are stat metadata, not a
+unique open-file-description identity. `closeResult` is -1 before the attempt,
+0 for returned success, or a positive errno; close occurs at most once.
+`afterClose` is not-observed/not-visible/metadata-same/metadata-different/unknown.
+Each resource has `kind`, `state` (unacquired/acquired/closing/closed/unknown),
+and `closeResult`. `pendingOwners` has bounded counts for `pumps`, `tcpCallbacks`,
+`constructions`, `forwarding`. `connections` contains at most 16 safe observations
+with `sequence`, `targetIPv4`, `targetPort`, `rule`, `node`, `upload`, `download`;
+it contains neither credentials, payloads nor full parser errors.
+
+Entering start consumes every actually valid supplied fd before other checks,
+including invalid output pointers. The adapter must never close it after entry.
+All ABI status failures and corrupted output require query of the exact transfer.
+Query with transfer_id=0 means run-only; positive IDs mean the precise handoff.
+ABI status 0 only means a receipt buffer was returned; runtime success is in the
+receipt. ABI status 1 is invalid output/buffer ABI arguments, 2 is internal/output
+failure. Initialize usable outputs to NULL/0, and free every nonnull returned
+buffer with `cb_free_v1`. No Go pointer or candidate crosses this boundary.
+
 This backend owns `mobile/validation` and the versioned byte-buffer C export in
 `cmd/mobile`. The application operation and receipt contract are authoritative in
 [clashbox-meta docs/design/contracts/core-validation.md](https://github.com/Ghroth6/clashbox-meta/blob/main/docs/design/contracts/core-validation.md).
