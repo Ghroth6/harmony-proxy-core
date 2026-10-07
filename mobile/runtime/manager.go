@@ -28,11 +28,12 @@ type Transfer struct {
 	done            chan struct{}
 	buildDone       chan struct{}
 	cleanupDone     chan struct{}
-	rejectOnce      sync.Once
 	cleanupOnce     sync.Once
 	buildOnce       sync.Once
 	engine          *runEngine
 	rejected        bool
+	startAdmitted   bool
+	startRequested  bool
 	generationFresh bool
 }
 
@@ -93,6 +94,9 @@ func (m *Manager) Consume(generation, transfer uint64, fd int) *Transfer {
 	} else {
 		m.transfers[transfer] = t
 		m.lastTransfer = transfer
+		if t.generationFresh && owned.valid && !m.fault && (m.current == nil || m.current.snapshot().Cleanup == "complete") {
+			m.current = t
+		}
 	}
 	m.mu.Unlock()
 	if t.receipt.OwnershipFault {
@@ -101,26 +105,34 @@ func (m *Manager) Consume(generation, transfer uint64, fd int) *Transfer {
 	return t
 }
 func (t *Transfer) Reject(code string) {
-	t.rejectOnce.Do(func() {
-		t.mu.Lock()
-		t.rejected = true
-		t.receipt.Phase = "failed"
-		t.receipt.Outcome = "rejected"
-		t.receipt.FailureCode = code
+	t.mu.Lock()
+	admitted := t.startAdmitted
+	if admitted {
 		t.mu.Unlock()
-		t.cancel()
-		go func() {
-			t.fd.close()
-			t.mu.Lock()
-			t.receipt.Cleanup = "complete"
-			if t.receipt.OwnershipFault || !t.fd.valid || t.fd.receipt().CloseResult != 0 {
-				t.receipt.Cleanup = "unknown"
-			}
-			t.mu.Unlock()
-			close(t.done)
-			close(t.cleanupDone)
-		}()
-	})
+		t.stop()
+		return
+	}
+	if t.rejected {
+		t.mu.Unlock()
+		return
+	}
+	t.rejected = true
+	t.receipt.Phase = "failed"
+	t.receipt.Outcome = "rejected"
+	t.receipt.FailureCode = code
+	t.mu.Unlock()
+	t.cancel()
+	go func() {
+		t.fd.close()
+		t.mu.Lock()
+		t.receipt.Cleanup = "complete"
+		if t.receipt.OwnershipFault || !t.fd.valid || t.fd.receipt().CloseResult != 0 {
+			t.receipt.Cleanup = "unknown"
+		}
+		t.mu.Unlock()
+		close(t.done)
+		close(t.cleanupDone)
+	}()
 }
 func (t *Transfer) snapshot() Receipt {
 	t.mu.Lock()
@@ -151,10 +163,19 @@ func (m *Manager) Start(t *Transfer, input, request []byte) Receipt {
 		return absent(0, 0)
 	}
 	m.mu.Lock()
+
+	t.mu.Lock()
+	if t.startRequested || t.rejected {
+		t.mu.Unlock()
+		m.mu.Unlock()
+		return t.snapshot()
+	}
+	t.startRequested = true
+	t.mu.Unlock()
 	var refusal string
 	if m.fault || t.snapshot().OwnershipFault {
 		refusal = "TRANSFER_FAULT"
-	} else if m.current != nil && m.current.snapshot().Cleanup != "complete" {
+	} else if m.current != nil && m.current != t && m.current.snapshot().Cleanup != "complete" {
 		refusal = "PREVIOUS_CLEANUP"
 	} else if !t.fd.valid {
 		refusal = "TUN_DESCRIPTOR"
@@ -176,7 +197,23 @@ func (m *Manager) Start(t *Transfer, input, request []byte) Receipt {
 		observe(t.done, StartObservation)
 		return t.snapshot()
 	}
+	if t.ctx.Err() != nil {
+		t.Reject("START_CANCELLED")
+		observe(t.done, StartObservation)
+		return t.snapshot()
+	}
+	if !EngineAvailable {
+		t.Reject("GVISOR_REQUIRED")
+		observe(t.done, StartObservation)
+		return t.snapshot()
+	}
 	t.mu.Lock()
+	if t.rejected {
+		t.mu.Unlock()
+		observe(t.done, StartObservation)
+		return t.snapshot()
+	}
+	t.startAdmitted = true
 	t.receipt.OperationID = target.OperationID
 	t.receipt.CandidateDigest = target.InputDigest
 	t.receipt.Phase = "validating"

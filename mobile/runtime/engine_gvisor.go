@@ -29,6 +29,9 @@ type observation struct {
 	value   ConnectionObservation
 	tracker statistic.Tracker
 }
+
+const EngineAvailable = true
+
 type runEngine struct {
 	transfer            *Transfer
 	cfg                 *config.Config
@@ -79,6 +82,7 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 	t.mu.Unlock()
 	defer func() {
 		if recover() != nil {
+			t.resource("construction", "unknown", 1)
 			t.failure("CORE_PANIC")
 		}
 		close(t.buildDone)
@@ -217,9 +221,13 @@ func (t *Transfer) stop() {
 			t.receipt.Outcome = "pending"
 		}
 	}
+	admitted := t.startAdmitted
 	t.mu.Unlock()
 	if t.manager.gate != nil {
 		t.manager.gate.Unregister(t.receipt.Generation)
+	}
+	if !admitted {
+		return
 	}
 	t.cleanupOnce.Do(func() { go func() { <-t.buildDone; t.cleanup() }() })
 }

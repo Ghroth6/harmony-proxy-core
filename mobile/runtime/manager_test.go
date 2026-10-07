@@ -192,3 +192,30 @@ func TestTransferCapacityFaultCannotReturnEarlierCleanRun(t *testing.T) {
 		handoff.Reject("TEST_CLEANUP")
 	}
 }
+
+func TestStopImmediatelyAfterEntryCancelsStartBeforeAnyConstructor(t *testing.T) {
+	system := newDescriptors()
+	manager := R.NewManager(system)
+	handoff := manager.Consume(2, 7, 9)
+	stopped := make(chan R.Receipt, 1)
+	go func() { stopped <- manager.Stop(2) }()
+	deadline := time.After(time.Second)
+	for {
+		if manager.Query(2, 7).Phase == "stopping" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("entered transfer not available to immediate stop")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	started := manager.Start(handoff, sample, []byte(envelope()))
+	if started.Cleanup != "complete" || started.FailureCode != "START_CANCELLED" || len(started.Resources) != 0 {
+		t.Fatalf("stop allowed later resource construction: %+v", started)
+	}
+	if receipt := <-stopped; receipt.Cleanup != "complete" || system.closes[9] != 1 {
+		t.Fatal("entry cancellation did not converge")
+	}
+}

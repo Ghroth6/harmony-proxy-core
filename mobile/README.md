@@ -3,9 +3,11 @@
 ## Fixed mobile runtime contract (M1b P3)
 
 `mobile/include/cb_runtime.h` and `mobile/runtime/contract.go` are the versioned
-runtime value boundary. `cb_runtime_contract_version_v1` returns 1 independently
-of the existing validation ABI. The contract commit defines the three operation
-signatures and strict request decoder; it does not claim TUN execution or target
+runtime value boundary. `cb_runtime_contract_version_v1` returns 1 for a build
+with the explicitly selected gVisor runtime, independently of the validation ABI;
+without `with_gvisor` it returns 0, so the adapter rejects capability before dup.
+The three operations own the TUN duplicate, IPv4/TCP stack and stop cleanup.
+Host syscall-boundary tests and ARM64 compilation do not establish target TUN
 acceptance. Resolve all runtime symbols and the contract version before dup.
 
 The start request contains exactly `contractVersion`, `operationId`, `generation`,
@@ -36,7 +38,9 @@ starting/running/stopping/stopped/failed; outcomes pending/running/stopped/
 rejected/failed; cleanup pending/complete/unknown. Transfer state is consumed,
 not-found, or fault. An absent specific transfer is unknown, never replaced with
 the last run. Duplicate ID or record-capacity faults are retained and block
-new runs, even if a separate rejected descriptor close succeeds.
+new runs, even if a separate rejected descriptor close succeeds. At most 64
+specific transfers are retained: confirmed clean older records may be evicted,
+while any unresolved record remains. A query of an evicted transfer is unknown.
 
 `tun` contains `fd`, `metadataBefore`, `closeAttempted`, `closeResult`,
 `afterClose`, `metadataAfter`. Metadata contains `observed`, decimal-string
@@ -58,6 +62,48 @@ ABI status 0 only means a receipt buffer was returned; runtime success is in the
 receipt. ABI status 1 is invalid output/buffer ABI arguments, 2 is internal/output
 failure. Initialize usable outputs to NULL/0, and free every nonnull returned
 buffer with `cb_free_v1`. No Go pointer or candidate crosses this boundary.
+
+The reproducible host entry is `scripts/test-mobile-runtime.ps1`, from a clean
+committed checkout, using Windows Go 1.24.5 and already cached pinned dependencies:
+
+```powershell
+./scripts/test-mobile-runtime.ps1 -ModuleCache '<existing Go module cache>'
+```
+
+If that cache lacks the two pinned Windows-only tailscale modules, pass
+`-HostSupplementCache '<separate existing cache>'`; it must contain `certstore`
+and `go-winio` at the exact versions in this repository's go.mod. The entry does
+not download, alter a cache, or rewrite upstream manifests. Each ignored batch
+records source/lock hashes, tool version, arguments and results. It runs real
+gVisor SYN/handshake/cancellation and real Mihomo candidate/dialer/retirement
+behavior through an injected descriptor syscall boundary, plus the affected
+validation, protection, forwarding, config, executor and statistics regressions.
+It does not use a race detector or execute real Linux/OHOS descriptor syscalls.
+Build actual ARM64 bytes with the existing `scripts/build-mobile.ps1` entry.
+
+Private implementation is `mobile/runtime/manager.go` (immediate consumption,
+exact transfer records and finite observations), `descriptor_linux.go` (owned
+nonblocking TUN and CLOEXEC wake pipe syscalls), `engine_gvisor.go` (pumps,
+stack and cleanup), and `tcp_gvisor.go` (bounded tuple/constructor/callback book).
+The book exclusively owns its inner Forwarder, reserves before goroutine
+scheduling, and shares constructor admission with Stop's mutex. The cancellation
+watcher observes actual WritableEvents registration, then joins before waiter
+queue reuse. Cleanup joins pumps and constructors before Stack.Close/Abort,
+then callbacks/forwarding before Stack.Wait and fd close. Caller timeout leaves
+the worker and ownership intact. Every independent safe close and candidate
+retirement starts even if another close remains pending or fails.
+
+`config.BuildMobileFixedCandidate` constructs fresh owned resources only after
+the exact input's independent fixed-coverage validation. It carries partial
+resources back on failure. `executor.PublishMobileFixed` transfers only static
+proxies/rules and explicit IPv4/process/sniffer settings, without entering the
+generic DNS/listener/provider-init/profile/updater application path. Entry
+activation is separate; unpublished candidates use Discard and published ones
+use RetireConfig. Every forwarded root carries the fixed protection generation.
+Unknown closes block a new run. A terminal failed/stopped receipt with nonpending
+cleanup, no ownership fault, zero pending owners and forwardingActive=false
+establishes joined core TUN users, allowing the service to attempt independent
+platform destroy while preserving any core cleanup error.
 
 This backend owns `mobile/validation` and the versioned byte-buffer C export in
 `cmd/mobile`. The application operation and receipt contract are authoritative in
