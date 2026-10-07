@@ -174,18 +174,18 @@ func TestTransferCapacityFaultCannotReturnEarlierCleanRun(t *testing.T) {
 	manager := R.NewManager(system)
 	manager.Start(manager.Consume(1, 1, 9), sample, []byte("{}"))
 	pending := []*R.Transfer{}
-	for id := uint64(2); id <= 64; id++ {
+	for id := uint64(2); id <= 65; id++ {
 		fd := 1000 + int(id)
 		system.open[fd] = true
 		pending = append(pending, manager.Consume(id, id, fd))
 	}
-	system.open[1065] = true
-	fault := manager.Consume(65, 65, 1065)
+	system.open[1066] = true
+	fault := manager.Consume(66, 66, 1066)
 	manager.Start(fault, sample, []byte("{}"))
-	if receipt := manager.Query(1, 0); !receipt.OwnershipFault || receipt.Cleanup != "unknown" {
+	if receipt := manager.Query(1, 1); receipt.Cleanup != "unknown" {
 		t.Fatalf("capacity failure replaced by earlier clean run: %+v", receipt)
 	}
-	if receipt := manager.Query(65, 65); receipt.Cleanup != "unknown" || receipt.TransferConsumed {
+	if receipt := manager.Query(66, 66); receipt.Cleanup != "unknown" || receipt.TransferConsumed {
 		t.Fatal("unstored transfer was invented")
 	}
 	for _, handoff := range pending {

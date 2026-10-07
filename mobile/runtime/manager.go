@@ -168,6 +168,7 @@ func (m *Manager) Start(t *Transfer, input, request []byte) Receipt {
 	if t.startRequested || t.rejected {
 		t.mu.Unlock()
 		m.mu.Unlock()
+		observe(t.done, StartObservation)
 		return t.snapshot()
 	}
 	t.startRequested = true
