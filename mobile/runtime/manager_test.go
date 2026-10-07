@@ -118,6 +118,26 @@ func TestCloseUnknownAndDuplicateHandoffCannotPermitNewRun(t *testing.T) {
 	}
 }
 
+func TestRunOnlyQueryAndStopKeepHistoricalTransferFaultWithActualRunBarrier(t *testing.T) {
+	system := newDescriptors()
+	manager := R.NewManager(system)
+	first := manager.Start(manager.Consume(2, 7, 9), sample, []byte("{}"))
+	if first.Cleanup != "complete" {
+		t.Fatal("setup run not clean")
+	}
+	// A malformed independent handoff faults the manager without replacing its
+	// actual current run. Even an actual successful fd close cannot erase it.
+	manager.Start(manager.Consume(3, 0, 10), sample, []byte("{}"))
+	for _, receipt := range []R.Receipt{manager.Query(2, 0), manager.Stop(2)} {
+		if !receipt.OwnershipFault || receipt.Cleanup != "unknown" || receipt.TransferID != "7" {
+			t.Fatalf("old clean run concealed a historical handoff fault: %+v", receipt)
+		}
+		if receipt.Phase != "failed" || receipt.PendingOwners != (R.PendingOwners{}) || receipt.ForwardingActive || receipt.Tun.CloseResult != 0 {
+			t.Fatalf("historical fault fabricated the actual run's joined-user barrier: %+v", receipt)
+		}
+	}
+}
+
 func TestObservationTimeoutRetainsActualCloseWorker(t *testing.T) {
 	system := newDescriptors()
 	system.closeWait = make(chan struct{})

@@ -150,6 +150,20 @@ func (t *Transfer) snapshot() Receipt {
 	}
 	return receipt
 }
+func retainFault(receipt Receipt, fault bool) Receipt {
+	if fault {
+		receipt.OwnershipFault = true
+		receipt.Cleanup = "unknown"
+		receipt.TransferState = "fault"
+		receipt.FailureCode = "TRANSFER_FAULT"
+	}
+	return receipt
+}
+func (m *Manager) snapshot(t *Transfer) Receipt {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return retainFault(t.snapshot(), m.fault)
+}
 func observe(done <-chan struct{}, deadline time.Duration) {
 	timer := time.NewTimer(deadline)
 	defer timer.Stop()
@@ -169,7 +183,7 @@ func (m *Manager) Start(t *Transfer, input, request []byte) Receipt {
 		t.mu.Unlock()
 		m.mu.Unlock()
 		observe(t.done, StartObservation)
-		return t.snapshot()
+		return m.snapshot(t)
 	}
 	t.startRequested = true
 	t.mu.Unlock()
@@ -190,29 +204,29 @@ func (m *Manager) Start(t *Transfer, input, request []byte) Receipt {
 	if refusal != "" {
 		t.Reject(refusal)
 		observe(t.done, StartObservation)
-		return t.snapshot()
+		return m.snapshot(t)
 	}
 	target, err := DecodeStart(t.receipt.Generation, mustTransfer(t.receipt.TransferID), input, request)
 	if err != nil {
 		t.Reject(err.Error())
 		observe(t.done, StartObservation)
-		return t.snapshot()
+		return m.snapshot(t)
 	}
 	if t.ctx.Err() != nil {
 		t.Reject("START_CANCELLED")
 		observe(t.done, StartObservation)
-		return t.snapshot()
+		return m.snapshot(t)
 	}
 	if !EngineAvailable {
 		t.Reject("GVISOR_REQUIRED")
 		observe(t.done, StartObservation)
-		return t.snapshot()
+		return m.snapshot(t)
 	}
 	t.mu.Lock()
 	if t.rejected {
 		t.mu.Unlock()
 		observe(t.done, StartObservation)
-		return t.snapshot()
+		return m.snapshot(t)
 	}
 	t.startAdmitted = true
 	t.receipt.OperationID = target.OperationID
@@ -222,7 +236,7 @@ func (m *Manager) Start(t *Transfer, input, request []byte) Receipt {
 	bytes := append([]byte{}, input...)
 	go t.start(target, bytes)
 	observe(t.done, StartObservation)
-	return t.snapshot()
+	return m.snapshot(t)
 }
 func mustTransfer(id string) uint64 { value, _ := strconv.ParseUint(id, 10, 64); return value }
 func (m *Manager) Query(generation, transfer uint64) Receipt {
@@ -235,14 +249,7 @@ func (m *Manager) Query(generation, transfer uint64) Receipt {
 	if t == nil || t.receipt.Generation != generation {
 		return absent(generation, transfer)
 	}
-	receipt := t.snapshot()
-	if m.fault {
-		receipt.OwnershipFault = true
-		receipt.Cleanup = "unknown"
-		receipt.TransferState = "fault"
-		receipt.FailureCode = "TRANSFER_FAULT"
-	}
-	return receipt
+	return retainFault(t.snapshot(), m.fault)
 }
 func (m *Manager) Stop(generation uint64) Receipt {
 	m.mu.Lock()
@@ -257,11 +264,11 @@ func (m *Manager) Stop(generation uint64) Receipt {
 	if !rejected {
 		select {
 		case <-t.cleanupDone:
-			return t.snapshot()
+			return m.snapshot(t)
 		default:
 			t.stop()
 		}
 	}
 	observe(t.cleanupDone, StopObservation)
-	return t.snapshot()
+	return m.snapshot(t)
 }
