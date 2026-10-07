@@ -50,6 +50,35 @@ func (d *descriptors) Read(int, []byte) (int, error)              { return 0, er
 func (d *descriptors) Write(int, []byte) (int, error)             { return 0, errors.New("write") }
 func (d *descriptors) Poll(context.Context, int, int, bool) error { return errors.New("poll") }
 
+type unavailableStat struct {
+	*descriptors
+	err error
+}
+
+func (d unavailableStat) Stat(fd int) (R.DescriptorMetadata, error) {
+	d.mu.Lock()
+	open := d.open[fd]
+	d.mu.Unlock()
+	if open {
+		return R.DescriptorMetadata{}, d.err
+	}
+	return R.DescriptorMetadata{}, syscall.EBADF
+}
+
+func TestUnavailableMetadataCannotDiscardEnteredDescriptorOwnership(t *testing.T) {
+	for _, observation := range []error{syscall.EIO, nil} {
+		system := unavailableStat{newDescriptors(), observation}
+		manager := R.NewManager(system)
+		receipt := manager.Start(manager.Consume(2, 7, 9), sample, []byte("{}"))
+		if !receipt.TransferConsumed || receipt.Cleanup != "complete" || !receipt.Tun.CloseAttempted || receipt.Tun.CloseResult != 0 || system.closes[9] != 1 {
+			t.Fatalf("unobserved stat discarded an actually owned fd: %+v", receipt)
+		}
+		if receipt.Tun.MetadataBefore.Observed || receipt.Tun.MetadataBefore.Device != "0" || receipt.Tun.AfterClose != "not-visible" {
+			t.Fatalf("missing metadata was fabricated: %+v", receipt.Tun)
+		}
+	}
+}
+
 func TestEnteredRejectedDescriptorIsConsumedAndExactTransferQueryable(t *testing.T) {
 	system := newDescriptors()
 	manager := R.NewManager(system)

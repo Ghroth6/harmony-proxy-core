@@ -48,7 +48,9 @@ while any unresolved record remains. A query of an evicted transfer is unknown.
 `afterClose`, `metadataAfter`. Metadata contains `observed`, decimal-string
 `device`, `inode`, `rdevice`, and numeric `mode`. These are stat metadata, not a
 unique open-file-description identity. Unobserved metadata uses decimal "0"
-and mode 0. `closeResult` is -1 before the attempt or while it remains pending,
+and mode 0. An unavailable stat observation retains the entered fd's ownership;
+only a negative fd or explicit EBADF establishes no supplied descriptor.
+`closeResult` is -1 before the attempt or while it remains pending,
 0 for returned success, or a positive errno; close occurs at most once.
 `afterClose` is not-observed/not-visible/metadata-same/metadata-different/unknown.
 Each resource has `kind`, `state` (unacquired/acquired/closing/closed/unknown),

@@ -33,7 +33,14 @@ type descriptorOwner struct {
 
 func consumeDescriptor(system DescriptorSystem, fd int) *descriptorOwner {
 	metadata, err := system.Stat(fd)
-	return &descriptorOwner{system: system, fd: fd, before: metadata, valid: err == nil && metadata.Observed, result: -1, after: "not-observed"}
+	// Metadata is optional observation, not an ownership admission gate. Only a
+	// negative fd or explicit EBADF establishes that no descriptor was supplied;
+	// any other stat failure retains the entered fd for one actual close attempt.
+	valid := fd >= 0 && !errors.Is(err, syscall.EBADF)
+	if err != nil {
+		metadata = zeroMetadata()
+	}
+	return &descriptorOwner{system: system, fd: fd, before: metadata, valid: valid, result: -1, after: "not-observed"}
 }
 func zeroMetadata() DescriptorMetadata {
 	return DescriptorMetadata{Device: "0", Inode: "0", RDevice: "0"}
