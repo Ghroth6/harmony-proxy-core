@@ -1,4 +1,122 @@
-# Mobile validation export
+# Mobile core boundaries
+
+## Fixed mobile runtime contract (M1b P3)
+
+`mobile/include/cb_runtime.h` and `mobile/runtime/contract.go` are the versioned
+runtime value boundary. `cb_runtime_contract_version_v1` returns 1 for a build
+with the explicitly selected gVisor runtime, independently of the validation ABI;
+without `with_gvisor` it returns 0, so the adapter rejects capability before dup.
+The three operations own the TUN duplicate, IPv4/TCP stack and stop cleanup.
+Host syscall-boundary tests and ARM64 compilation do not establish target TUN
+acceptance. Resolve all runtime symbols and the contract version before dup.
+
+The start request contains exactly `contractVersion`, `operationId`, `generation`,
+`transferId`, `inputRevision`, `inputDigest`, `runtimeOptions`, `platformPolicy`,
+and `tunPolicy`. Generation is a JSON integer 1..INT32_MAX and matches the scalar
+C argument. `transferId` is a canonical positive decimal string matching the
+independent uint64 C argument; the native adapter allocates strictly increasing
+IDs. Input digest is `sha256:` plus 64 lowercase hex digits for the exact bytes.
+Operation/input/policy revision identifiers are `[A-Za-z0-9:_-]`, 1..128 bytes.
+Duplicate, unknown, missing, null or trailing JSON fields are rejected.
+
+`runtimeOptions` has exactly `entry:"system-vpn"`, `transport:"tcp"`, and false
+`dns`, `ipv6`, `udp`, `explicitListeners`, `resourceDownloads`. `platformPolicy`
+has `revision`, `addressFamily:"ipv4"`, and `applicationIds` (1..16 distinct valid
+bundle IDs, each <=128 bytes). The independent immutable `tunPolicy` is exactly
+`{address:"10.111.0.1",prefixLength:30,route:"0.0.0.0",routePrefixLength:0,mtu:1500}`.
+Input is <=65536 bytes, request UTF-8 JSON <=8192 bytes, receipt <=32768 bytes.
+Queue size is 128, MTU 1500, TCP tuple capacity 32, transfer record capacity 64;
+start observes up to 5 seconds and stop up to 10 seconds. Actual cleanup retains
+ownership beyond those observation limits.
+
+Receipt fields are always present: `contractVersion`, `operationId`, `generation`,
+`transferId`, `transferConsumed`, `transferState`, `ownershipFault`,
+`candidateDigest`, `phase`, `outcome`, `cleanup`, `failureCode`,
+`stack:"gvisor-ipv4-tcp"`, `mtu:1500`, `forwardingActive`, `tun`, `resources`,
+`pendingOwners`, and `connections`. Phases are absent/validating/constructing/
+starting/running/stopping/stopped/failed; outcomes pending/running/stopped/
+rejected/failed; cleanup pending/complete/unknown. Transfer state is consumed,
+not-found, or fault. Operation identity and digest are empty before a request
+has been decoded; absence does not fabricate a request identity.
+An absent specific transfer is unknown, never replaced with
+the last run. Duplicate ID or record-capacity faults are retained and block
+new runs, even if a separate rejected descriptor close succeeds. At most 64
+specific transfers are retained: confirmed clean older records may be evicted,
+while any unresolved record remains. A query of an evicted transfer is unknown.
+
+`tun` contains `fd`, `metadataBefore`, `closeAttempted`, `closeResult`,
+`afterClose`, `metadataAfter`. Metadata contains `observed`, decimal-string
+`device`, `inode`, `rdevice`, and numeric `mode`. These are stat metadata, not a
+unique open-file-description identity. Unobserved metadata uses decimal "0"
+and mode 0. An unavailable stat observation retains the entered fd's ownership;
+only a negative fd or explicit EBADF establishes no supplied descriptor.
+`closeResult` is -1 before the attempt or while it remains pending,
+0 for returned success, or a positive errno; close occurs at most once.
+`afterClose` is not-observed/not-visible/metadata-same/metadata-different/unknown.
+Each resource has `kind`, `state` (unacquired/acquired/closing/closed/unknown),
+and `closeResult`. Resource kinds are candidate, forwarding, wake-read, wake-write,
+packet-stack and tun; an unexpected constructor panic retains construction/unknown.
+`pendingOwners` has bounded counts for `pumps`, `tcpCallbacks`,
+`constructions`, `forwarding`. `connections` contains at most 16 safe observations
+with `sequence`, `targetIPv4`, `targetPort`, `rule`, `node`, `upload`, `download`;
+it contains neither credentials, payloads nor full parser errors.
+
+Entering start consumes every actually valid supplied fd before other checks,
+including invalid output pointers. The adapter must never close it after entry.
+All ABI status failures and corrupted output require query of the exact transfer.
+Query with transfer_id=0 means run-only; positive IDs mean the precise handoff.
+ABI status 0 only means a receipt buffer was returned; runtime success is in the
+receipt. ABI status 1 is invalid output/buffer ABI arguments, 2 is internal/output
+failure. Initialize usable outputs to NULL/0, and free every nonnull returned
+buffer with `cb_free_v1`. No Go pointer or candidate crosses this boundary.
+
+The reproducible host entry is `scripts/test-mobile-runtime.ps1`, from a clean
+committed checkout, using Windows Go 1.24.5 and already cached pinned dependencies:
+
+```powershell
+./scripts/test-mobile-runtime.ps1 -ModuleCache '<existing Go module cache>'
+```
+
+If that cache lacks the two pinned Windows-only tailscale modules, pass
+`-HostSupplementCache '<separate existing cache>'`; it must contain `certstore`
+and `go-winio` at the exact versions in this repository's go.mod. The entry does
+not download, alter a cache, or rewrite upstream manifests. Each ignored batch
+records source/lock hashes, tool version, arguments and results. It runs real
+gVisor SYN/handshake/cancellation and real Mihomo candidate/dialer/retirement
+behavior through an injected descriptor syscall boundary, plus the affected
+validation, protection, forwarding, tunnel, config, executor and statistics regressions.
+It does not use a race detector or execute real Linux/OHOS descriptor syscalls.
+Build actual ARM64 bytes with the existing `scripts/build-mobile.ps1` entry.
+
+Private implementation is `mobile/runtime/manager.go` (immediate consumption,
+exact transfer records and finite observations), `descriptor_linux.go` (owned
+nonblocking TUN and CLOEXEC wake pipe syscalls), `engine_gvisor.go` (pumps,
+stack and cleanup), and `tcp_gvisor.go` (bounded tuple/constructor/callback book).
+The book exclusively owns its inner Forwarder, reserves before goroutine
+scheduling, and shares constructor admission with Stop's mutex. The cancellation
+watcher observes actual WritableEvents registration, then joins before waiter
+queue reuse. Cleanup joins pumps and constructors before Stack.Close/Abort,
+then callbacks/forwarding before Stack.Wait and fd close. Caller timeout leaves
+the worker and ownership intact. Every independent safe close and candidate
+retirement starts even if another close remains pending or fails.
+
+`config.BuildMobileFixedCandidate` constructs fresh owned resources only after
+the exact input's independent fixed-coverage validation. It carries partial
+resources back on failure. `executor.PublishMobileFixed` transfers only static
+proxies/rules and explicit IPv4/process/sniffer settings, without entering the
+generic DNS/listener/provider-init/profile/updater application path. Entry
+activation is separate; unpublished candidates use Discard and published ones
+use RetireConfig. Every forwarded root carries the fixed protection generation.
+Binding an unmarked caller inherits its cancellation and keeps that fixed scope's
+policy values. Failed proxy dialing closes and joins its background peek reader
+before releasing the forwarding lease, as does successful relay completion.
+Unknown closes block a new run. Run-only Query(g,0), matched to the actual current
+operation/generation/transfer, with terminal failed/stopped, nonpending cleanup,
+zero pending owners and forwardingActive=false establishes joined core TUN users.
+The service can independently destroy that run's platform TUN while preserving
+core cleanup errors. A historical global ownership fault can remain on this
+actual run's query and still blocks restart; an absent or arbitrary fault transfer
+with zero counts never establishes this current-run barrier.
 
 This backend owns `mobile/validation` and the versioned byte-buffer C export in
 `cmd/mobile`. The application operation and receipt contract are authoritative in
@@ -41,8 +159,10 @@ their own relevant validation.
 The application design, section 15, defines the product-facing responsibilities.
 This section owns the core's internal structure. Existing code below is evidence
 of implementation, not evidence that the new application's VPN path works.
-The runtime design is a proposal for M1b and later increments; it does not add
-exports or change the accepted M1a ABI.
+The fixed M1b P3 implementation and runtime exports are documented above and
+preserve the accepted M1a validation ABI. Broader runtime responsibilities below
+remain outside this increment unless their own implementation and evidence are
+identified explicitly.
 
 ### Implemented validation operation
 
@@ -69,7 +189,7 @@ invalid references, unsupported fields and construction/cleanup failures. C
 boundary and application tests separately verify buffer ownership and propagation.
 Only the recorded target-app validation proves the accepted device behavior.
 
-### Proposed runtime structure
+### Broader runtime responsibilities
 
 Use the engine's existing protocol, rule, DNS and connection implementations.
 Do not rebuild every upstream package to imitate the application's module list.
@@ -103,13 +223,14 @@ event unsubscribe does not necessarily wait for an already selected callback.
 A new runtime export must bridge those differences explicitly instead of assuming
 that calling the existing functions in sequence establishes a safe lifecycle.
 
-### M1b implementation gate and independent verification
+### M1b contract and independent verification
 
-The application repository's `docs/design/contracts/vpn-runtime.md` (draft 0.1,
-2026-10-07) now defines the proposed runtime owner and cross-boundary TUN
-consumption, socket-protection and cleanup semantics. Its platform-evidence section records the SDK/runtime connection discrepancy. These are design
-inputs, not new exports or device verification; consult the local application
-checkout until those documents are published.
+The application's `docs/design/contracts/vpn-runtime.md` defines runtime ownership
+and cross-boundary TUN consumption, socket protection and cleanup semantics.
+Its platform-evidence section records the SDK/runtime connection discrepancy.
+The fixed compiled header/value contract above is implemented, while those
+design inputs and host tests do not establish device acceptance. Consult the local
+application checkout for unpublished contract and verification changes.
 
 The first-runtime audit must cover TUN failures before ownership transfer,
 partial stack Start failures, ignored Close errors and completion of read/write
@@ -119,14 +240,12 @@ alone cannot become a mobile TUN-ready receipt. Preserve the existing static
 validation boundary and management/forwarding separation while adding the
 narrow runtime operation.
 
-Before implementation, fix the runtime carrier and callback threads, TUN
-borrow/transfer/duplication and close responsibilities, protection failure and
-shutdown ordering, applied-configuration identity, and the minimal supported
-configuration fields. Define the actual versioned runtime ABI with the application
-in its M1b contract; this README describes internals rather than duplicating that
-wire contract. M1a's validation entry point establishes no runtime export. The
-P2 protection boundary below is separate and does not start a TUN or forwarding
-runtime.
+The fixed runtime ABI/value contract, transfer ledger, candidate identity,
+protection marker, constructor barriers and joined cleanup above implement the
+minimal M1b carrier. Broader configuration and entry capabilities need their own
+ownership and verification before extending it. The P2 protection boundary below
+remains an independent capability; registration alone does not start a TUN or
+forwarding runtime.
 
 The first runtime increment needs one controlled configuration and one VPN entry.
 It does not require all node management, provider updates or explicit listeners.

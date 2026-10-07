@@ -548,7 +548,15 @@ func handleTCPConn(connCtx C.ConnContext) {
 	if err != nil {
 		return
 	}
-	defer ownedInbound.Close()
+	var peekDone chan struct{}
+	defer func() {
+		_ = ownedInbound.Close()
+		if peekDone != nil {
+			// Failed rule resolution or dialing must retain the entry lease until
+			// its reader actually returns, including a late return after Close.
+			<-peekDone
+		}
+	}()
 	if !isHandle(connCtx.Metadata().Type) {
 		return
 	}
@@ -585,8 +593,10 @@ func handleTCPConn(connCtx C.ConnContext) {
 
 	peekMutex := sync.Mutex{}
 	if !conn.Peeked() {
+		peekDone = make(chan struct{})
 		peekMutex.Lock()
 		go func() {
+			defer close(peekDone)
 			defer peekMutex.Unlock()
 			_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 			_, _ = conn.Peek(1)
