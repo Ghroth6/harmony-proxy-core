@@ -124,6 +124,9 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 	}
 	receipt.Category = "pass"
 	receipt.Covered = append(receipt.Covered, "static-ss-aes-128-gcm", "explicit-select-references", "DOMAIN-MATCH-rule-references", "candidate-resources-closed")
+	if fixedRuntimeScope(raw) {
+		receipt.Covered = append(receipt.Covered, "m1b-fixed-ipv4-tcp")
+	}
 	receipt.Uncovered = []string{"runtime-connectivity", "other-protocols-fields-and-rule-types"}
 	return
 }
