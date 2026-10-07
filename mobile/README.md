@@ -140,3 +140,21 @@ integration; the complete phone-to-proxy-to-target request and subsequent stop
 remain the application M1b/M1c acceptance. Record each reused patch's purpose,
 affected path and evidence; neither a design table nor an old host test approves
 the entire historical patch set.
+
+### Fixed M1b configuration coverage
+
+The unchanged ABI 1 validation operation now appends `m1b-fixed-ipv4-tcp`
+only after normal scope, real constructor/reference checks and resource cleanup
+succeed, and only for one IPv4 ss/aes-128-gcm node with nonempty password and
+UDP absent/false, one select containing exactly that node, and exactly MATCH to
+that group. `mobile/validation/runtime_scope.go` checks the decoded content;
+original-field gating still rejects every additional configuration key. The
+runtime token never means runtime defaults, platform policy, authorization,
+socket protection, reachability or resource setup have been checked. Generic
+M1a pass remains available without this token. No new global configuration,
+listener or download path was introduced.
+
+`runtime_scope_test.go` verifies this narrower coverage and real classification
+of broken YAML, invalid references, missing resources and unsupported capability.
+The actual phone app must use the new core artifact and preparation assembly;
+backend-only test success does not complete clashbox-meta #13 or #11.
