@@ -156,7 +156,7 @@ func validateMobileTrojan(proxy map[string]any, path string) error {
 			if _, ok := value.(bool); !ok {
 				return &MobileValidationError{Code: "PROXY_INVALID", Field: path + "." + key}
 			}
-			if value != false {
+			if key == "udp" && value != false {
 				return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED", Field: path + "." + key}
 			}
 		case "network":

@@ -280,15 +280,15 @@ M1a pass remains available without this token. No new global configuration,
 listener or download path was introduced.
 
 Trojan original fields are exactly `name/type/server/port/password/sni` and
-optional `udp:false`, `network:tcp`, `skip-cert-verify:false`. Defaults for the
+optional `udp:false`, `network:tcp`, and boolean `skip-cert-verify`. Defaults for the
 three optional fields are allowed. Name/server/password/SNI are strings; port is
 an integer 1..65535. Server is explicit IPv4, excluding unspecified/multicast.
 SNI is an explicit ASCII DNS hostname (1..253 bytes, labels 1..63 with ASCII
 letters/digits and internal hyphens), excluding IP literals, wildcard names,
 empty labels, trailing dot, whitespace/control characters and implicit server
 fallback. SNI supplies TLS ServerName, never the TCP dial/lookup address.
-Normal certificate chain, hostname and validity checks remain enabled. Unknown
-keys, certificate bypass, alternate certificate verification, client keys,
+Absent/false retains normal certificate chain, hostname and validity checks. Only an explicitly supplied boolean true skips certificate verification; SNI remains the original TLS handshake routing name. A normal failure never changes this flag. Unknown
+keys, alternate certificate verification, client keys,
 dialer chains, interface/mark, custom ALPN/fingerprint, ECH/Reality/wrappers,
 WS/gRPC, DNS dial addresses, UDP, IPv6 and extra listeners remain outside scope.
 SS does not gain Trojan fields; Trojan does not accept `cipher`. Type selection
@@ -296,7 +296,7 @@ precedes original field gating, so field order cannot switch whitelists.
 
 Trojan success emits `static-trojan-tcp-tls-sni` instead of
 `static-ss-aes-128-gcm`; the shared fixed family token remains
-`m1b-fixed-ipv4-tcp`. Static construction performs no TLS authentication or
+`m1b-fixed-ipv4-tcp`. The receipt additionally carries exactly one policy marker: `trojan-tls-cert-policy-normal` for absent/false, or `trojan-tls-cert-policy-explicit-skip` for explicit true. These markers state input policy and never certify a peer identity. Static construction performs no TLS authentication or
 reachability test. Invalid/missing SNI and wrong scalar types are `invalid` with
 `PROXY_INVALID`; explicitly disallowed capabilities or a nonfixed Trojan shape
 are `incomplete`. Diagnostics report safe field names, never secret values.
@@ -307,7 +307,7 @@ The actual phone app must use the new core artifact and preparation assembly;
 backend-only test success does not complete clashbox-meta #13 or #11.
 The runtime test entry also selects `trojan_runtime_test.go`: real isolated host
 TLS peer, physical IPv4 dial/generation protection, normal chain/name/expiry
-rejection, password/TCP header and bidirectional bytes, real select/MATCH
+rejection, explicit-true mismatched-certificate traffic with unchanged SNI, absent/false refusal without downgrade, typed raw-input/digest rechecks, password/TCP header and bidirectional bytes, real select/MATCH
 observations, handshake timeout and Stop joining physical sockets/owners. The
 peer uses a temporary test CA with serial, restored CA state; production defaults
 are unchanged. Forwarding byte tests enter the public bound forwarding tunnel

@@ -196,7 +196,7 @@ func trojanEnvelope(input []byte, generation uint64) []byte {
 	return encoded
 }
 
-func startTrojanRun(t *testing.T, peer *trojanPeer, callback protection.Callback) (*R.Manager, uint64, *packetDescriptors) {
+func startTrojanRun(t *testing.T, peer *trojanPeer, callback protection.Callback, certificatePolicy ...bool) (*R.Manager, uint64, *packetDescriptors) {
 	t.Helper()
 	generation := nextGeneration()
 	register(generation, callback)
@@ -204,6 +204,9 @@ func startTrojanRun(t *testing.T, peer *trojanPeer, callback protection.Callback
 	manager := R.NewManager(system, &productionGate)
 	t.Cleanup(func() { assertTrojanStopped(t, manager, generation, system) })
 	input := trojanBytes(peer)
+	if len(certificatePolicy) == 1 {
+		input = bytes.Replace(input, []byte("sni: node.example.invalid"), []byte(fmt.Sprintf("sni: node.example.invalid, skip-cert-verify: %t", certificatePolicy[0])), 1)
+	}
 	started := manager.Start(manager.Consume(generation, 1, 9), input, trojanEnvelope(input, generation))
 	if started.Outcome != "running" || !started.ForwardingActive {
 		t.Fatalf("real Trojan runtime failed to start: %+v", started)
@@ -406,7 +409,8 @@ func TestTrojanRuntimeRechecksExactBytesAndScopeBeforeAcquiringIngress(t *testin
 		staleDigest    bool
 	}{
 		{"different bytes", "documentation-only", "other-documentation-only", true},
-		{"strict TLS bypass", "sni: node.example.invalid", "sni: node.example.invalid, skip-cert-verify: true", false},
+		{"non boolean certificate policy", "sni: node.example.invalid", "sni: node.example.invalid, skip-cert-verify: 'true'", false},
+		{"certificate policy changed after digest", "sni: node.example.invalid", "sni: node.example.invalid, skip-cert-verify: true", true},
 		{"direct fallback", "proxies: [sample]", "proxies: [sample, DIRECT]", false},
 		{"uncovered field", "sni: node.example.invalid", "sni: node.example.invalid, dialer-proxy: DIRECT", false},
 	} {
@@ -433,6 +437,74 @@ func TestTrojanRuntimeRechecksExactBytesAndScopeBeforeAcquiringIngress(t *testin
 			}
 			if protected.Load() != 0 || system.closes[9] != 1 || system.closes[40] != 0 || system.closes[41] != 0 {
 				t.Fatal("failed recheck acquired ingress/network or lost descriptor ownership")
+			}
+		})
+	}
+}
+
+func TestOnlyExplicitTrueAllowsMismatchedCertificateAndPreservesSNI(t *testing.T) {
+	for _, policy := range []struct {
+		name    string
+		fields  []bool
+		success bool
+	}{
+		{"default", nil, false}, {"false", []bool{false}, false}, {"explicit true", []bool{true}, true},
+	} {
+		t.Run(policy.name, func(t *testing.T) {
+			peer := newTrojanPeer(t, "wrong-name")
+			var protects atomic.Int32
+			manager, generation, system := startTrojanRun(t, peer, func(uint64, uint64, uintptr) int32 { protects.Add(1); return protection.Success }, policy.fields...)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client, done := forwardTrojan(t, generation, ctx)
+			if policy.success {
+				response := make([]byte, len(trojanResponseBytes))
+				if _, err := io.ReadFull(client, response); err != nil || string(response) != trojanResponseBytes {
+					t.Fatalf("explicit true did not preserve authenticated TLS traffic: %q %v", response, err)
+				}
+				select {
+				case sni := <-peer.verified:
+					if sni != "node.example.invalid" {
+						t.Fatal("certificate policy changed handshake SNI")
+					}
+				case <-time.After(time.Second):
+					t.Fatal("real peer did not verify auth/traffic")
+				}
+				query := manager.Query(generation, 1)
+				deadline := time.Now().Add(time.Second)
+				for len(query.Connections) == 1 && query.Connections[0].Download < int64(len(trojanResponseBytes)) && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+					query = manager.Query(generation, 1)
+				}
+				if protects.Load() != 1 || len(query.Connections) != 1 {
+					t.Fatal("explicit true bypassed protect or real forwarding observation")
+				}
+				connection := query.Connections[0]
+				if connection.Node != "sample" || connection.Rule != "Match" || connection.Upload < int64(len(trojanRequestBytes)) || connection.Download < int64(len(trojanResponseBytes)) {
+					t.Fatalf("explicit true changed route/auth/traffic: %+v", connection)
+				}
+			} else {
+				select {
+				case <-peer.failure:
+				case <-time.After(time.Second):
+					t.Fatal("normal policy silently skipped mismatched certificate")
+				}
+				cancel()
+				if len(manager.Query(generation, 1).Connections) != 0 {
+					t.Fatal("rejected certificate produced a forwarding connection")
+				}
+				select {
+				case <-peer.verified:
+					t.Fatal("normal policy accepted auth/target traffic after certificate failure")
+				default:
+				}
+			}
+			cancel()
+			assertTrojanStopped(t, manager, generation, system)
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("certificate-policy forwarding caller not joined")
 			}
 		})
 	}

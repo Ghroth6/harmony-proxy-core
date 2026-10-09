@@ -37,6 +37,34 @@ rules:
   - MATCH,m1b-proxy
 `
 
+func TestTrojanCertificatePolicyReceiptIsExplicitAndTyped(t *testing.T) {
+	for _, example := range []struct{ field, marker string }{
+		{"", "trojan-tls-cert-policy-normal"},
+		{"    skip-cert-verify: false\n", "trojan-tls-cert-policy-normal"},
+		{"    skip-cert-verify: true\n", "trojan-tls-cert-policy-explicit-skip"},
+	} {
+		input := strings.Replace(trojanInput, "    type: trojan", example.field+"    type: trojan", 1)
+		result := validation.Validate("trojan-policy", []byte(input))
+		if result.Category != "pass" || !slices.Contains(result.Covered, example.marker) || !slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") || !slices.Contains(result.Covered, "static-trojan-tcp-tls-sni") {
+			t.Fatalf("certificate policy missing or changed: %#v", result)
+		}
+		other := "trojan-tls-cert-policy-normal"
+		if example.marker == other {
+			other = "trojan-tls-cert-policy-explicit-skip"
+		}
+		if slices.Contains(result.Covered, other) {
+			t.Fatal("receipt silently claimed both certificate policies")
+		}
+	}
+	for _, value := range []string{"'true'", "'false'", "1", "null", "[true]"} {
+		input := strings.Replace(trojanInput, "    type: trojan", "    skip-cert-verify: "+value+"\n    type: trojan", 1)
+		result := validation.Validate("trojan-policy-type", []byte(input))
+		if result.Category != "invalid" || len(result.Diagnostics) != 1 || result.Diagnostics[0].Field != "proxies[0].skip-cert-verify" || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") {
+			t.Fatalf("non-bool certificate policy accepted: %#v", result)
+		}
+	}
+}
+
 func TestSingleTrojanStaticConstructionReturnsAccurateFixedCoverage(t *testing.T) {
 	for _, input := range []string{trojanInput, strings.Replace(trojanInput, "    type: trojan", "    udp: false\n    network: tcp\n    skip-cert-verify: false\n    type: trojan", 1)} {
 		result := validation.Validate("trojan-fixed", []byte(input))
@@ -66,7 +94,6 @@ func TestTrojanOriginalFieldsAndExactStaticScopeCannotBeExpanded(t *testing.T) {
 		{"WS", "    sni:", "    ws-opts: {}\n    sni:"},
 		{"gRPC", "    sni:", "    grpc-opts: {}\n    sni:"},
 		{"SS wrapper", "    sni:", "    ss-opts: {}\n    sni:"},
-		{"TLS bypass", "    sni:", "    skip-cert-verify: true\n    sni:"},
 		{"non TCP", "    sni:", "    network: ws\n    sni:"},
 		{"UDP", "    sni:", "    udp: true\n    sni:"},
 		{"DNS endpoint", "192.0.2.1", "example.invalid"},

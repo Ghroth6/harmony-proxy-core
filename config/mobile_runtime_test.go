@@ -40,7 +40,7 @@ func TestMobileTrojanCandidateConstructsFreshActualAdapter(t *testing.T) {
 func TestMobileTrojanCandidateIndependentlyRejectsScopeExpansion(t *testing.T) {
 	for _, change := range []struct{ from, to string }{
 		{"sni: node.example.invalid", "sni: 192.0.2.1"},
-		{"sni: node.example.invalid", "sni: node.example.invalid, skip-cert-verify: true"},
+		{"sni: node.example.invalid", "sni: node.example.invalid, skip-cert-verify: 'true'"},
 		{"sni: node.example.invalid", "sni: node.example.invalid, dialer-proxy: DIRECT"},
 		{"sni: node.example.invalid", "sni: node.example.invalid, network: ws"},
 		{"sni: node.example.invalid", "sni: node.example.invalid, cipher: aes-128-gcm"},
@@ -59,6 +59,29 @@ func TestMobileTrojanCandidateIndependentlyRejectsScopeExpansion(t *testing.T) {
 		}
 		if candidate == nil || candidate.Discard(context.Background()) != nil || candidate.CheckCandidate() == nil {
 			t.Fatal("rejected candidate lost partial-resource ownership")
+		}
+	}
+}
+
+func TestMobileCandidateRechecksTypedCertificatePolicyWithoutChangingRawBytes(t *testing.T) {
+	for _, field := range []string{"", ", skip-cert-verify: false", ", skip-cert-verify: true"} {
+		input := strings.Replace(trojanCandidateInput, "sni: node.example.invalid", "sni: node.example.invalid"+field, 1)
+		raw, err := config.UnmarshalRawConfig([]byte(input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidate, err := config.BuildMobileFixedCandidate(raw)
+		if candidate != nil {
+			defer candidate.Discard(context.Background())
+		}
+		if err != nil || candidate.Proxies["sample"].Type() != C.Trojan {
+			t.Fatalf("independent typed certificate policy rejected: %v", err)
+		}
+		if raw.Proxy[0]["sni"] != "node.example.invalid" {
+			t.Fatal("constructor rewrote original SNI")
+		}
+		if field == ", skip-cert-verify: true" && raw.Proxy[0]["skip-cert-verify"] != true {
+			t.Fatal("constructor silently reset explicit policy")
 		}
 	}
 }

@@ -131,6 +131,13 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 	if fixedRuntimeScope(raw) {
 		receipt.Covered = append(receipt.Covered, "m1b-fixed-ipv4-tcp")
 	}
+	if transport == "static-trojan-tcp-tls-sni" {
+		policy := "trojan-tls-cert-policy-normal"
+		if raw.Proxy[0]["skip-cert-verify"] == true {
+			policy = "trojan-tls-cert-policy-explicit-skip"
+		}
+		receipt.Covered = append(receipt.Covered, policy)
+	}
 	receipt.Uncovered = []string{"runtime-connectivity", "other-protocols-fields-and-rule-types"}
 	return
 }
