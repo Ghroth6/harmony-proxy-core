@@ -143,6 +143,10 @@ func newTrojanPeer(t *testing.T, mode string) *trojanPeer {
 				expected := append([]byte(hex.EncodeToString(hash[:])+"\r\n"), 1, 1, 1, 1, 1, 1, 1, 187, '\r', '\n')
 				if !bytes.Equal(header, expected) {
 					peer.failure <- fmt.Errorf("peer rejected Trojan authentication/header")
+					// Reject target service, then let the tested Stop reclaim its
+					// live TLS socket. Immediate raw close could reset concurrent
+					// request bytes and intentionally manufacture cleanup errors.
+					_, _ = io.Copy(io.Discard, server)
 					return
 				}
 				request := make([]byte, len(trojanRequestBytes))

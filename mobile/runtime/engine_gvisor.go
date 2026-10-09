@@ -292,6 +292,7 @@ func (t *Transfer) cleanup() {
 		}
 		if engine.prepared {
 			if err := tunnel.StopForwarding(context.Background()); err != nil {
+				log.MobileFailure(t.receipt.Generation, log.StageCleanupFailed, err)
 				unknown = true
 				t.resource("forwarding", "unknown", 1)
 			} else {
@@ -341,6 +342,7 @@ func (t *Transfer) cleanup() {
 				err = engine.cfg.Discard(context.Background())
 			}
 			if err != nil {
+				log.MobileFailure(t.receipt.Generation, log.StageCleanupFailed, err)
 				t.resource("candidate", "unknown", 1)
 			} else {
 				t.resource("candidate", "closed", 0)
