@@ -14,6 +14,11 @@ func fixedRuntimeScope(raw *config.RawConfig) bool {
 		return false
 	}
 	node, group := raw.Proxy[0], raw.ProxyGroup[0]
+	// Static success has already audited every transport field. Keep the
+	// runtime family explicit even when additional static protocols are added.
+	if node["type"] != "ss" && node["type"] != "trojan" {
+		return false
+	}
 	server, ok := node["server"].(string)
 	if !ok {
 		return false

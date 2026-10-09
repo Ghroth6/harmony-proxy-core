@@ -101,7 +101,9 @@ the worker and ownership intact. Every independent safe close and candidate
 retirement starts even if another close remains pending or fails.
 
 `config.BuildMobileFixedCandidate` constructs fresh owned resources only after
-the exact input's independent fixed-coverage validation. It carries partial
+the exact input's independent fixed-coverage validation, and independently gates
+the single SS/aes-128-gcm or Trojan/TCP/TLS/SNI transport and fixed select/MATCH
+shape even for direct callers. It carries partial
 resources back on failure. `executor.PublishMobileFixed` transfers only static
 proxies/rules and explicit IPv4/process/sniffer settings, without entering the
 generic DNS/listener/provider-init/profile/updater application path. Entry
@@ -263,21 +265,55 @@ the entire historical patch set.
 
 ### Fixed M1b configuration coverage
 
-The unchanged ABI 1 validation operation now appends `m1b-fixed-ipv4-tcp`
-only after normal scope, real constructor/reference checks and resource cleanup
-succeed, and only for one IPv4 ss/aes-128-gcm node with nonempty password and
-UDP absent/false, one select containing exactly that node, and exactly MATCH to
-that group. `mobile/validation/runtime_scope.go` checks the decoded content;
+The unchanged ABI 1 validation operation appends `m1b-fixed-ipv4-tcp`
+only after original-field scope, real constructor/reference checks and resource
+cleanup succeed. The fixed family allows one IPv4 SS/aes-128-gcm node, or one
+IPv4 Trojan/TCP node with TLS and explicit DNS-hostname SNI, each with a nonempty
+password and UDP absent/false; one select containing exactly that node; and
+exactly MATCH to that group without a DIRECT fallback. SS retains its broader
+M1a static scope, including DOMAIN rules, while Trojan is accepted only in this
+single fixed shape. `mobile/validation/runtime_scope.go` checks decoded content;
 original-field gating still rejects every additional configuration key. The
 runtime token never means runtime defaults, platform policy, authorization,
 socket protection, reachability or resource setup have been checked. Generic
 M1a pass remains available without this token. No new global configuration,
 listener or download path was introduced.
 
+Trojan original fields are exactly `name/type/server/port/password/sni` and
+optional `udp:false`, `network:tcp`, `skip-cert-verify:false`. Defaults for the
+three optional fields are allowed. Name/server/password/SNI are strings; port is
+an integer 1..65535. Server is explicit IPv4, excluding unspecified/multicast.
+SNI is an explicit ASCII DNS hostname (1..253 bytes, labels 1..63 with ASCII
+letters/digits and internal hyphens), excluding IP literals, wildcard names,
+empty labels, trailing dot, whitespace/control characters and implicit server
+fallback. SNI supplies TLS ServerName, never the TCP dial/lookup address.
+Normal certificate chain, hostname and validity checks remain enabled. Unknown
+keys, certificate bypass, alternate certificate verification, client keys,
+dialer chains, interface/mark, custom ALPN/fingerprint, ECH/Reality/wrappers,
+WS/gRPC, DNS dial addresses, UDP, IPv6 and extra listeners remain outside scope.
+SS does not gain Trojan fields; Trojan does not accept `cipher`. Type selection
+precedes original field gating, so field order cannot switch whitelists.
+
+Trojan success emits `static-trojan-tcp-tls-sni` instead of
+`static-ss-aes-128-gcm`; the shared fixed family token remains
+`m1b-fixed-ipv4-tcp`. Static construction performs no TLS authentication or
+reachability test. Invalid/missing SNI and wrong scalar types are `invalid` with
+`PROXY_INVALID`; explicitly disallowed capabilities or a nonfixed Trojan shape
+are `incomplete`. Diagnostics report safe field names, never secret values.
+
 `runtime_scope_test.go` verifies this narrower coverage and real classification
 of broken YAML, invalid references, missing resources and unsupported capability.
 The actual phone app must use the new core artifact and preparation assembly;
 backend-only test success does not complete clashbox-meta #13 or #11.
+The runtime test entry also selects `trojan_runtime_test.go`: real isolated host
+TLS peer, physical IPv4 dial/generation protection, normal chain/name/expiry
+rejection, password/TCP header and bidirectional bytes, real select/MATCH
+observations, handshake timeout and Stop joining physical sockets/owners. The
+peer uses a temporary test CA with serial, restored CA state; production defaults
+are unchanged. Forwarding byte tests enter the public bound forwarding tunnel
+after real Start, while existing packet tests cover gVisor ingress. These host
+fixtures never establish that the existing external node is usable under normal
+TLS on the phone, or that browser-to-TUN forwarding and platform cleanup passed.
 
 ### P2 socket protection boundary
 
@@ -307,7 +343,8 @@ unmarked forwarding or infer that a lost marker is management. P3 must verify
 that propagation before admitting traffic. Required protection rejects a custom
 `NetDialer` that cannot expose the physical socket boundary. The hook preserves
 the existing global hook and interface/mark options rather than replacing them.
-M1b's selected ss/aes-128-gcm IPv4 TCP transport uses this real dialer; this
+M1b's selected SS/aes-128-gcm and fixed Trojan/TCP/TLS/SNI IPv4 transports use
+this real dialer; this
 increment does not claim all other protocols are integrated.
 
 The diagnostic probe creates only an unconnected IPv4 TCP socket, performs no

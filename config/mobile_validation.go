@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"github.com/metacubex/mihomo/component/configresources"
@@ -42,6 +43,17 @@ func ValidateMobileStatic(raw *RawConfig) (err error) {
 	}
 	for index, proxy := range raw.Proxy {
 		path := fmt.Sprintf("proxies[%d]", index)
+		if proxy["type"] == "trojan" {
+			if err := validateMobileTrojan(proxy, path); err != nil {
+				return err
+			}
+			// Trojan is added only for the single fixed runtime sample, not
+			// for the broader M1a static configuration family.
+			if !mobileFixedShape(raw) {
+				return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED"}
+			}
+			continue
+		}
 		// The normal runtime constructor permits some unusable endpoint values.
 		// M1a's narrower static contract checks required scalar values and the
 		// endpoint range here, in the core, before invoking that constructor.
@@ -117,4 +129,69 @@ func ValidateMobileStatic(raw *RawConfig) (err error) {
 		return &MobileValidationError{Code: "RULE_INVALID", Field: "rules", cause: parseErr}
 	}
 	return nil
+}
+
+func validateMobileTrojan(proxy map[string]any, path string) error {
+	for _, field := range []string{"name", "type", "server", "password", "sni"} {
+		value, ok := proxy[field].(string)
+		if !ok || value == "" || (field != "password" && strings.TrimSpace(value) == "") {
+			return &MobileValidationError{Code: "PROXY_INVALID", Field: path + "." + field}
+		}
+	}
+	port, ok := proxy["port"].(int)
+	if !ok || port < 1 || port > 65535 {
+		return &MobileValidationError{Code: "PROXY_INVALID", Field: path + ".port"}
+	}
+	if !mobileTLSName(proxy["sni"].(string)) {
+		return &MobileValidationError{Code: "PROXY_INVALID", Field: path + ".sni"}
+	}
+	address, err := netip.ParseAddr(proxy["server"].(string))
+	if err != nil || !address.Is4() || address.IsUnspecified() || address.IsMulticast() {
+		return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED", Field: path + ".server"}
+	}
+	for key, value := range proxy {
+		switch key {
+		case "name", "type", "server", "port", "password", "sni":
+		case "udp", "skip-cert-verify":
+			if _, ok := value.(bool); !ok {
+				return &MobileValidationError{Code: "PROXY_INVALID", Field: path + "." + key}
+			}
+			if value != false {
+				return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED", Field: path + "." + key}
+			}
+		case "network":
+			if _, ok := value.(string); !ok {
+				return &MobileValidationError{Code: "PROXY_INVALID", Field: path + ".network"}
+			}
+			if value != "tcp" {
+				return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED", Field: path + ".network"}
+			}
+		default:
+			return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED", Field: "proxies"}
+		}
+	}
+	return nil
+}
+
+// An explicit ASCII DNS hostname is mandatory. IP literals, wildcard names,
+// empty labels, whitespace/control characters and implicit server fallback are
+// outside this TLS SNI contract. This name never supplies the dial address.
+func mobileTLSName(name string) bool {
+	if len(name) == 0 || len(name) > 253 {
+		return false
+	}
+	if _, err := netip.ParseAddr(name); err == nil {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }

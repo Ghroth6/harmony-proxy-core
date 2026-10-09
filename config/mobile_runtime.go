@@ -26,47 +26,39 @@ func BuildMobileFixedCandidate(raw *RawConfig) (cfg *Config, err error) {
 		}
 	}()
 	fail := func() (*Config, error) { return cfg, &MobileValidationError{Code: "CAPABILITY_NOT_COVERED"} }
-	if raw == nil || len(raw.Proxy) != 1 || len(raw.ProxyGroup) != 1 || len(raw.Rule) != 1 || len(raw.ProxyProvider) != 0 || len(raw.RuleProvider) != 0 || len(raw.SubRules) != 0 {
+	if !mobileFixedShape(raw) {
 		return fail()
 	}
 	node := raw.Proxy[0]
-	group := raw.ProxyGroup[0]
 	name, _ := node["name"].(string)
 	server, _ := node["server"].(string)
 	password, _ := node["password"].(string)
 	port, portOK := node["port"].(int)
 	address, err := netip.ParseAddr(server)
-	if name == "" || password == "" || !portOK || port < 1 || port > 65535 || err != nil || !address.Is4() || address.IsUnspecified() || address.IsMulticast() || node["type"] != "ss" || node["cipher"] != "aes-128-gcm" {
+	if name == "" || password == "" || !portOK || port < 1 || port > 65535 || err != nil || !address.Is4() || address.IsUnspecified() || address.IsMulticast() {
 		return fail()
 	}
-	for key, value := range node {
-		switch key {
-		case "name", "type", "server", "port", "cipher", "password":
-		case "udp":
-			if value != false {
+	switch node["type"] {
+	case "trojan":
+		if validateMobileTrojan(node, "proxies[0]") != nil {
+			return fail()
+		}
+	case "ss":
+		if node["cipher"] != "aes-128-gcm" {
+			return fail()
+		}
+		for key, value := range node {
+			switch key {
+			case "name", "type", "server", "port", "cipher", "password":
+			case "udp":
+				if value != false {
+					return fail()
+				}
+			default:
 				return fail()
 			}
-		default:
-			return fail()
 		}
-	}
-	for key := range group {
-		switch key {
-		case "name", "type", "proxies":
-		default:
-			return fail()
-		}
-	}
-	groupName, _ := group["name"].(string)
-	if group["type"] != "select" || groupName == "" || groupName == name {
-		return fail()
-	}
-	members, ok := group["proxies"].([]any)
-	if !ok || len(members) != 1 || members[0] != name {
-		return fail()
-	}
-	parts := strings.Split(raw.Rule[0], ",")
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) != "MATCH" || strings.TrimSpace(parts[1]) != groupName {
+	default:
 		return fail()
 	}
 	proxies, providers, err := parseProxiesInto(raw, owned)
@@ -82,4 +74,28 @@ func BuildMobileFixedCandidate(raw *RawConfig) (cfg *Config, err error) {
 	}
 	cfg.Proxies, cfg.Providers, cfg.Rules = proxies, providers, rules
 	return cfg, nil
+}
+
+// Shared by the Trojan static boundary and independent runtime constructor.
+// Proxy scalar/protocol checks remain separate from this fixed route shape.
+func mobileFixedShape(raw *RawConfig) bool {
+	if raw == nil || len(raw.Proxy) != 1 || len(raw.ProxyGroup) != 1 || len(raw.Rule) != 1 || len(raw.ProxyProvider) != 0 || len(raw.RuleProvider) != 0 || len(raw.SubRules) != 0 {
+		return false
+	}
+	node, group := raw.Proxy[0], raw.ProxyGroup[0]
+	groupName, ok := group["name"].(string)
+	if !ok || groupName == "" || groupName == node["name"] || group["type"] != "select" {
+		return false
+	}
+	for key := range group {
+		if key != "name" && key != "type" && key != "proxies" {
+			return false
+		}
+	}
+	members, ok := group["proxies"].([]any)
+	if !ok || len(members) != 1 || members[0] != node["name"] {
+		return false
+	}
+	parts := strings.Split(raw.Rule[0], ",")
+	return len(parts) == 2 && strings.TrimSpace(parts[0]) == "MATCH" && strings.TrimSpace(parts[1]) == groupName
 }

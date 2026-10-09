@@ -96,18 +96,30 @@ func inspectEntries(sequence *yaml.Node, field string, proxy bool) []Diagnostic 
 			continue
 		}
 		location := field + "/" + strconv.Itoa(index)
+		// Select the whitelist before walking fields: YAML field order cannot
+		// grant SS the Trojan TLS options, or Trojan the SS cipher option.
+		protocol := ""
+		if proxy {
+			for pairIndex := 0; pairIndex < len(entry.Content); pairIndex += 2 {
+				if entry.Content[pairIndex].Value == "type" {
+					protocol = entry.Content[pairIndex+1].Value
+				}
+			}
+		}
 		for pairIndex := 0; pairIndex < len(entry.Content); pairIndex += 2 {
 			key, value := entry.Content[pairIndex], entry.Content[pairIndex+1]
 			child := safeField(location, key.Value, pairIndex/2)
 			allowed := key.Value == "name" || key.Value == "type" || (!proxy && key.Value == "proxies") ||
-				(proxy && (key.Value == "server" || key.Value == "port" || key.Value == "cipher" || key.Value == "password" || key.Value == "udp"))
+				(proxy && (key.Value == "server" || key.Value == "port" || key.Value == "password" || key.Value == "udp" ||
+					(protocol == "ss" && key.Value == "cipher") ||
+					(protocol == "trojan" && (key.Value == "sni" || key.Value == "network" || key.Value == "skip-cert-verify"))))
 			if key.Value == "use" || key.Value == "url" || key.Value == "path" {
 				return scopeDiagnostic("RESOURCE_UNAVAILABLE", child, "Referenced configuration resources have not been prepared for validation.")
 			}
 			if !allowed {
 				return scopeDiagnostic("UNSUPPORTED_FIELD", child, "This node or group field has not been checked.")
 			}
-			if key.Value == "type" && value.Kind == yaml.ScalarNode && ((proxy && value.Value != "ss") || (!proxy && value.Value != "select")) {
+			if key.Value == "type" && value.Kind == yaml.ScalarNode && ((proxy && value.Value != "ss" && value.Value != "trojan") || (!proxy && value.Value != "select")) {
 				return scopeDiagnostic("UNSUPPORTED_CAPABILITY", child, "This node or group capability has not been checked.")
 			}
 			if proxy && key.Value == "cipher" && value.Kind == yaml.ScalarNode && value.Value != "aes-128-gcm" {
@@ -180,7 +192,7 @@ func resourceDiagnostic(node *yaml.Node, field string) []Diagnostic {
 // secrets, so positional mapping indices locate them without echoing their text.
 func safeField(parent, key string, index int) string {
 	switch key {
-	case "proxies", "proxy-groups", "rules", "proxy-providers", "rule-providers", "name", "type", "server", "port", "cipher", "password", "udp", "url", "path", "use", "dns", "mode", "geox-url", "geodata-loader", "geodata-mode", "external-ui", "external-ui-url":
+	case "proxies", "proxy-groups", "rules", "proxy-providers", "rule-providers", "name", "type", "server", "port", "cipher", "password", "udp", "sni", "network", "skip-cert-verify", "url", "path", "use", "dns", "mode", "geox-url", "geodata-loader", "geodata-mode", "external-ui", "external-ui-url":
 		return parent + "/" + key
 	default:
 		return parent + "/" + strconv.Itoa(index)

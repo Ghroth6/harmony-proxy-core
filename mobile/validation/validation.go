@@ -123,7 +123,11 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		return
 	}
 	receipt.Category = "pass"
-	receipt.Covered = append(receipt.Covered, "static-ss-aes-128-gcm", "explicit-select-references", "DOMAIN-MATCH-rule-references", "candidate-resources-closed")
+	transport := "static-ss-aes-128-gcm"
+	if len(raw.Proxy) == 1 && raw.Proxy[0]["type"] == "trojan" {
+		transport = "static-trojan-tcp-tls-sni"
+	}
+	receipt.Covered = append(receipt.Covered, transport, "explicit-select-references", "DOMAIN-MATCH-rule-references", "candidate-resources-closed")
 	if fixedRuntimeScope(raw) {
 		receipt.Covered = append(receipt.Covered, "m1b-fixed-ipv4-tcp")
 	}
