@@ -109,6 +109,17 @@ func newTrojanPeer(t *testing.T, mode string) *trojanPeer {
 				defer peer.workers.Done()
 				defer conn.Close()
 				defer func() { peer.closed <- struct{}{} }()
+				if mode == "eof" {
+					// Read the actual ClientHello, then close without a ServerHello.
+					// This is an incomplete TLS exchange, never a certificate verdict.
+					_, _ = conn.Read(make([]byte, 4096))
+					return
+				}
+				if mode == "record" {
+					_, _ = conn.Read(make([]byte, 4096))
+					_, _ = io.WriteString(conn, "HTTP/1.1 400 Bad Request\r\n\r\n")
+					return
+				}
 				if mode == "stall" {
 					buffer := make([]byte, 4096)
 					if n, _ := conn.Read(buffer); n > 0 {

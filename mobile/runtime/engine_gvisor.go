@@ -19,6 +19,7 @@ import (
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/hub/executor"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/mobile/protection"
 	"github.com/metacubex/mihomo/mobile/validation"
 	"github.com/metacubex/mihomo/tunnel"
@@ -50,10 +51,20 @@ type runEngine struct {
 
 func (t *Transfer) phase(phase string) {
 	t.mu.Lock()
+	changed := false
 	if t.ctx.Err() == nil {
+		changed = t.receipt.Phase != phase
 		t.receipt.Phase = phase
 	}
 	t.mu.Unlock()
+	if changed {
+		switch phase {
+		case "constructing":
+			log.MobilePhase(t.receipt.Generation, log.StageConstructing)
+		case "starting":
+			log.MobilePhase(t.receipt.Generation, log.StageStarting)
+		}
+	}
 }
 func (t *Transfer) resource(kind, state string, result int) {
 	t.mu.Lock()
@@ -68,11 +79,15 @@ func (t *Transfer) resource(kind, state string, result int) {
 }
 func (t *Transfer) failure(code string) {
 	t.mu.Lock()
+	first := t.receipt.FailureCode == ""
 	if t.receipt.FailureCode == "" {
 		t.receipt.FailureCode = code
 		t.receipt.Outcome = "failed"
 	}
 	t.mu.Unlock()
+	if first {
+		log.MobilePhase(t.receipt.Generation, log.StageRuntimeFailed)
+	}
 	t.stop()
 }
 func (t *Transfer) start(target StartRequest, input []byte) {
@@ -210,9 +225,11 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 	t.receipt.Outcome = "running"
 	t.receipt.ForwardingActive = true
 	t.mu.Unlock()
+	log.MobilePhase(target.Generation, log.StageRunning)
 }
 func (t *Transfer) stop() {
 	t.mu.Lock()
+	changed := t.receipt.Phase != "stopping" && t.receipt.Cleanup != "complete"
 	t.cancel()
 	t.receipt.ForwardingActive = false
 	if t.receipt.Cleanup != "complete" {
@@ -223,6 +240,9 @@ func (t *Transfer) stop() {
 	}
 	admitted := t.startAdmitted
 	t.mu.Unlock()
+	if changed {
+		log.MobilePhase(t.receipt.Generation, log.StageStopping)
+	}
 	if t.manager.gate != nil {
 		t.manager.gate.Unregister(t.receipt.Generation)
 	}
@@ -335,7 +355,6 @@ func (t *Transfer) cleanup() {
 		}
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	for _, entry := range t.receipt.Resources {
 		if entry.State == "unknown" {
 			unknown = true
@@ -359,6 +378,12 @@ func (t *Transfer) cleanup() {
 		}
 	}
 	close(t.cleanupDone)
+	t.mu.Unlock()
+	if unknown {
+		log.MobilePhase(t.receipt.Generation, log.StageCleanupFailed)
+	} else {
+		log.MobilePhase(t.receipt.Generation, log.StageStopped)
+	}
 }
 func ownerRead(engine *runEngine) *descriptorOwner {
 	if engine == nil {
@@ -390,6 +415,7 @@ func (e *runEngine) readPump() {
 		if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EINTR) {
 			if err = system.Poll(e.transfer.ctx, e.transfer.fd.fd, e.wakeRead.fd, false); err != nil {
 				if e.transfer.ctx.Err() == nil {
+					log.MobileFailure(e.transfer.receipt.Generation, log.StageTunRead, err)
 					e.transfer.failure("TUN_READ_POLL")
 				}
 				return
@@ -397,6 +423,7 @@ func (e *runEngine) readPump() {
 			continue
 		}
 		if err != nil || n <= 0 || n > MTU {
+			log.MobileFailure(e.transfer.receipt.Generation, log.StageTunRead, err)
 			e.transfer.failure("TUN_READ")
 			return
 		}
@@ -442,6 +469,7 @@ func (e *runEngine) writePump() {
 		packet.DecRef()
 		if err != nil {
 			if e.transfer.ctx.Err() == nil {
+				log.MobileFailure(e.transfer.receipt.Generation, log.StageTunWrite, err)
 				e.transfer.failure("TUN_WRITE")
 			}
 			return

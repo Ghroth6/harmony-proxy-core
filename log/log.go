@@ -35,30 +35,46 @@ func (e *Event) Type() string {
 }
 
 func Infoln(format string, v ...any) {
+	if MobileEnabled() {
+		return
+	}
 	event := newLog(INFO, format, v...)
 	logCh <- event
 	print(event)
 }
 
 func Warnln(format string, v ...any) {
+	if MobileEnabled() {
+		return
+	}
 	event := newLog(WARNING, format, v...)
 	logCh <- event
 	print(event)
 }
 
 func Errorln(format string, v ...any) {
+	if MobileEnabled() {
+		return
+	}
 	event := newLog(ERROR, format, v...)
 	logCh <- event
 	print(event)
 }
 
 func Debugln(format string, v ...any) {
+	if MobileEnabled() {
+		return
+	}
 	event := newLog(DEBUG, format, v...)
 	logCh <- event
 	print(event)
 }
 
 func Fatalln(format string, v ...any) {
+	if MobileEnabled() {
+		// Preserve termination without formatting or publishing private payloads.
+		os.Exit(1)
+	}
 	log.Fatalf(format, v...)
 }
 

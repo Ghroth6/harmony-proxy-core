@@ -58,6 +58,9 @@ type Error struct{ Code int32 }
 
 func (e Error) Error() string { return fmt.Sprintf("socket protection failed (%d)", e.Code) }
 
+// Scalar classification for the mobile safe log boundary; no raw error text.
+func (e Error) MobileProtectionStatus() int32 { return e.Code }
+
 // SocketControl is installed once at mobile process initialization. Registration
 // changes are synchronized inside Gate; the engine's global hook is never reset.
 func (g *Gate) SocketControl(network, address string, conn syscall.RawConn) error {

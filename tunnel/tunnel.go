@@ -654,6 +654,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 			peekBytes, _ = conn.Peek(conn.Buffered())
 			_, err = remoteConn.Write(peekBytes)
 			if err != nil {
+				err = log.MarkMobileError(log.StageInitialWrite, err)
 				return
 			}
 			if peekLen = len(peekBytes); peekLen > 0 {
@@ -682,6 +683,10 @@ func handleTCPConn(connCtx C.ConnContext) {
 }
 
 func logMetadataErr(metadata *C.Metadata, rule C.Rule, proxy C.ProxyAdapter, err error) {
+	if log.MobileEnabled() {
+		log.MobileFailure(metadata.ForwardingGeneration, log.StageForwardDial, err)
+		return
+	}
 	if rule == nil {
 		log.Warnln("[%s] dial %s %s --> %s error: %s", strings.ToUpper(metadata.NetWork.String()), proxy.Name(), metadata.SourceDetail(), metadata.RemoteAddress(), err.Error())
 	} else {

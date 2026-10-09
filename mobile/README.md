@@ -315,6 +315,36 @@ after real Start, while existing packet tests cover gVisor ingress. These host
 fixtures never establish that the existing external node is usable under normal
 TLS on the phone, or that browser-to-TUN forwarding and platform cleanup passed.
 
+### Safe mobile system logging
+
+The OHOS `cmd/mobile` library installs one process-lifetime `log.MobileOutput`
+through `cmd/mobile/log_ohos.go`. It calls the existing SDK's `OH_LOG_Print`
+and links `libhilog_ndk.z.so`, using the application's domain `0x0000`, tag
+`clashoh` and a `CORE` source prefix. It accepts only enum/scalar events: actual
+runtime phase, failed operation, finite error class, observed errno and the
+runtime generation. HiLog process identity plus the application's service
+instance record scopes the generation. No node, endpoint, input, SNI, password,
+certificate detail or original error text is rendered. Unclassified upstream
+format messages are omitted in mobile mode before the ordinary stdout and
+subscriber routes; stopping a generation never reopens those routes. The
+standalone daemon retains its existing text/subscription and error behavior.
+
+Physical dial, protection, Trojan TLS/header and first forwarding write attach
+their truthful failed operation without replacing error identity or certificate
+policy. TLS record classification uses the actual `metacubex/tls` type. EOF
+means an incomplete exchange, not an invalid-certificate verdict. Runtime and
+TUN failures and joined cleanup emit their own phase/error observations; no log
+event proves a browser response, per-socket protect timeline, or complete cleanup.
+The value/ownership ABI and business receipts remain independent and unchanged.
+
+The host entry also selects the `log` package. Public sink tests check finite
+classification, raw text exclusion from process streams/subscriptions,
+concurrent completion and unchanged standalone daemon behavior. Runtime tests
+use real isolated Trojan TLS peers for hostname rejection, EOF, malformed TLS
+record and protection failure with zero physical connections, followed by joined
+Stop. These checks do not establish the OHOS linker/load identity or HiLog output
+on a phone; those require the new mainline native/package/device validation.
+
 ### P2 socket protection boundary
 
 `mobile/protection.Gate` owns callback admission and synchronous borrowing.
