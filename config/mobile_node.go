@@ -157,6 +157,19 @@ func MobileNodeFields(node map[string]any) error {
 		default:
 			return unsupported()
 		}
+		if value, present := node["packet-encoding"]; present {
+			encoding, ok := value.(string)
+			if !ok {
+				return invalid()
+			}
+			// The pinned VMess adapter silently defaults unknown strings. Gate
+			// its implemented values here, including the original packet alias.
+			switch encoding {
+			case "", "packetaddr", "packet", "xudp":
+			default:
+				return unsupported()
+			}
+		}
 	}
 	if typeName == "hysteria2" {
 		if value, present := node["ports"]; present {

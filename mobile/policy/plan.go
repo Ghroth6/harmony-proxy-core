@@ -65,6 +65,23 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 		receipt.Code = "POLICY_GEODATA_UPDATE_UNSUPPORTED"
 		return
 	}
+	// Planning must not promise resource readiness for a node whose original
+	// fields would be dropped or defaulted by the runtime adapter. This shared
+	// gate is purely static; construction and cleanup remain in Validate/Build.
+	for _, node := range raw.Proxy {
+		if err := config.MobileNodeFields(node); err != nil {
+			receipt.Category = "invalid"
+			receipt.Code = "POLICY_PROXY_INVALID"
+			var diagnostic *config.MobileValidationError
+			if errors.As(err, &diagnostic) {
+				receipt.Code = diagnostic.Code
+				if diagnostic.Code == "CAPABILITY_NOT_COVERED" {
+					receipt.Category = "unsupported"
+				}
+			}
+			return
+		}
+	}
 	groups, code := planGroups(raw, receipt.InputDigest)
 	if code != "" {
 		receipt.Category = "unsupported"
