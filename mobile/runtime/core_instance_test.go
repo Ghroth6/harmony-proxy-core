@@ -38,7 +38,7 @@ func TestCoreRuntimeProcessIdentityIsSharedByActualReceipts(t *testing.T) {
 		t.Fatal("managers in one actual core process received different instance identities")
 	}
 	rejected := second.Start(second.Consume(2, 7, 9), sample, []byte("{}"))
-	if instanceFromReceipt(t, rejected) != identity || instanceFromReceipt(t, second.Stop(2, 7)) != identity {
+	if instanceFromReceipt(t, rejected) != identity || instanceFromReceipt(t, second.Stop(2)) != identity {
 		t.Fatal("rejected or stopped receipts changed the actual core process identity")
 	}
 }
