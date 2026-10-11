@@ -157,6 +157,13 @@ func (c *Config) ActivateMobilePolicyResources(root context.Context) error {
 }
 
 func (c *Config) CancelMobilePolicyServices() {
+	if c != nil && c.mobilePolicy != nil {
+		for _, provider := range c.Providers {
+			if owner, ok := provider.(interface{ Cancel() }); ok {
+				owner.Cancel()
+			}
+		}
+	}
 	if c != nil && c.mobileDNS != nil {
 		c.mobileDNS.owner.Cancel()
 	}
@@ -166,6 +173,13 @@ func (c *Config) CancelMobilePolicyServices() {
 }
 func (c *Config) WaitMobilePolicyServices(ctx context.Context) error {
 	var errs []error
+	if c != nil && c.mobilePolicy != nil {
+		for _, provider := range c.Providers {
+			if owner, ok := provider.(interface{ Wait(context.Context) error }); ok {
+				errs = append(errs, owner.Wait(ctx))
+			}
+		}
+	}
 	if c != nil && c.mobileDNS != nil {
 		errs = append(errs, c.mobileDNS.owner.Wait(ctx))
 	}
@@ -173,4 +187,44 @@ func (c *Config) WaitMobilePolicyServices(ctx context.Context) error {
 		errs = append(errs, c.mobilePolicyResources.Services.Wait(ctx))
 	}
 	return errors.Join(errs...)
+}
+
+// A mobile publication binds health checks but starts none. Their timers and
+// retry/selection requests begin only after the entry explicitly goes running.
+func (c *Config) BindMobilePolicyHealthChecks(root context.Context) error {
+	if generation := c.mobileNetwork.generation.Load(); generation > 0 {
+		scope, err := forwarding.Context(generation)
+		if err != nil {
+			return err
+		}
+		root = forwarding.Bind(root, scope)
+	}
+	for _, provider := range c.Providers {
+		owner, ok := provider.(interface{ BindHealthCheckContext(context.Context) error })
+		if !ok || provider.VehicleType() != P.Compatible {
+			return errors.New("POLICY_HEALTHCHECK_OWNER_INVALID")
+		}
+		if err := owner.BindHealthCheckContext(root); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (c *Config) ActivateMobilePolicyHealthChecks() error {
+	if c.mobileNetwork == nil || c.mobileNetwork.generation.Load() == 0 {
+		// Static publication callers may activate an entry with no scheduled
+		// health work. They still cannot open an actual outbound candidate fence.
+		for _, provider := range c.Providers {
+			if owner, ok := provider.(interface{ HealthCheckEnabled() bool }); !ok || owner.HealthCheckEnabled() {
+				return errors.New("POLICY_HEALTHCHECK_RUN_INVALID")
+			}
+		}
+		return nil
+	}
+	for _, provider := range c.Providers {
+		if err := provider.Initial(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

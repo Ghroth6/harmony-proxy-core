@@ -156,7 +156,12 @@ func (f *Fallback) Set(name string) error {
 
 func (f *Fallback) checkSelected(p C.Proxy) {
 	if !p.AliveForTestUrl(f.testUrl) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
+		root, finish, err := f.healthWorker()
+		if err != nil {
+			return
+		}
+		defer finish()
+		ctx, cancel := context.WithTimeout(root, time.Millisecond*time.Duration(5000))
 		defer cancel()
 		expectedStatus, _ := utils.NewUnsignedRanges[uint16](f.expectedStatus)
 		_, _ = p.URLTest(ctx, f.testUrl, expectedStatus)

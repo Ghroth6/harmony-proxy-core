@@ -11,6 +11,7 @@ import (
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
@@ -272,7 +273,15 @@ func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func(
 		return
 	}
 
+	ctx, finish, admissionErr := gb.healthWorker()
+	if admissionErr != nil {
+		return
+	}
 	go func() {
+		defer finish()
+		if ctx.Err() != nil {
+			return
+		}
 		if strings.Contains(err.Error(), "connection refused") {
 			fn()
 			return
@@ -283,7 +292,9 @@ func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func(
 
 		gb.failedTimes++
 		if gb.failedTimes == 1 {
-			log.Debugln("ProxyGroup: %s first failed", gb.Name())
+			if forwarding.Generation(ctx) == 0 {
+				log.Debugln("ProxyGroup: %s first failed", gb.Name())
+			}
 			gb.failedTime = time.Now()
 		} else {
 			if time.Since(gb.failedTime) > time.Duration(gb.testTimeout)*time.Millisecond {
@@ -291,13 +302,30 @@ func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func(
 				return
 			}
 
-			log.Debugln("ProxyGroup: %s failed count: %d", gb.Name(), gb.failedTimes)
+			if forwarding.Generation(ctx) == 0 {
+				log.Debugln("ProxyGroup: %s failed count: %d", gb.Name(), gb.failedTimes)
+			}
 			if gb.failedTimes >= gb.maxFailedTimes {
-				log.Warnln("because %s failed multiple times, activate health check", gb.Name())
+				if forwarding.Generation(ctx) == 0 {
+					log.Warnln("because %s failed multiple times, activate health check", gb.Name())
+				} else {
+					log.Warnln("Mobile group activates an owned health check after failures")
+				}
 				fn()
 			}
 		}
 	}()
+}
+
+func (gb *GroupBase) healthWorker() (context.Context, func(), error) {
+	for _, provider := range gb.providers {
+		if owner, ok := provider.(interface {
+			AcquireHealthCheck() (context.Context, func(), error)
+		}); ok {
+			return owner.AcquireHealthCheck()
+		}
+	}
+	return context.Background(), func() {}, nil
 }
 
 func (gb *GroupBase) healthCheck() {

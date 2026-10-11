@@ -80,6 +80,9 @@ func PublishMobilePolicy(ctx context.Context, cfg *config.Config) error {
 	if _, ok := cfg.MobilePolicyContext(); !ok {
 		return errors.New("mobile original candidate identity missing")
 	}
+	if err := cfg.BindMobilePolicyHealthChecks(ctx); err != nil {
+		return err
+	}
 	disabled, err := sniffer.NewDispatcher(&sniffer.Config{Enable: false})
 	if err != nil {
 		return errors.New("mobile sniffer configuration")
@@ -145,5 +148,8 @@ func ActivateMobilePolicy(cfg *config.Config) error {
 	if _, ok := cfg.MobilePolicyContext(); !ok {
 		return errors.New("mobile original candidate inactive")
 	}
-	return ActivateMobileFixed(cfg)
+	if err := ActivateMobileFixed(cfg); err != nil {
+		return err
+	}
+	return cfg.ActivateMobilePolicyHealthChecks()
 }

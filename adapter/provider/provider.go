@@ -67,6 +67,21 @@ func (bp *baseProvider) Initial() error {
 	return bp.healthCheck.start()
 }
 
+func (bp *baseProvider) BindHealthCheckContext(root context.Context) error {
+	return bp.healthCheck.bindContext(root)
+}
+func (bp *baseProvider) HealthCheckEnabled() bool { return bp.healthCheck.auto() }
+
+// Group retry/selection work borrows the same health-check owner and is joined
+// before provider retirement; this is unrelated to resource acquisition.
+func (bp *baseProvider) AcquireHealthCheck() (context.Context, func(), error) {
+	ctx, finish, err := bp.healthCheck.acquireRoot()
+	if err != nil {
+		return nil, nil, err
+	}
+	return adapter.WithURLTestCommitGuard(ctx, bp.healthCheck.commit), finish, nil
+}
+
 func (bp *baseProvider) HealthCheck() {
 	bp.healthCheck.check()
 }

@@ -66,7 +66,7 @@ func publicAuthenticatedSSPeer(t *testing.T) (int, <-chan error) {
 
 // All activation goes through the actual published candidate, forwarding gate
 // and submitted non-VPN snapshot. Neither resolver nor adapter is substituted.
-func activatePublicPolicy(t *testing.T, cfg *config.Config, servers []string, protected *atomic.Int32) (context.Context, uint64) {
+func activatePublicPolicy(t *testing.T, cfg *config.Config, servers []string, protected *atomic.Int32, deferGroups ...bool) (context.Context, uint64) {
 	t.Helper()
 	generation := publicProtectedPolicy(t, func(uint64, uint64, uintptr) int32 {
 		protected.Add(1)
@@ -111,8 +111,10 @@ func activatePublicPolicy(t *testing.T, cfg *config.Config, servers []string, pr
 	if err := cfg.ActivateMobilePolicyDNS(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := executor.ActivateMobilePolicy(cfg); err != nil {
-		t.Fatal(err)
+	if len(deferGroups) == 0 || !deferGroups[0] {
+		if err := executor.ActivateMobilePolicy(cfg); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return ctx, generation
 }

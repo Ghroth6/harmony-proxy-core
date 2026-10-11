@@ -83,24 +83,32 @@ acceptance. Resolve all runtime symbols and the contract version before dup.
 
 The start request contains exactly `contractVersion:2`, `operationId`, `generation`, `networkGeneration`,
 `transferId`, `inputRevision`, `inputDigest`, `runtimeOptions`, `platformPolicy`,
-and `tunPolicy`. Generation is a JSON integer 1..INT32_MAX and matches the scalar
+and `tunPolicy`, with optional `preparedPolicy` for original-source policy.
+Generation is a JSON integer 1..INT32_MAX and matches the scalar
 C argument. `transferId` is a canonical positive decimal string matching the
 independent uint64 C argument; the native adapter allocates strictly increasing
 IDs. Input digest is `sha256:` plus 64 lowercase hex digits for the exact bytes.
 Operation/input/policy revision identifiers are `[A-Za-z0-9:_-]`, 1..128 bytes.
 Duplicate, unknown, missing, null or trailing JSON fields are rejected.
 
-`runtimeOptions` has exactly `entry:"system-vpn"`, `transport:"tcp"`, and false
+Node-base `runtimeOptions` has exactly `entry:"system-vpn"`, `transport:"tcp"`, and false
 `dns`, `ipv6`, `udp`, `explicitListeners`, `resourceDownloads`. `platformPolicy`
 has `revision`, `addressFamily:"ipv4"`, and `applicationIds` (1..16 distinct valid
 bundle IDs, each <=128 bytes). The independent immutable `tunPolicy` is exactly
 `{address:"10.111.0.1",prefixLength:30,route:"0.0.0.0",routePrefixLength:0,mtu:1500}`.
-Input and request UTF-8 JSON are each <=1 MiB; receipt <=32768 bytes.
+Original-source policy keeps its independently sealed resources, platform and
+group preferences in `preparedPolicy`. Its transport is `tcp-udp`; DNS and IPv6
+follow the actual prepared source. Enabled IPv6 adds `fd00:111::1/126` and `::/0`
+and sets address family `dual`. Enabled DNS uses `10.111.0.2`, plus
+`fd00:111::2` with dual ingress; this does not override original DNS AAAA policy.
+`resourceDownloads` follows the declared runnable provider intervals and never
+authorizes initial resource acquisition during preparation or Start.
+Input and request UTF-8 JSON are each <=1 MiB; receipt <=1 MiB.
 Queue size is 128, MTU 1500, TCP tuple capacity 32, transfer record capacity 64;
 start observes up to 5 seconds and stop up to 10 seconds. Actual cleanup retains
 ownership beyond those observation limits.
 
-Receipt fields are always present: `contractVersion`, `operationId`, `generation`, `networkGeneration`,
+Receipt fields are always present: `contractVersion`, `coreInstance`, `operationId`, `generation`, `networkGeneration`,
 `transferId`, `transferConsumed`, `transferState`, `ownershipFault`,
 `candidateDigest`, `phase`, `outcome`, `cleanup`, `failureCode`,
 `stack:"gvisor-ipv4-tcp"`, `mtu:1500`, `forwardingActive`, `tun`, `resources`,
@@ -109,6 +117,12 @@ starting/running/stopping/stopped/failed; outcomes pending/running/stopped/
 rejected/failed; cleanup pending/complete/unknown. Transfer state is consumed,
 not-found, or fault. Operation identity and digest are empty before a request
 has been decoded; absence does not fabricate a request identity.
+`coreInstance` is process-owned, fixed within one Go process and different in a
+new process. Accepted original-source receipts additionally contain actual
+`inputDigest`, `resourceManifestDigest`, `platformPolicyDigest` and
+`groupPreferencesDigest`; they never substitute the raw digest for the composed
+candidate identity. `stack` retains its legacy wire label; original-policy
+capability follows the accepted immutable runtime options and prepared context.
 An absent specific transfer is unknown, never replaced with
 the last run. Duplicate ID or record-capacity faults are retained and block
 new runs, even if a separate rejected descriptor close succeeds. At most 64
@@ -126,11 +140,14 @@ only a negative fd or explicit EBADF establishes no supplied descriptor.
 `afterClose` is not-observed/not-visible/metadata-same/metadata-different/unknown.
 Each resource has `kind`, `state` (unacquired/acquired/closing/closed/unknown),
 and `closeResult`. Resource kinds are candidate, forwarding, wake-read, wake-write,
-packet-stack and tun; an unexpected constructor panic retains construction/unknown.
+packet-stack and tun, plus policy-services for original-source runs; an unexpected
+constructor panic retains construction/unknown.
 `pendingOwners` has bounded counts for `pumps`, `tcpCallbacks`,
-`constructions`, `forwarding`. `connections` contains at most 16 safe observations
+`constructions`, `forwarding`; original-source snapshots also observe bounded
+`udpFlows`, `udpPackets`, `udpWrites` and `dnsWaiters`. `connections` contains at most 16 safe observations
 with `sequence`, `targetIPv4`, `targetPort`, `rule`, `node`, `upload`, `download`;
-it contains neither credentials, payloads nor full parser errors.
+and optional original TUN `targetAddress`/`addressFamily` for IPv6;
+it contains neither physical proxy endpoints, credentials, payloads nor full parser errors.
 
 Entering start consumes every actually valid supplied fd before other checks,
 including invalid output pointers. The adapter must never close it after entry.
@@ -568,8 +585,14 @@ matchers, original DNS policy through real protected queries, and actual
 interval HTTP acquisition/save/adoption with failure retaining the old strategy.
 It does not establish the new C exports' OHOS build, current original source
 resources, ordinary application restoration, target TUN/browser traffic or full
-policy acceptance. Original group health checks, platform-specific process
-ownership and other stated unimplemented adaptations still need their own
-implementation/evidence. `profile.tracing` is a retained client field absent as
+policy acceptance. Original group health checks retain their original URL,
+expected status, interval and lazy policy. Pure publication binds an inactive
+owner; explicit activation starts the timer, and failure-triggered checks and
+dial races share that same run. Retirement closes admission, cancels the actual
+request and waits for physical workers and Close results before discarding the
+candidate. Synthetic host fixtures cover original url-test/fallback selection,
+lazy refresh after Touch, and cancellation of a real pending HTTP read.
+Platform-specific process ownership and other stated adaptations still need
+their own target evidence. `profile.tracing` is a retained client field absent as
 a runtime switch in pinned Mihomo; platform connection observations remain
 owned independently. These checkpoints do not complete #25/#26.

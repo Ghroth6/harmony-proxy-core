@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/singledo"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/dialer"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
@@ -44,6 +47,8 @@ type HealthCheck struct {
 	closed         bool
 	active         int
 	done           chan struct{}
+	bound          bool
+	failedCloses   map[io.Closer]error
 }
 
 func (hc *HealthCheck) start() error {
@@ -52,10 +57,13 @@ func (hc *HealthCheck) start() error {
 	if hc.closed {
 		return context.Canceled
 	}
-	if hc.started || hc.interval == 0 {
+	if hc.started || hc.interval == 0 && !hc.bound {
 		return nil
 	}
 	hc.started = true
+	if hc.interval == 0 {
+		return nil
+	}
 	hc.active++
 	go hc.process(hc.interval)
 	return nil
@@ -102,7 +110,7 @@ func (hc *HealthCheck) setProxies(proxies []C.Proxy) {
 func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint) {
 	url = strings.TrimSpace(url)
 	if len(url) == 0 || url == hc.url {
-		log.Debugln("ignore invalid health check url: %s", url)
+		log.Debugln("Ignore an empty or already registered health-check URL")
 		return
 	}
 
@@ -128,7 +136,7 @@ func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.
 			splitAndAddFiltersToExtra(filter, hc.extra[url])
 		}
 
-		log.Debugln("health check url: %s exists", url)
+		log.Debugln("Health-check URL already exists")
 		return
 	}
 
@@ -161,7 +169,7 @@ func (hc *HealthCheck) touch() {
 
 func (hc *HealthCheck) checkAsync() {
 	hc.mu.Lock()
-	if hc.closed {
+	if hc.closed || hc.bound && !hc.started {
 		hc.mu.Unlock()
 		return
 	}
@@ -175,7 +183,7 @@ func (hc *HealthCheck) checkAsync() {
 
 func (hc *HealthCheck) check() {
 	hc.mu.Lock()
-	if hc.closed || len(hc.proxies) == 0 {
+	if hc.closed || hc.bound && !hc.started || len(hc.proxies) == 0 {
 		hc.mu.Unlock()
 		return
 	}
@@ -254,9 +262,13 @@ func (hc *HealthCheck) execute(b *errgroup.Group, proxies []C.Proxy, url, uid st
 			if ctx.Err() != nil {
 				return nil
 			}
-			log.Debugln("Health Checking, proxy: %s, url: %s, id: {%s}", p.Name(), url, uid)
+			if !hc.bound {
+				log.Debugln("Health Checking, proxy: %s, url: %s, id: {%s}", p.Name(), url, uid)
+			}
 			_, _ = p.URLTest(ctx, url, expectedStatus)
-			log.Debugln("Health Checked, proxy: %s, url: %s, alive: %t, delay: %d ms uid: {%s}", p.Name(), url, p.AliveForTestUrl(url), p.LastDelayForTestUrl(url), uid)
+			if !hc.bound {
+				log.Debugln("Health Checked, proxy: %s, url: %s, alive: %t, delay: %d ms uid: {%s}", p.Name(), url, p.AliveForTestUrl(url), p.LastDelayForTestUrl(url), uid)
+			}
 			return nil
 		})
 	}
@@ -287,10 +299,64 @@ func (hc *HealthCheck) cancel() {
 func (hc *HealthCheck) wait(ctx context.Context) error {
 	select {
 	case <-hc.done:
+		hc.mu.Lock()
+		defer hc.mu.Unlock()
+		if len(hc.failedCloses) != 0 {
+			return errors.New("HEALTHCHECK_CLOSE_FAILED")
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// Binding is pure and precedes mobile activation. The original URL/interval/
+// lazy policy remains intact; physical races retain this same actual owner.
+func (hc *HealthCheck) bindContext(root context.Context) error {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if hc.closed || hc.started || hc.active != 0 || hc.bound {
+		return errors.New("HEALTHCHECK_OWNER_BUSY")
+	}
+	if root.Err() != nil {
+		return root.Err()
+	}
+	hc.ctxCancel()
+	ctx, cancel := context.WithCancel(root)
+	hc.ctx, hc.ctxCancel, hc.bound = dialer.WithWorkerOwner(ctx, hc), cancel, true
+	return nil
+}
+
+func (hc *HealthCheck) AcquireWorker(parent context.Context) (context.Context, func(), error) {
+	hc.mu.Lock()
+	return hc.acquireLocked(parent)
+}
+
+func (hc *HealthCheck) acquireRoot() (context.Context, func(), error) {
+	hc.mu.Lock()
+	return hc.acquireLocked(hc.ctx)
+}
+
+func (hc *HealthCheck) acquireLocked(parent context.Context) (context.Context, func(), error) {
+	if hc.closed || hc.bound && !hc.started || hc.ctx.Err() != nil || parent.Err() != nil {
+		hc.mu.Unlock()
+		return nil, nil, context.Canceled
+	}
+	hc.active++
+	hc.mu.Unlock()
+	var once sync.Once
+	return parent, func() { once.Do(hc.finish) }, nil
+}
+func (hc *HealthCheck) RetainWorkerCloseFailure(closer io.Closer, err error) {
+	if err == nil {
+		return
+	}
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if hc.failedCloses == nil {
+		hc.failedCloses = map[io.Closer]error{}
+	}
+	hc.failedCloses[closer] = err
 }
 
 func NewHealthCheck(proxies []C.Proxy, url string, timeout uint, interval uint, lazy bool, expectedStatus utils.IntRanges[uint16]) *HealthCheck {
