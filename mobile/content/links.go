@@ -147,11 +147,15 @@ func parseHysteria2(line string) (node map[string]any, name, protocol, code stri
 	protocol = "hysteria2"
 	var u *url.URL
 	var q url.Values
-	node, u, q, code = parseURI(line, protocol)
+	parseable, ports := hysteria2PortAuthority(line)
+	node, u, q, code = parseURI(parseable, protocol)
 	if code != "" {
 		return
 	}
 	name = u.Fragment
+	if ports != "" {
+		node["ports"] = ports
+	}
 	for key := range q {
 		switch key {
 		case "sni", "alpn", "insecure", "allowInsecure", "hpkp", "obfs", "obfs-password":
@@ -176,6 +180,30 @@ func parseHysteria2(line string) (node map[string]any, name, protocol, code stri
 	}
 	code = applyTLSQuery(node, q, "sni")
 	return
+}
+
+// Go's generic URI parser accepts a numeric port only. Hysteria2 also supports
+// a comma/range authority: retain the entire original range for the adapter,
+// using its first port solely to parse the other ordinary URI components.
+func hysteria2PortAuthority(line string) (string, string) {
+	start := strings.Index(line, "://") + 3
+	end := len(line)
+	if offset := strings.IndexAny(line[start:], "/?#"); offset >= 0 {
+		end = start + offset
+	}
+	authority := line[start:end]
+	endpoint := strings.LastIndexByte(authority, '@') + 1
+	colon := strings.LastIndexByte(authority[endpoint:], ':')
+	if colon < 0 {
+		return line, ""
+	}
+	colon += start + endpoint
+	ports := line[colon+1 : end]
+	if !strings.ContainsAny(ports, ",-") {
+		return line, ""
+	}
+	first := ports[:strings.IndexAny(ports, ",-")]
+	return line[:colon+1] + first + line[end:], ports
 }
 
 func parseURI(line, protocol string) (node map[string]any, u *url.URL, q url.Values, code string) {
@@ -268,8 +296,20 @@ func applyTransport(node map[string]any, q url.Values) string {
 	node["network"] = network
 	switch network {
 	case "tcp":
-		if path != "" || q.Get("host") != "" || q.Get("serviceName") != "" || q.Get("mode") != "" {
+		if q.Get("serviceName") != "" || q.Get("mode") != "" {
 			return "ENTRY_PARAMETER_UNSUPPORTED"
+		}
+		// Some URI generators include HTTP defaults while explicitly selecting
+		// plain TCP. Keep the real engine options; TCP does not execute them.
+		if path != "" || q.Get("host") != "" {
+			opts := map[string]any{}
+			if path != "" {
+				opts["path"] = strings.Split(path, ",")
+			}
+			if q.Get("host") != "" {
+				opts["headers"] = map[string]any{"Host": strings.Split(q.Get("host"), ",")}
+			}
+			node["http-opts"] = opts
 		}
 	case "ws":
 		if q.Get("serviceName") != "" || q.Get("mode") != "" {
@@ -344,11 +384,18 @@ func parseTrojan(line string) (node map[string]any, name, protocol, code string)
 	name = u.Fragment
 	for key := range q {
 		switch key {
-		case "sni", "alpn", "insecure", "allowInsecure", "fp", "type", "hpkp", "udp", "ws", "wspath", "path", "host", "serviceName", "mode":
+		case "sni", "alpn", "insecure", "allowInsecure", "fp", "type", "hpkp", "udp", "ws", "wspath", "path", "host", "serviceName", "mode", "security":
 		default:
 			code = "ENTRY_PARAMETER_UNSUPPORTED"
 			return
 		}
+	}
+	if security, present := q["security"]; present {
+		if security[0] != "tls" {
+			code = "ENTRY_SECURITY_UNSUPPORTED"
+			return
+		}
+		node["tls"] = true
 	}
 	// Trojan's password is the whole original userinfo value, URI decoded once.
 	password := u.User.Username()
@@ -378,7 +425,7 @@ func parseVLESS(line string) (node map[string]any, name, protocol, code string) 
 	name = u.Fragment
 	for key := range q {
 		switch key {
-		case "sni", "alpn", "insecure", "allowInsecure", "fp", "type", "hpkp", "udp", "path", "host", "serviceName", "mode", "security", "encryption", "flow", "pbk", "sid", "headerType", "packetEncoding":
+		case "sni", "alpn", "insecure", "allowInsecure", "fp", "type", "hpkp", "udp", "path", "host", "serviceName", "mode", "security", "encryption", "flow", "pbk", "sid", "headerType", "packetEncoding", "quicSecurity":
 		default:
 			code = "ENTRY_PARAMETER_UNSUPPORTED"
 			return
@@ -397,6 +444,15 @@ func parseVLESS(line string) (node map[string]any, name, protocol, code string) 
 	}
 	if packet, present := q["packetEncoding"]; present {
 		node["packet-encoding"] = packet[0]
+	}
+	if value, present := q["quicSecurity"]; present {
+		if value[0] != "" && value[0] != "none" {
+			code = "ENTRY_PARAMETER_UNSUPPORTED"
+			return
+		}
+		// This default never enables QUIC. Retain it as narrowly validated
+		// non-execution metadata so canonical/candidate identity includes it.
+		node["mobile-uri-opts"] = map[string]any{"quicSecurity": value[0]}
 	}
 	security := q.Get("security")
 	switch security {

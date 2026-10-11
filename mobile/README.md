@@ -23,6 +23,17 @@ Bounds are 1 MiB raw/decoded/node/candidate, 4096 entries and 8 MiB receipt.
 An excess rejects the whole result rather than truncating entries or parameters.
 Private canonical nodes and original bytes are not display/log values.
 
+The follow-up preserves explicit empty TLS names (adapter server fallback), IP
+certificate names, HTTP/2's original TLS flag, ECH query overrides and Hysteria2
+port-hopping authorities. HTTP/2 keeps the upstream transport's forced TLS
+semantics without changing the raw flag. Plain TCP generator host/path values
+remain inactive real `http-opts`; the strictly limited `mobile-uri-opts` only
+retains VLESS `quicSecurity` empty/`none`, never enabling QUIC or admitting other
+unknown query keys. Explicit Trojan `security=tls` remains canonical `tls:true`;
+contradictory plaintext is rejected. Fingerprint validation uses the actual
+engine ID set without logging private values or silently falling back to
+standard TLS. Unavailable IDs stay explicitly unsupported.
+
 Preparation injects a deny-only physical dialer before constructing real adapter
 resources, including AnyTLS pools and lazy Hysteria2 clients. It closes and joins
 those resources before returning; any attempted DNS/TCP/datagram operation fails

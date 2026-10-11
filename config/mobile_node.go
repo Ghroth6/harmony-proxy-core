@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/component/configresources"
+	TLSPolicy "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/vmess"
 )
@@ -84,13 +86,13 @@ func MobileNodeFields(node map[string]any) error {
 	case "anytls":
 		allowed += " sni alpn client-fingerprint skip-cert-verify fingerprint"
 	case "trojan":
-		allowed += " sni alpn client-fingerprint skip-cert-verify fingerprint network ws-opts grpc-opts"
+		allowed += " sni alpn client-fingerprint skip-cert-verify fingerprint tls network ws-opts grpc-opts"
 	case "vless":
-		allowed = "name type server port udp uuid flow encryption tls alpn client-fingerprint skip-cert-verify fingerprint servername reality-opts network ws-opts packet-encoding grpc-opts h2-opts http-opts xhttp-opts"
+		allowed = "name type server port udp uuid flow encryption tls alpn client-fingerprint skip-cert-verify fingerprint servername reality-opts ech-opts mobile-uri-opts network ws-opts packet-encoding grpc-opts h2-opts http-opts xhttp-opts"
 	case "vmess":
 		allowed = "name type server port udp uuid alterId cipher tls alpn client-fingerprint skip-cert-verify fingerprint servername network ws-opts packet-encoding grpc-opts h2-opts http-opts"
 	case "hysteria2":
-		allowed += " sni alpn skip-cert-verify fingerprint obfs obfs-password"
+		allowed += " sni alpn skip-cert-verify fingerprint obfs obfs-password ports"
 	default:
 		return unsupported()
 	}
@@ -137,6 +139,11 @@ func MobileNodeFields(node map[string]any) error {
 		return nil
 	}
 	if typeName == "trojan" || typeName == "vless" || typeName == "vmess" {
+		if typeName == "trojan" {
+			if tls, present := node["tls"]; present && tls != true {
+				return unsupported()
+			}
+		}
 		if err := mobileTransportFields(node); err != nil {
 			return err
 		}
@@ -152,6 +159,12 @@ func MobileNodeFields(node map[string]any) error {
 		}
 	}
 	if typeName == "hysteria2" {
+		if value, present := node["ports"]; present {
+			ports, ok := value.(string)
+			if !ok || !mobilePortRanges(ports) {
+				return invalid()
+			}
+		}
 		if value, present := node["udp"]; present && value != true {
 			return unsupported()
 		}
@@ -167,6 +180,17 @@ func MobileNodeFields(node map[string]any) error {
 		}
 	}
 	if typeName == "vless" {
+		if value, present := node["mobile-uri-opts"]; present {
+			opts, ok := value.(map[string]any)
+			if !ok || len(opts) != 1 {
+				return invalid()
+			}
+			for key, value := range opts {
+				if key != "quicSecurity" || value != "" && value != "none" {
+					return unsupported()
+				}
+			}
+		}
 		if value, present := node["flow"]; present && value != "" && (value != "xtls-rprx-vision" || node["tls"] != true) {
 			return unsupported()
 		}
@@ -202,6 +226,41 @@ func MobileNodeFields(node map[string]any) error {
 				return invalid()
 			}
 		}
+		if value, present := node["ech-opts"]; present {
+			opts, ok := value.(map[string]any)
+			if !ok {
+				return invalid()
+			}
+			var options outbound.ECHOptions
+			for key, value := range opts {
+				switch key {
+				case "enable":
+					var ok bool
+					options.Enable, ok = value.(bool)
+					if !ok {
+						return invalid()
+					}
+				case "config", "query-server-name":
+					text, ok := value.(string)
+					if !ok || strings.ContainsAny(text, "\x00\r\n") {
+						return invalid()
+					}
+					if key == "config" {
+						options.Config = text
+					} else {
+						if text != "" && !mobileTLSName(text) {
+							return invalid()
+						}
+						options.QueryServerName = text
+					}
+				default:
+					return unsupported()
+				}
+			}
+			if _, err := options.Parse(); err != nil {
+				return invalid()
+			}
+		}
 	}
 	sni := server
 	sniField := "sni"
@@ -210,10 +269,12 @@ func MobileNodeFields(node map[string]any) error {
 	}
 	if value, present := node[sniField]; present {
 		text, ok := value.(string)
-		if !ok || !mobileTLSName(text) {
+		if !ok || !mobileNodeTLSName(text) {
 			return invalid()
 		}
-		sni = text
+		if text != "" {
+			sni = text
+		}
 	}
 	fingerprint := ""
 	if value, present := node["client-fingerprint"]; present {
@@ -221,7 +282,7 @@ func MobileNodeFields(node map[string]any) error {
 		if !ok {
 			return invalid()
 		}
-		if !mobileFingerprint(text) {
+		if !TLSPolicy.SupportsFingerprint(text) {
 			return unsupported()
 		}
 	}
@@ -264,6 +325,47 @@ func MobileNodeFields(node map[string]any) error {
 	return nil
 }
 
+// The upstream generic uint16 range parser can wrap oversized values and
+// reorder descending ranges. Validate the original spelling before using it.
+func mobilePortRanges(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, part := range strings.Split(value, ",") {
+		bounds := strings.Split(part, "-")
+		if len(bounds) < 1 || len(bounds) > 2 {
+			return false
+		}
+		var previous uint64
+		for _, bound := range bounds {
+			for _, r := range bound {
+				if r < '0' || r > '9' {
+					return false
+				}
+			}
+			port, err := strconv.ParseUint(bound, 10, 16)
+			if err != nil || port == 0 || previous > port {
+				return false
+			}
+			previous = port
+		}
+	}
+	return true
+}
+
+// Empty names use the adapter's original server fallback. IP literals are
+// certificate verification names even though TLS does not send them as SNI.
+// The older fixed-node contract continues to use mobileTLSName independently.
+func mobileNodeTLSName(value string) bool {
+	if value == "" {
+		return true
+	}
+	if address, err := netip.ParseAddr(value); err == nil {
+		return address.Zone() == "" && !address.IsUnspecified() && !address.IsMulticast()
+	}
+	return mobileTLSName(value)
+}
+
 func mobileTransportFields(node map[string]any) error {
 	invalid := func() error { return &MobileValidationError{Code: "PROXY_INVALID"} }
 	unsupported := func() error { return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED"} }
@@ -281,14 +383,11 @@ func mobileTransportFields(node map[string]any) error {
 	if node["type"] == "trojan" && network != "tcp" && network != "ws" && network != "grpc" {
 		return unsupported()
 	}
-	if network == "h2" && node["tls"] != true {
-		return unsupported()
-	}
 	for _, binding := range []struct{ key, network, fields string }{
 		{"grpc-opts", "grpc", "grpc-service-name"}, {"h2-opts", "h2", "host path"}, {"http-opts", "http", "method path headers"}, {"xhttp-opts", "xhttp", "host path mode headers"},
 	} {
 		if value, present := node[binding.key]; present {
-			if network != binding.network {
+			if network != binding.network && !(network == "tcp" && binding.key == "http-opts") {
 				return unsupported()
 			}
 			opts, ok := value.(map[string]any)
@@ -399,13 +498,4 @@ func mobileStringList(value any) bool {
 		}
 	}
 	return true
-}
-
-func mobileFingerprint(value string) bool {
-	switch value {
-	case "none", "chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "chrome120", "firefox120", "safari16", "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuf", "chrome_pq", "chrome_pq_psk", "randomized":
-		return true
-	default:
-		return false
-	}
 }
