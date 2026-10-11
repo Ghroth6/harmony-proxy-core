@@ -490,3 +490,21 @@ validation, marked generation rejection, an actual protected dial to a loopback
 listener, independent management, custom transport refusal and preserved
 interface policy. Host tests and ARM64 compilation remain separate from target
 platform protect, TSFN/environment lifetime and complete phone acceptance.
+
+The original-policy implementation is a separate staged boundary under
+`mobile/policy`. Its value-only `contract.Seal` uses sorted UTF-8 object keys and
+independent input/resource/platform/preference/candidate identities. `Engine`
+opens its trusted resource root outside any runtime request. Pure `Plan`
+preserves original group positions and resource declarations, including raw
+general IPv6 defaults independently of DNS IPv6. Discovery reads rule and DNS
+fields, never arbitrary credentials or display names.
+
+The current resource-free checkpoint constructs and discards actual original
+rules/groups/adapters, validates opaque declared select preferences, fences
+DIRECT and remote adapters during preparation, and publishes source mode and
+process lookup settings without creating platform listeners. It explicitly
+rejects DNS-enabled or resource-dependent candidates until their owned fixed
+resource and DNS implementations are connected. The C policy ABI, scheduled
+resource updates, DNS, application UDP/IPv6 ingress and full-policy device
+acceptance are not established by these static host tests. Source-policy
+coverage labels remain distinct from the selected-node IPv4/TCP scope.

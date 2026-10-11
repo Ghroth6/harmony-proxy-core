@@ -36,6 +36,7 @@ import (
 	"github.com/metacubex/mihomo/listener"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/mobile/policy/contract"
 	R "github.com/metacubex/mihomo/rules"
 	RB "github.com/metacubex/mihomo/rules/bundle"
 	RC "github.com/metacubex/mihomo/rules/common"
@@ -217,6 +218,7 @@ type Config struct {
 	// A pointer preserves ownership across shallow runtime copies of a candidate.
 	candidateResources *configresources.Set
 	mobileNetwork      *mobileCandidateDialer
+	mobilePolicy       *contract.PreparedContext
 }
 
 type RawCors struct {
@@ -902,6 +904,10 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 }
 
 func parseProxiesInto(cfg *RawConfig, owned *configresources.Set, mobileOptions ...adapter.ProxyOption) (proxies map[string]C.Proxy, providersMap map[string]P.ProxyProvider, err error) {
+	return parseProxiesWithBuiltins(cfg, owned, nil, mobileOptions...)
+}
+
+func parseProxiesWithBuiltins(cfg *RawConfig, owned *configresources.Set, wrapBuiltin func(C.ProxyAdapter) C.ProxyAdapter, mobileOptions ...adapter.ProxyOption) (proxies map[string]C.Proxy, providersMap map[string]P.ProxyProvider, err error) {
 	proxies = make(map[string]C.Proxy)
 	providersMap = make(map[string]P.ProxyProvider)
 	proxiesConfig := cfg.Proxy
@@ -921,7 +927,11 @@ func parseProxiesInto(cfg *RawConfig, owned *configresources.Set, mobileOptions 
 	proxies["COMPATIBLE"] = adapter.NewProxy(outbound.NewCompatible())
 	proxies["PASS"] = adapter.NewProxy(outbound.NewPass())
 	proxies["PASS-RULE"] = adapter.NewProxy(outbound.NewPassRule())
-	for _, proxy := range proxies {
+	for name, proxy := range proxies {
+		if wrapBuiltin != nil {
+			proxy = adapter.NewProxy(wrapBuiltin(proxy.Adapter()))
+			proxies[name] = proxy
+		}
 		owned.AddProxy(proxy)
 	}
 	proxyList = append(proxyList, "DIRECT", "REJECT")
