@@ -16,14 +16,17 @@ type udpFlowOwner struct {
 	closeErr error
 }
 
-func retainUDPFlow(packet C.UDPPacket) *udpFlowOwner {
+func retainUDPFlow(packet C.UDPPacket) (*udpFlowOwner, bool) {
 	if retainer, ok := packet.(C.UDPFlowOwner); ok {
-		closing, finished := retainer.RetainUDPFlow()
+		closing, finished, admitted := retainer.RetainUDPFlow()
+		if !admitted {
+			return nil, false
+		}
 		if closing != nil || finished != nil {
-			return &udpFlowOwner{closing: closing, finished: finished}
+			return &udpFlowOwner{closing: closing, finished: finished}, true
 		}
 	}
-	return nil
+	return nil, true
 }
 
 func (o *udpFlowOwner) closeAdmission() {

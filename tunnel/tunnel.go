@@ -451,8 +451,9 @@ func handleUDPConn(packet C.PacketAdapter) {
 
 	key := packet.Key()
 	var flow *udpFlowOwner
+	flowAdmission := true
 	sender, loaded := natTable.GetOrCreate(key, func() C.PacketSender {
-		flow = retainUDPFlow(packet)
+		flow, flowAdmission = retainUDPFlow(packet)
 		sender := newPacketSenderContext(requestContext(metadata))
 		if sniffingEnable && snifferDispatcher.Enable() {
 			return snifferDispatcher.UDPSniff(packet, sender)
@@ -460,6 +461,12 @@ func handleUDPConn(packet C.PacketAdapter) {
 		return sender
 	})
 	if !loaded {
+		if !flowAdmission {
+			sender.Close()
+			natTable.Delete(key)
+			packet.Drop()
+			return
+		}
 		ctx, finish, err := forwarding.Acquire(metadata.RequestContext)
 		if err != nil {
 			sender.Close()
