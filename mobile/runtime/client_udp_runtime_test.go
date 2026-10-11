@@ -107,6 +107,29 @@ func clientUDP4Packet(target net.Addr, sourcePort uint16, payload []byte) []byte
 	return packet
 }
 
+func clientUDP6Packet(target net.Addr, sourcePort uint16, payload []byte) []byte {
+	peer := target.(*net.UDPAddr)
+	packet := make([]byte, 48+len(payload))
+	packet[0], packet[6], packet[7] = 0x60, 17, 64
+	binary.BigEndian.PutUint16(packet[4:6], uint16(8+len(payload)))
+	copy(packet[8:24], net.ParseIP("fd00:111::1").To16())
+	copy(packet[24:40], peer.IP.To16())
+	binary.BigEndian.PutUint16(packet[40:42], sourcePort)
+	binary.BigEndian.PutUint16(packet[42:44], uint16(peer.Port))
+	binary.BigEndian.PutUint16(packet[44:46], uint16(8+len(payload)))
+	copy(packet[48:], payload)
+	pseudo := make([]byte, 40)
+	copy(pseudo, packet[8:40])
+	binary.BigEndian.PutUint32(pseudo[32:36], uint32(8+len(payload)))
+	pseudo[39] = 17
+	xsum := checksum(append(pseudo, packet[40:]...))
+	if xsum == 0 {
+		xsum = 0xffff
+	}
+	binary.BigEndian.PutUint16(packet[46:48], xsum)
+	return packet
+}
+
 // An independent SIP004 peer authenticates the actual adapter's UDP datagram.
 // It uses standard crypto, not the adapter's packet writer or cipher helper.
 func clientSSUDPSeal(t *testing.T, password string, salt []byte) cipher.AEAD {
@@ -128,6 +151,14 @@ func clientSSUDPSeal(t *testing.T, password string, salt []byte) cipher.AEAD {
 }
 
 func TestClientTUNUDPUsesOriginalPolicyActualNATAndJoinsNormalStop(t *testing.T) {
+	testClientTUNUDPOriginalPolicy(t, false)
+}
+
+func TestClientTUNIPv6UDPUsesOriginalIPCIDR6RuleAndActualNAT(t *testing.T) {
+	testClientTUNUDPOriginalPolicy(t, true)
+}
+
+func testClientTUNUDPOriginalPolicy(t *testing.T, ipv6 bool) {
 	peer, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -146,8 +177,12 @@ func TestClientTUNUDPUsesOriginalPolicyActualNATAndJoinsNormalStop(t *testing.T)
 	t.Cleanup(func() { manager.Stop(generation) })
 	networkGeneration := publishClientNetwork(t, manager)
 	const password = "client-udp-fixture-only"
-	input := []byte(fmt.Sprintf("ipv6: false\ndns: {enable: false}\nproxies:\n  - {name: client-udp-node, type: ss, server: 127.0.0.1, port: %d, cipher: aes-128-gcm, password: %s, udp: true}\nproxy-groups:\n  - {name: original-select, type: select, proxies: [client-udp-node]}\nrules:\n  - MATCH,original-select\n", peer.LocalAddr().(*net.UDPAddr).Port, password))
-	request := clientPolicyRequest(t, input, generation, networkGeneration, false, false)
+	rules := "  - MATCH,original-select\n"
+	if ipv6 {
+		rules = "  - IP-CIDR6,2001:db8::/32,original-select,no-resolve\n  - MATCH,REJECT\n"
+	}
+	input := []byte(fmt.Sprintf("ipv6: %t\ndns: {enable: false}\nproxies:\n  - {name: client-udp-node, type: ss, server: 127.0.0.1, port: %d, cipher: aes-128-gcm, password: %s, udp: true}\nproxy-groups:\n  - {name: original-select, type: select, proxies: [client-udp-node]}\nrules:\n%s", ipv6, peer.LocalAddr().(*net.UDPAddr).Port, password, rules))
+	request := clientPolicyRequest(t, input, generation, networkGeneration, false, ipv6)
 	var caller R.StartRequest
 	if err = json.Unmarshal(request, &caller); err != nil {
 		t.Fatal(err)
@@ -158,7 +193,12 @@ func TestClientTUNUDPUsesOriginalPolicyActualNATAndJoinsNormalStop(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidate.Proxies["client-udp-node"] == nil || !candidate.Proxies["client-udp-node"].SupportUDP() || len(candidate.Rules) != 1 || candidate.Rules[0].Adapter() != "original-select" {
+	ruleCount := 1
+	stackName := "gvisor-ipv4-tcp-udp"
+	if ipv6 {
+		ruleCount, stackName = 2, "gvisor-dual-tcp-udp"
+	}
+	if candidate.Proxies["client-udp-node"] == nil || !candidate.Proxies["client-udp-node"].SupportUDP() || len(candidate.Rules) != ruleCount || candidate.Rules[0].Adapter() != "original-select" {
 		_ = candidate.Discard(context.Background())
 		t.Fatal("synthetic source did not construct the sole declared UDP route")
 	}
@@ -166,11 +206,15 @@ func TestClientTUNUDPUsesOriginalPolicyActualNATAndJoinsNormalStop(t *testing.T)
 		t.Fatal(err)
 	}
 	started := manager.Start(manager.Consume(generation, 1, 9), input, request)
-	if started.Outcome != "running" || !started.ForwardingActive || started.Stack != "gvisor-ipv4-tcp-udp" {
+	if started.Outcome != "running" || !started.ForwardingActive || started.Stack != stackName {
 		t.Fatalf("original-policy actual client UDP entry not active: %+v", started)
 	}
 	target := &net.UDPAddr{IP: net.IPv4(203, 0, 113, 42), Port: 443}
-	system.inject(clientUDP4Packet(target, 51234, []byte("client-udp-through-tun")))
+	packetMaker := clientUDP4Packet
+	if ipv6 {
+		target.IP, packetMaker = net.ParseIP("2001:db8::42"), clientUDP6Packet
+	}
+	system.inject(packetMaker(target, 51234, []byte("client-udp-through-tun")))
 	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
 	data := make([]byte, 256)
 	n, client, err := peer.ReadFrom(data)
@@ -179,7 +223,12 @@ func TestClientTUNUDPUsesOriginalPolicyActualNATAndJoinsNormalStop(t *testing.T)
 	}
 	aead := clientSSUDPSeal(t, password, data[:16])
 	plain, err := aead.Open(nil, make([]byte, aead.NonceSize()), data[16:n], nil)
-	if err != nil || len(plain) < 7 || plain[0] != 1 || net.IP(plain[1:5]).String() != "203.0.113.42" || binary.BigEndian.Uint16(plain[5:7]) != 443 || string(plain[7:]) != "client-udp-through-tun" {
+	addrLength, addrType := 4, byte(1)
+	if ipv6 {
+		addrLength, addrType = 16, 4
+	}
+	prefix := 3 + addrLength
+	if err != nil || len(plain) < prefix || plain[0] != addrType || net.IP(plain[1:1+addrLength]).String() != target.IP.String() || binary.BigEndian.Uint16(plain[1+addrLength:prefix]) != 443 || string(plain[prefix:]) != "client-udp-through-tun" {
 		t.Fatalf("actual encrypted SS datagram did not authenticate the original client destination: %v", err)
 	}
 	salt := make([]byte, 16)
@@ -187,14 +236,31 @@ func TestClientTUNUDPUsesOriginalPolicyActualNATAndJoinsNormalStop(t *testing.T)
 		t.Fatal(err)
 	}
 	aead = clientSSUDPSeal(t, password, salt)
-	reply := aead.Seal(salt, make([]byte, aead.NonceSize()), append(append([]byte{}, plain[:7]...), []byte("actual-nat-response")...), nil)
+	reply := aead.Seal(salt, make([]byte, aead.NonceSize()), append(append([]byte{}, plain[:prefix]...), []byte("actual-nat-response")...), nil)
 	if _, err = peer.WriteTo(reply, client); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case response := <-system.output:
-		if len(response) < 28 || response[0]>>4 != 4 || response[9] != 17 || net.IP(response[12:16]).String() != "203.0.113.42" || net.IP(response[16:20]).String() != "10.111.0.1" || binary.BigEndian.Uint16(response[20:22]) != 443 || binary.BigEndian.Uint16(response[22:24]) != 51234 || string(response[28:]) != "actual-nat-response" {
+		ipHeaderLength, sourceOffset, addressLength := 20, 12, 4
+		version, clientIP := byte(4), "10.111.0.1"
+		if ipv6 {
+			ipHeaderLength, sourceOffset, addressLength = 40, 8, 16
+			version, clientIP = 6, "fd00:111::1"
+		}
+		if len(response) < ipHeaderLength+8 || response[0]>>4 != version || net.IP(response[sourceOffset:sourceOffset+addressLength]).String() != target.IP.String() || net.IP(response[sourceOffset+addressLength:sourceOffset+2*addressLength]).String() != clientIP || binary.BigEndian.Uint16(response[ipHeaderLength:ipHeaderLength+2]) != 443 || binary.BigEndian.Uint16(response[ipHeaderLength+2:ipHeaderLength+4]) != 51234 || string(response[ipHeaderLength+8:]) != "actual-nat-response" {
 			t.Fatal("TUN UDP writeback did not preserve the real source and original client tuple")
+		}
+		if ipv6 {
+			pseudo := make([]byte, 40)
+			copy(pseudo, response[8:40])
+			binary.BigEndian.PutUint32(pseudo[32:36], uint32(len(response)-40))
+			pseudo[39] = 17
+			if response[6] != 17 || binary.BigEndian.Uint16(response[46:48]) == 0 || checksum(append(pseudo, response[40:]...)) != 0 {
+				t.Fatal("actual IPv6 UDP writeback has an invalid mandatory checksum")
+			}
+		} else if response[9] != 17 {
+			t.Fatal("actual IPv4 writeback is not UDP")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("real UDP NAT response did not return through gVisor and the TUN pump")
@@ -213,7 +279,11 @@ func TestClientTUNUDPUsesOriginalPolicyActualNATAndJoinsNormalStop(t *testing.T)
 		t.Fatal("actual client UDP flow did not publish original-rule traffic observation")
 	}
 	connection := connections[len(connections)-1].(map[string]any)
-	if connection["targetAddress"] != "203.0.113.42" || connection["addressFamily"] != "ipv4" || connection["targetIPv4"] != "203.0.113.42" || connection["rule"] != "Match" || connection["node"] != "client-udp-node" {
+	family, targetIPv4, rule := "ipv4", target.IP.String(), "Match"
+	if ipv6 {
+		family, targetIPv4, rule = "ipv6", "", "IPCIDR"
+	}
+	if connection["targetAddress"] != target.IP.String() || connection["addressFamily"] != family || connection["targetIPv4"] != targetIPv4 || connection["rule"] != rule || connection["node"] != "client-udp-node" {
 		t.Fatal("source observation did not bind the true TUN destination and original policy match")
 	}
 	stopped := manager.Stop(generation)
