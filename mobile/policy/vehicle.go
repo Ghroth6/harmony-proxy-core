@@ -57,16 +57,19 @@ func (v *preparedVehicle) Read(root context.Context, oldHash utils.HashType) ([]
 	if proxy == "" {
 		proxy = "DIRECT"
 	}
-	v.task = "resource:" + strconv.FormatUint(actualResourceAttempts.Add(1), 10)
-	v.session.record(v.task, v.resource.RefID, "acquiring", "", ResourceVersion{})
-	response, err := mihomoHTTP.HttpRequest(ctx, v.uri, "GET", headers, nil, mihomoHTTP.WithSpecialProxy(proxy))
+	response, err := mihomoHTTP.HttpRequest(ctx, v.uri, "GET", headers, nil,
+		mihomoHTTP.WithSpecialProxy(proxy),
+		mihomoHTTP.WithResourceRequest(func() {
+			v.task = "resource:" + strconv.FormatUint(actualResourceAttempts.Add(1), 10)
+			v.session.record(v.task, v.resource.RefID, "acquiring", "", ResourceVersion{})
+		}, v.session.RetainWorkerCloseFailure))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, utils.HashType{}, ctx.Err()
 		}
 		return nil, utils.HashType{}, errors.New("POLICY_RESOURCE_HTTP_FAILED")
 	}
-	if response.StatusCode < 200 || response.StatusCode > 299 {
+	if response.StatusCode != 200 {
 		closeErr := response.Body.Close()
 		v.session.RetainWorkerCloseFailure(response.Body, closeErr)
 		return nil, utils.HashType{}, errors.New("POLICY_RESOURCE_HTTP_STATUS")

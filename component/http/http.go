@@ -128,6 +128,16 @@ func HttpRequest(ctx context.Context, url, method string, header map[string][]st
 	}
 
 	client := http.Client{Transport: transport}
+	if opt.resource != nil {
+		// A resource attempt owns a fresh connection, so the transport cannot
+		// replay a GET on a stale reused socket without another attempt receipt.
+		transport.DisableKeepAlives = true
+		for name := range header {
+			opt.resource.declaredHeaders = append(opt.resource.declaredHeaders, name)
+		}
+		client.Transport = &resourceTransport{base: transport, policy: opt.resource}
+		client.CheckRedirect = opt.resource.redirect
+	}
 	response, err := client.Do(req)
 	if err != nil {
 		if cause := ctx.Err(); cause != nil {
@@ -171,6 +181,7 @@ type option struct {
 	specialProxy string
 	dialer       C.Dialer
 	caOption     ca.Option
+	resource     *resourceRequest
 }
 
 func WithSpecialProxy(name string) Option {

@@ -551,7 +551,14 @@ fail preparation; validation never re-encodes a resource or changes its digest.
 timer. Explicit runtime activation starts one original HTTP-provider scheduler;
 its first tick waits a full configured interval. Actual updates preserve the
 original URL, headers, proxy and strategy, use the accepted protection/network
-generation, bound and close the response, check dependency closure and reserve
+generation and count every actual GET, including each redirect. The resource
+client allows at most five redirects, rejects HTTPS downgrade and strips all
+declared headers and generated authorization/cookie/referrer data after an
+origin change, including later same-origin hops. Each attempt owns a fresh
+connection; ordinary upstream HTTP clients keep their existing behavior.
+Only a final 200 with complete bounded EOF and returned Close can be adopted.
+Intermediate or final Close errors retain the real object and block clean
+retirement. Updates check dependency closure and reserve
 the total adopted-resource budget before saving. A completed temporary file is
 synced, closed, re-hashed and atomically published without replacing an immutable
 file; only then can the actual provider strategy adopt it. The ledger separates

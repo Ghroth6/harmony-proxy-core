@@ -56,6 +56,10 @@ func TestOriginalGroupHealthCheckWaitsForActivationPreservesIntervalLazyAndSelec
 					t.Error("original URLTest method/path changed")
 				}
 				requests.Add(1)
+				// Pinned URLTest uses a zero-millisecond delay as unknown. Give
+				// the real fixture response a measurable delay before selection;
+				// an arbitrarily fast loopback reply is not a known delay sample.
+				time.Sleep(5 * time.Millisecond)
 				w.WriteHeader(http.StatusNoContent)
 			}))
 			t.Cleanup(server.Close)
@@ -78,10 +82,14 @@ func TestOriginalGroupHealthCheckWaitsForActivationPreservesIntervalLazyAndSelec
 			if requests.Load() != 1 || protected.Load() == 0 {
 				t.Fatal("explicit activation did not run the original protected health check")
 			}
-			selected := cfg.Proxies["PublicAuto"].Adapter().(interface{ Now() string })
-			for selected.Now() != "DIRECT" && time.Now().Before(deadline) {
+			// Arrival at the peer precedes URLTest's result publication. Wait
+			// for that public result before reading Now: URLTest deliberately
+			// caches its automatic choice for ten seconds, including a choice
+			// made while the initial health measurements are still pending.
+			for (cfg.Proxies["DIRECT"].LastDelayForTestUrl(server.URL+"/original-check") == 0xffff || cfg.Proxies["REJECT"].AliveForTestUrl(server.URL+"/original-check")) && time.Now().Before(deadline) {
 				time.Sleep(5 * time.Millisecond)
 			}
+			selected := cfg.Proxies["PublicAuto"].Adapter().(interface{ Now() string })
 			if selected.Now() != "DIRECT" {
 				t.Fatal("real original health result did not select the healthy member")
 			}
