@@ -30,6 +30,9 @@ func (c *client) Address() string {
 }
 
 func (c *client) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) {
+	if owner := resolverOwner(ctx); owner != nil {
+		return c.exchangeOwned(ctx, m, owner)
+	}
 	ctx, finishRequest, err := forwarding.AcquireManagementNetwork(ctx)
 	if err != nil {
 		return nil, err
@@ -94,6 +97,52 @@ func (c *client) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) 
 		return nil, ctx.Err()
 	case ret := <-ch:
 		return ret.msg, ret.err
+	}
+}
+
+// Owned candidates join the actual miekg read. Individual query cancellation
+// closes its socket; instance cancellation additionally joins shared work.
+func (c *client) exchangeOwned(ctx context.Context, m *D.Msg, owner *ResolverOwner) (*D.Msg, error) {
+	ctx, finish, err := owner.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	ctx, finishNetwork, err := forwarding.AcquireManagementNetwork(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finishNetwork()
+	network := "udp"
+	if c.schema != "udp" {
+		network = "tcp"
+	}
+	addr := net.JoinHostPort(c.host, c.port)
+	for {
+		raw, err := c.dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := owner.ownConn(raw)
+		if err != nil {
+			return nil, err
+		}
+		callbackDone := make(chan struct{})
+		stop := context.AfterFunc(ctx, func() { defer close(callbackDone); _ = conn.Close() })
+		dClient := &D.Client{UDPSize: 4096, Timeout: 5 * time.Second}
+		msg, _, err := dClient.ExchangeWithConn(m, &D.Conn{Conn: conn, UDPSize: dClient.UDPSize})
+		_ = conn.Close()
+		if !stop() {
+			<-callbackDone
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if msg != nil && msg.Truncated && network == "udp" {
+			network = "tcp"
+			continue
+		}
+		return msg, err
 	}
 }
 

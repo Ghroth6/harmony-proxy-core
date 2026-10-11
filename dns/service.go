@@ -11,6 +11,7 @@ import (
 
 type Service struct {
 	handler handler
+	owner   *ResolverOwner
 }
 
 // ServeMsg implement [resolver.Service] ResolveMsg
@@ -18,10 +19,21 @@ func (s *Service) ServeMsg(ctx context.Context, msg *D.Msg) (*D.Msg, error) {
 	if len(msg.Question) == 0 {
 		return nil, errors.New("at least one question is required")
 	}
+	if s.owner != nil {
+		owned, finish, err := s.owner.begin(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer finish()
+		ctx = owned
+	}
 
 	r, err := s.handler(icontext.NewDNSContext(ctx), msg)
 	if err != nil {
 		return r, err
+	}
+	if s.owner != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	// echo back EDNS0: if the client asked with an OPT, reply with our own OPT.
@@ -41,5 +53,9 @@ func (s *Service) ServeMsg(ctx context.Context, msg *D.Msg) (*D.Msg, error) {
 var _ resolver.Service = (*Service)(nil)
 
 func NewService(resolver resolver.Resolver, mapper *ResolverEnhancer) *Service {
-	return &Service{handler: newHandler(resolver, mapper)}
+	service := &Service{handler: newHandler(resolver, mapper)}
+	if owned, ok := resolver.(interface{ dnsOwner() *ResolverOwner }); ok {
+		service.owner = owned.dnsOwner()
+	}
+	return service
 }
