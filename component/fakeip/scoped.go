@@ -1,6 +1,7 @@
 package fakeip
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/netip"
@@ -225,6 +226,13 @@ type scopedStore struct {
 	bucket []byte
 }
 
+// A legal root DNS question is represented by an empty host after trimming its
+// trailing dot. Prefix every host key/value so it has a nonempty, unambiguous
+// database representation without changing the host returned by LookBack.
+func scopedHostKey(host string) []byte {
+	return append([]byte{0}, host...)
+}
+
 func (s *scopedStore) restore(pool *Pool) error {
 	o := s.owner
 	o.mu.Lock()
@@ -274,6 +282,7 @@ func (s *scopedStore) lookup(pool *Pool, host string) (netip.Addr, error) {
 		return netip.Addr{}, err
 	}
 	var result netip.Addr
+	hostKey := scopedHostKey(host)
 	before, cycle := pool.offset, pool.cycle
 	err := o.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(s.bucket)
@@ -284,10 +293,10 @@ func (s *scopedStore) lookup(pool *Pool, host string) (netip.Addr, error) {
 		if hosts == nil || addresses == nil {
 			return ErrStateFailed
 		}
-		if value := hosts.Get([]byte(host)); value != nil {
+		if value := hosts.Get(hostKey); value != nil {
 			var err error
 			result, err = netip.ParseAddr(string(value))
-			if err != nil || !pool.ipnet.Contains(result) || result.Less(pool.first) || !result.Less(pool.last) || string(addresses.Get(value)) != host {
+			if err != nil || !pool.ipnet.Contains(result) || result.Less(pool.first) || !result.Less(pool.last) || !bytes.Equal(addresses.Get(value), hostKey) {
 				return ErrStateFailed
 			}
 			return nil
@@ -299,10 +308,10 @@ func (s *scopedStore) lookup(pool *Pool, host string) (netip.Addr, error) {
 				return err
 			}
 		}
-		if err := hosts.Put([]byte(host), key); err != nil {
+		if err := hosts.Put(hostKey, key); err != nil {
 			return err
 		}
-		if err := addresses.Put(key, []byte(host)); err != nil {
+		if err := addresses.Put(key, hostKey); err != nil {
 			return err
 		}
 		return s.state(bucket, pool)
@@ -334,7 +343,7 @@ func (s *scopedStore) state(bucket *bbolt.Bucket, pool *Pool) error {
 
 func (s *scopedStore) GetByHost(host string) (netip.Addr, bool) {
 	var address netip.Addr
-	value, ok := s.read("hosts", []byte(host))
+	value, ok := s.read("hosts", scopedHostKey(host))
 	if ok {
 		address, _ = netip.ParseAddr(string(value))
 	}
@@ -342,7 +351,14 @@ func (s *scopedStore) GetByHost(host string) (netip.Addr, bool) {
 }
 func (s *scopedStore) GetByIP(address netip.Addr) (string, bool) {
 	value, ok := s.read("addresses", []byte(address.String()))
-	return string(value), ok
+	if !ok {
+		return "", false
+	}
+	if value[0] != 0 {
+		s.owner.fail(ErrStateFailed)
+		return "", false
+	}
+	return string(value[1:]), true
 }
 func (s *scopedStore) read(name string, key []byte) ([]byte, bool) {
 	o := s.owner

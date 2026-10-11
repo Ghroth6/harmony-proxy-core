@@ -22,6 +22,114 @@ type capturedStateFiles struct {
 	file *os.File
 }
 
+func TestScopedRootDNSQuestionKeepsLegacyAAndAAAAAnswersWithoutStateFailure(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	state, err := fakeip.NewScopedPersistence(root, "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failures atomic.Int32
+	state.SetFailureHandler(func() { failures.Add(1) })
+	newService := func(persistent bool) (*dns.Service, *dns.ResolverEnhancer) {
+		var store *fakeip.ScopedPersistence
+		if persistent {
+			store = state
+		}
+		v4, err := fakeip.New(fakeip.Options{IPNet: netip.MustParsePrefix("198.18.0.1/16"), Persistence: persistent, ScopedPersistence: store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v6, err := fakeip.New(fakeip.Options{IPNet: netip.MustParsePrefix("fdfe:dcba:9876::1/64"), Persistence: persistent, ScopedPersistence: store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolvers := dns.NewResolver(dns.Config{IPv6: true})
+		mapper := dns.NewEnhancer(dns.EnhancerConfig{IPv6: true, EnhancedMode: C.DNSFakeIP, FakeIPPool: v4, FakeIPPool6: v6, FakeIPSkipper: &fakeip.Skipper{}})
+		return dns.NewService(resolvers, mapper), mapper
+	}
+	legacy, _ := newService(false)
+	scoped, mapper := newService(true)
+	if err = state.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := state.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	expected := map[uint16]string{}
+	checkRoot := func(service *dns.Service, mapper *dns.ResolverEnhancer, kind uint16) {
+		t.Helper()
+		query := new(D.Msg)
+		query.SetQuestion(".", kind)
+		actual, actualErr := service.ServeMsg(context.Background(), query)
+		if actualErr != nil || actual == nil || len(actual.Answer) != 1 {
+			t.Errorf("legal root question must retain the original fake-IP answer: kind=%d err=%v", kind, actualErr)
+			return
+		}
+		if actual.Answer[0].String() != expected[kind] {
+			t.Error("root question answer changed")
+		}
+		var address netip.Addr
+		switch answer := actual.Answer[0].(type) {
+		case *D.A:
+			address, _ = netip.AddrFromSlice(answer.A)
+		case *D.AAAA:
+			address, _ = netip.AddrFromSlice(answer.AAAA)
+		}
+		if host, ok := mapper.FindHostByIP(address.Unmap()); !ok || host != "" {
+			t.Error("root mapping must remain present and distinguishable from a missing mapping")
+		}
+	}
+	for _, kind := range []uint16{D.TypeA, D.TypeAAAA} {
+		query := new(D.Msg)
+		query.SetQuestion(".", kind)
+		original, originalErr := legacy.ServeMsg(context.Background(), query)
+		if originalErr != nil || original == nil || len(original.Answer) != 1 {
+			t.Fatal("legacy legal root question baseline is invalid", originalErr)
+		}
+		expected[kind] = original.Answer[0].String()
+		checkRoot(scoped, mapper, kind)
+	}
+	if failures.Load() != 0 || state.Error() != nil {
+		t.Fatal("a legal DNS input must not become a sticky persistence failure")
+	}
+	query := new(D.Msg)
+	query.SetQuestion("documentation-after-root.example.", D.TypeA)
+	reply, err := scoped.ServeMsg(context.Background(), query)
+	if err != nil || reply == nil || len(reply.Answer) != 1 {
+		t.Fatal("root question withdrew later DNS admission", err)
+	}
+	normalAnswer := reply.Answer[0].String()
+	for cycle := 0; cycle < 2; cycle++ {
+		if err = state.Close(); err != nil {
+			t.Fatal(err)
+		}
+		state, err = fakeip.NewScopedPersistence(root, "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.SetFailureHandler(func() { failures.Add(1) })
+		scoped, mapper = newService(true)
+		if err = state.Activate(); err != nil {
+			t.Fatal(err)
+		}
+		for _, kind := range []uint16{D.TypeA, D.TypeAAAA} {
+			checkRoot(scoped, mapper, kind)
+		}
+		if reply, err = scoped.ServeMsg(context.Background(), query); err != nil || reply == nil || len(reply.Answer) != 1 || reply.Answer[0].String() != normalAnswer {
+			t.Fatal("root mapping must not collide with a normal host across reopening", err)
+		}
+		if failures.Load() != 0 || state.Error() != nil {
+			t.Fatal("reopening a root mapping must not create a sticky persistence failure")
+		}
+	}
+}
+
 func (f *capturedStateFiles) OpenFile(name string, flags int, mode os.FileMode) (*os.File, error) {
 	file, err := f.Root.OpenFile(name, flags, mode)
 	f.file = file

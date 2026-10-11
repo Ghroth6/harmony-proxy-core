@@ -54,7 +54,7 @@ func (p *Pool) LookupWithError(host string) (netip.Addr, error) {
 	// RFC4343: DNS Case Insensitive, we SHOULD return result with all cases.
 	host = strings.ToLower(host)
 	if scoped, ok := p.store.(*scopedStore); ok {
-		if len(host) == 0 || len(host) > 253 {
+		if len(host) > 253 {
 			return netip.Addr{}, ErrStateFailed
 		}
 		return scoped.lookup(p, host)
