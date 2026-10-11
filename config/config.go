@@ -216,6 +216,7 @@ type Config struct {
 
 	// A pointer preserves ownership across shallow runtime copies of a candidate.
 	candidateResources *configresources.Set
+	mobileNetwork      *mobileCandidateDialer
 }
 
 type RawCors struct {
@@ -900,7 +901,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	return parseProxiesInto(cfg, owned)
 }
 
-func parseProxiesInto(cfg *RawConfig, owned *configresources.Set) (proxies map[string]C.Proxy, providersMap map[string]P.ProxyProvider, err error) {
+func parseProxiesInto(cfg *RawConfig, owned *configresources.Set, mobileOptions ...adapter.ProxyOption) (proxies map[string]C.Proxy, providersMap map[string]P.ProxyProvider, err error) {
 	proxies = make(map[string]C.Proxy)
 	providersMap = make(map[string]P.ProxyProvider)
 	proxiesConfig := cfg.Proxy
@@ -927,7 +928,7 @@ func parseProxiesInto(cfg *RawConfig, owned *configresources.Set) (proxies map[s
 
 	// parse proxy
 	for idx, mapping := range proxiesConfig {
-		proxy, err := adapter.ParseProxy(mapping, adapter.WithTunnelForAPI(T.Tunnel))
+		proxy, err := adapter.ParseProxy(mapping, append([]adapter.ProxyOption{adapter.WithTunnelForAPI(T.Tunnel)}, mobileOptions...)...)
 		if err != nil {
 			return nil, nil, &semanticParseError{code: "PROXY_INVALID", field: fmt.Sprintf("proxies[%d]", idx), cause: fmt.Errorf("proxy %d: %w", idx, err)}
 		}

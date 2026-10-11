@@ -20,6 +20,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/hub/executor"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/mobile/network"
 	"github.com/metacubex/mihomo/mobile/protection"
 	"github.com/metacubex/mihomo/mobile/validation"
 	"github.com/metacubex/mihomo/tunnel"
@@ -108,9 +109,14 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 	}()
 	validationReceipt := validation.Validate(target.OperationID, input)
 	covered := false
+	extended := false
 	for _, coverage := range validationReceipt.Covered {
 		if coverage == "m1b-fixed-ipv4-tcp" {
 			covered = true
+		}
+		if coverage == "mobile-proxy-ipv4-tcp-v2" {
+			covered = true
+			extended = true
 		}
 	}
 	if validationReceipt.Category != "pass" || validationReceipt.InputDigest != target.InputDigest || !covered {
@@ -126,7 +132,28 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.failure("CANDIDATE_FORMAT")
 		return
 	}
-	engine.cfg, err = config.BuildMobileFixedCandidate(raw)
+	if extended || target.NetworkGeneration != 0 {
+		needsDNS := false
+		for _, node := range raw.Proxy {
+			server, _ := node["server"].(string)
+			if _, err := netip.ParseAddr(server); err != nil {
+				needsDNS = true
+			}
+		}
+		accepted, code := network.Accepted(target.NetworkGeneration, needsDNS)
+		if code != "" {
+			t.failure(code)
+			return
+		}
+		t.mu.Lock()
+		t.receipt.NetworkGeneration = accepted
+		t.mu.Unlock()
+	}
+	if extended {
+		engine.cfg, err = config.BuildMobileSelectedCandidate(raw)
+	} else {
+		engine.cfg, err = config.BuildMobileFixedCandidate(raw)
+	}
 	if engine.cfg != nil {
 		t.resource("candidate", "acquired", -1)
 	}
@@ -190,6 +217,10 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		return
 	}
 	if t.ctx.Err() != nil {
+		return
+	}
+	if err = engine.cfg.ActivateMobileNetwork(target.Generation); err != nil {
+		t.failure("CANDIDATE_NETWORK_ACTIVATE")
 		return
 	}
 	if err = executor.PublishMobileFixed(t.ctx, engine.cfg); err != nil {

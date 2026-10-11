@@ -12,7 +12,15 @@ import (
 var sample = []byte("proxies: []\n")
 
 func envelope() string {
-	return fmt.Sprintf(`{"contractVersion":1,"operationId":"start:1","generation":2,"transferId":"7","inputRevision":"fixed-v1","inputDigest":"sha256:%x","runtimeOptions":{"entry":"system-vpn","transport":"tcp","dns":false,"ipv6":false,"udp":false,"explicitListeners":false,"resourceDownloads":false},"platformPolicy":{"revision":"browser-v1","addressFamily":"ipv4","applicationIds":["com.huawei.hmos.browser"]},"tunPolicy":{"address":"10.111.0.1","prefixLength":30,"route":"0.0.0.0","routePrefixLength":0,"mtu":1500}}`, sha256.Sum256(sample))
+	return fmt.Sprintf(`{"contractVersion":2,"operationId":"start:1","generation":2,"networkGeneration":0,"transferId":"7","inputRevision":"fixed-v1","inputDigest":"sha256:%x","runtimeOptions":{"entry":"system-vpn","transport":"tcp","dns":false,"ipv6":false,"udp":false,"explicitListeners":false,"resourceDownloads":false},"platformPolicy":{"revision":"browser-v1","addressFamily":"ipv4","applicationIds":["com.huawei.hmos.browser"]},"tunPolicy":{"address":"10.111.0.1","prefixLength":30,"route":"0.0.0.0","routePrefixLength":0,"mtu":1500}}`, sha256.Sum256(sample))
+}
+
+func TestRuntimeV2CarriesNetworkEpochAndOneMiBInputBudget(t *testing.T) {
+	request := strings.Replace(envelope(), `"networkGeneration":0`, `"networkGeneration":21`, 1)
+	decoded, err := R.DecodeStart(2, 7, sample, []byte(request))
+	if err != nil || decoded.NetworkGeneration != 21 || R.MaxInputBytes != 1024*1024 {
+		t.Fatal("runtime v2 must preserve the actual submitted path identity and new input budget")
+	}
 }
 
 func TestDecodeStartFreezesExactTargetAndScalarTransfer(t *testing.T) {
@@ -30,9 +38,12 @@ func TestDecodeStartFreezesExactTargetAndScalarTransfer(t *testing.T) {
 
 func TestDecodeStartRejectsAmbiguousOrUnsupportedJSON(t *testing.T) {
 	cases := map[string]string{
-		"duplicate":           strings.Replace(envelope(), `"contractVersion":1`, `"contractVersion":1,"contractVersion":1`, 1),
+		"duplicate":           strings.Replace(envelope(), `"contractVersion":2`, `"contractVersion":2,"contractVersion":2`, 1),
 		"nested duplicate":    strings.Replace(envelope(), `"dns":false`, `"dns":false,"dns":false`, 1),
-		"unknown":             strings.Replace(envelope(), `"contractVersion":1`, `"extra":0,"contractVersion":1`, 1),
+		"unknown":             strings.Replace(envelope(), `"contractVersion":2`, `"extra":0,"contractVersion":2`, 1),
+		"old version":         strings.Replace(envelope(), `"contractVersion":2`, `"contractVersion":1`, 1),
+		"missing network":     strings.Replace(envelope(), `"networkGeneration":0,`, ``, 1),
+		"unsafe network":      strings.Replace(envelope(), `"networkGeneration":0`, `"networkGeneration":9007199254740992`, 1),
 		"missing false":       strings.Replace(envelope(), `"dns":false,`, "", 1),
 		"trailing":            envelope() + ` {}`,
 		"zero transfer":       strings.Replace(envelope(), `"transferId":"7"`, `"transferId":"0"`, 1),
@@ -65,7 +76,7 @@ func TestDecodeStartBoundedAndUTF8Values(t *testing.T) {
 			t.Fatal("unbounded or non-UTF8 request accepted")
 		}
 	}
-	if _, err := R.DecodeStart(2, 7, make([]byte, 65537), []byte(envelope())); err == nil {
+	if _, err := R.DecodeStart(2, 7, make([]byte, R.MaxInputBytes+1), []byte(envelope())); err == nil {
 		t.Fatal("unbounded candidate accepted")
 	}
 	if _, err := R.DecodeStart(2, 0, sample, []byte(envelope())); err == nil {

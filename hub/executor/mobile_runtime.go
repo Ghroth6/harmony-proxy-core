@@ -48,6 +48,7 @@ func PublishMobileFixed(ctx context.Context, cfg *config.Config) error {
 	tunnel.SetMode(tunnel.Rule)
 	tunnel.SetFindProcessMode(process.FindProcessOff)
 	resolver.DisableIPv6 = true
+	resolver.ProxyServerHostResolver = resolver.SystemResolver
 	dialer.SetTcpConcurrent(false)
 	dialer.DefaultInterface.Store("")
 	dialer.DefaultRoutingMark.Store(0)

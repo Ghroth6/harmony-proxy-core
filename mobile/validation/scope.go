@@ -2,6 +2,8 @@ package validation
 
 import (
 	"bytes"
+	"errors"
+	"github.com/metacubex/mihomo/config"
 	"io"
 	"strconv"
 	"strings"
@@ -12,7 +14,7 @@ import (
 // inspectInputScope examines original bytes rather than Mihomo's typed result,
 // which deliberately ignores unrecognized YAML keys. No resource constructors
 // or resource lookup are called here.
-func inspectInputScope(input []byte) []Diagnostic {
+func inspectInputScope(input []byte, extendedSelected bool) []Diagnostic {
 	decoder := yaml.NewDecoder(bytes.NewReader(input))
 	var document yaml.Node
 	if decoder.Decode(&document) != nil {
@@ -22,10 +24,10 @@ func inspectInputScope(input []byte) []Diagnostic {
 	if err := decoder.Decode(&additional); err != io.EOF {
 		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", "", "Multiple YAML documents are outside this validation scope.")
 	}
-	return inspectScope(&document)
+	return inspectScope(&document, extendedSelected)
 }
 
-func inspectScope(document *yaml.Node) []Diagnostic {
+func inspectScope(document *yaml.Node, extendedSelected bool) []Diagnostic {
 	if document == nil || document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
 		return scopeDiagnostic("UNSUPPORTED_DOCUMENT", "", "A single configuration mapping is required for this validation scope.")
 	}
@@ -51,6 +53,19 @@ func inspectScope(document *yaml.Node) []Diagnostic {
 		case "geox-url", "external-ui", "external-ui-url":
 			return scopeDiagnostic("RESOURCE_UNAVAILABLE", field, "Referenced configuration resources have not been prepared for validation.")
 		case "proxies":
+			if extendedSelected && value.Kind == yaml.SequenceNode {
+				for _, entry := range value.Content {
+					var node map[string]any
+					if entry.Decode(&node) != nil {
+						continue
+					}
+					var diagnostic *config.MobileValidationError
+					if err := config.MobileNodeFields(node); errors.As(err, &diagnostic) && diagnostic.Code == "CAPABILITY_NOT_COVERED" {
+						return scopeDiagnostic("UNSUPPORTED_CAPABILITY", field, "An original node field or value has not been covered.")
+					}
+				}
+				continue
+			}
 			if result := inspectEntries(value, field, true); result != nil {
 				return result
 			}
