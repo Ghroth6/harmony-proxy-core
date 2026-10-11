@@ -113,8 +113,7 @@ func PublishMobilePolicy(ctx context.Context, cfg *config.Config) error {
 	// no listener and grants no admission while forwarding is still suspended.
 	initInnerTcp()
 	resolver.DisableIPv6 = !cfg.General.IPv6
-	resolver.ProxyServerHostResolver = resolver.SystemResolver
-	resolver.DirectHostResolver = resolver.SystemResolver
+	resolver.ProxyServerHostResolver, resolver.DirectHostResolver = cfg.MobileNodeResolvers()
 	if r, mapper, enabled := cfg.MobileDNSResolvers(); enabled {
 		resolver.DefaultResolver, resolver.DefaultHostMapper, resolver.DefaultService = r, mapper, cfg.MobileDNSService()
 		resolver.UseSystemHosts = cfg.DNS.UseSystemHosts

@@ -536,6 +536,12 @@ still owns its trusted root. Geodata auto-update is explicitly unsupported with
 The original DNS candidate constructs its own inactive ResolverOwner, real
 resolver, enhancer and captured service. Original nameserver policy, fallback,
 hosts and resource-scoped GEO/RULE-SET matchers remain bound to this candidate.
+Physical node bootstrap captures this same candidate's proxy-server resolver,
+or its main resolver when no separate proxy-server nameserver is declared.
+Disabled client DNS still has a separate owned system bootstrap resolver using
+the actual network snapshot; it does not publish a virtual DNS service. Every
+original-policy runtime activates and retires that owner, including DNS-disabled
+domain nodes, rather than leaving work in the global system resolver.
 `MobileDNSService` and captured packet/connection relay entrypoints never switch
 to a mutable global service during an operation. DNS activation precedes client
 ingress; cancellation closes admission before waiters join, and retirement
