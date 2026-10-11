@@ -191,3 +191,154 @@ func TestContentRejectsMalformedUnicodeAndWholeCanonicalBudgetExcess(t *testing.
 		t.Fatal("canonical expansion over budget must reject the whole inspection without truncation")
 	}
 }
+
+func TestTLSNameDefaultsAndIPAddressRemainOriginalWithoutPreparationNetwork(t *testing.T) {
+	var attempts atomic.Int32
+	inspector := content.NewInspector(func() { attempts.Add(1) })
+	for _, item := range []struct{ link, field, value string }{
+		{"anytls://documentation@proxy.example:443?sni=", "sni", ""},
+		{"hy2://documentation@proxy.example:443?sni=192.0.2.2&insecure=false", "sni", "192.0.2.2"},
+	} {
+		r := inspector.Inspect("tls-name-original", []byte(item.link))
+		if r.Category != "inspected" || len(r.Entries) != 1 || r.Entries[0].Status != "supported" {
+			t.Fatalf("engine TLS defaults and IP verification names must be accepted; code=%s", r.Entries[0].Code)
+		}
+		var node map[string]any
+		if json.Unmarshal([]byte(r.Entries[0].NodeJSON), &node) != nil || node[item.field] != item.value {
+			t.Fatal("explicit empty/default or IP TLS names must retain the original value")
+		}
+	}
+	if attempts.Load() != 0 {
+		t.Fatal("TLS preparation must not attempt DNS or physical networking")
+	}
+}
+
+func TestHTTP2UsesEngineTLSSemanticsWithoutRewritingOriginalTLSFlag(t *testing.T) {
+	var attempts atomic.Int32
+	const vmess = `{"add":"proxy.example","port":443,"id":"00000000-0000-4000-8000-000000000001","aid":0,"security":"auto","net":"http"}`
+	for _, link := range []string{
+		"vless://00000000-0000-4000-8000-000000000001@proxy.example:443?type=http&security=none&host=h2.example&path=%2Fh2",
+		"vmess://" + base64.RawStdEncoding.EncodeToString([]byte(vmess)),
+	} {
+		r := content.NewInspector(func() { attempts.Add(1) }).Inspect("http2-original", []byte(link))
+		if len(r.Entries) != 1 || r.Entries[0].Status != "supported" {
+			t.Fatalf("HTTP/2 engine construction must preserve and accept the original TLS flag; code=%s", r.Entries[0].Code)
+		}
+		var node map[string]any
+		if json.Unmarshal([]byte(r.Entries[0].NodeJSON), &node) != nil || node["tls"] != false || node["network"] != "h2" {
+			t.Fatal("HTTP/2 transport must not silently rewrite the raw TLS configuration")
+		}
+	}
+	if attempts.Load() != 0 {
+		t.Fatal("HTTP/2 static construction must not perform a TLS handshake or DNS")
+	}
+}
+
+func TestYAMLECHOptionsRemainOwnedAndDoNotQueryDuringPreparation(t *testing.T) {
+	var attempts atomic.Int32
+	const input = "proxies:\n  - {name: Public, type: vless, server: proxy.example, port: 443, uuid: 00000000-0000-4000-8000-000000000001, tls: true, udp: true, network: ws, ws-opts: {path: /ws, headers: {Host: ws.example}}, ech-opts: {enable: true, query-server-name: ech.example}}\n"
+	r := content.NewInspector(func() { attempts.Add(1) }).Inspect("yaml-ech-original", []byte(input))
+	if len(r.Entries) != 1 || r.Entries[0].Status != "supported" {
+		t.Fatalf("original ECH options must construct through the real adapter; code=%s", r.Entries[0].Code)
+	}
+	var node map[string]any
+	if json.Unmarshal([]byte(r.Entries[0].NodeJSON), &node) != nil {
+		t.Fatal("ECH canonical node must remain JSON")
+	}
+	ech, _ := node["ech-opts"].(map[string]any)
+	if ech["enable"] != true || ech["query-server-name"] != "ech.example" || attempts.Load() != 0 {
+		t.Fatal("ECH preparation must preserve its query override without making an HTTPS-record query")
+	}
+	bad := strings.Replace(input, "query-server-name: ech.example", "unexpected: true", 1)
+	if result := content.Inspect("yaml-ech-unknown", []byte(bad)); result.Entries[0].Status != "unsupported" {
+		t.Fatal("unknown ECH options must remain fail closed")
+	}
+}
+
+func TestHysteria2PortHoppingRetainsExactRangeAndRejectsOverflow(t *testing.T) {
+	var attempts atomic.Int32
+	r := content.NewInspector(func() { attempts.Add(1) }).Inspect("hy2-port-hopping", []byte("hy2://documentation%2541@proxy.example:443,8443-8445?sni=tls.example&insecure=0"))
+	if len(r.Entries) != 1 || r.Entries[0].Status != "supported" {
+		t.Fatalf("valid Hysteria2 port list must reach the engine's actual hopping adapter; code=%s", r.Entries[0].Code)
+	}
+	var node map[string]any
+	if json.Unmarshal([]byte(r.Entries[0].NodeJSON), &node) != nil || node["port"] != float64(443) || node["ports"] != "443,8443-8445" || node["password"] != "documentation%41" || attempts.Load() != 0 {
+		t.Fatal("port hopping must preserve the original bounded ranges and credentials without opening UDP")
+	}
+	for _, ports := range []string{"443,65536", "0-443", "8445-8443", "443,,8443"} {
+		invalid := content.Inspect("hy2-invalid-ports", []byte("hy2://documentation@proxy.example:"+ports))
+		if invalid.Entries[0].Status == "supported" {
+			t.Fatal("invalid ports must not truncate, wrap uint16, reorder or fall back to a single port")
+		}
+	}
+}
+
+func TestTCPGeneratorOptionsStayExplicitWithoutActivatingAnotherTransport(t *testing.T) {
+	const vmess = `{"v":"2","add":"proxy.example","port":"443","id":"00000000-0000-4000-8000-000000000001","aid":"0","net":"tcp","type":"none","host":"http.example","path":"/inactive","tls":"tls"}`
+	key := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	links := []string{
+		"vmess://" + base64.RawStdEncoding.EncodeToString([]byte(vmess)),
+		"vless://00000000-0000-4000-8000-000000000001@proxy.example:443?security=reality&type=tcp&fp=chrome&sni=tls.example&pbk=" + key + "&sid=&host=http.example&path=%2Finactive&serviceName=&quicSecurity=none",
+	}
+	for _, link := range links {
+		r := content.Inspect("tcp-generator-fields", []byte(link))
+		if len(r.Entries) != 1 || r.Entries[0].Status != "supported" {
+			t.Fatalf("known TCP generator fields must stay explicit; code=%s", r.Entries[0].Code)
+		}
+		var node map[string]any
+		if json.Unmarshal([]byte(r.Entries[0].NodeJSON), &node) != nil || node["network"] != "tcp" {
+			t.Fatal("original TCP transport must not turn into HTTP, gRPC or QUIC")
+		}
+		opts, _ := node["http-opts"].(map[string]any)
+		headers, _ := opts["headers"].(map[string]any)
+		path, _ := opts["path"].([]any)
+		host, _ := headers["Host"].([]any)
+		if len(path) != 1 || path[0] != "/inactive" || len(host) != 1 || host[0] != "http.example" {
+			t.Fatal("inactive known HTTP options must remain canonical rather than disappear")
+		}
+		if r.Entries[0].Protocol == "vless" {
+			metadata, _ := node["mobile-uri-opts"].(map[string]any)
+			if metadata["quicSecurity"] != "none" {
+				t.Fatal("explicit no-QUIC generator value must stay bound to actual canonical bytes")
+			}
+		}
+	}
+	for _, query := range []string{"&quicSecurity=aes-128-gcm", "&unknownTransportFlag=none"} {
+		r := content.Inspect("tcp-generator-unknown", []byte(strings.Replace(links[1], "&quicSecurity=none", query, 1)))
+		if r.Entries[0].Status != "unsupported" {
+			t.Fatal("active or unknown query parameters must not use a no-op fallback")
+		}
+	}
+}
+
+func TestTrojanExplicitTLSSecurityIsPreservedAndPlaintextIsRejected(t *testing.T) {
+	const link = "trojan://documentation@proxy.example:443?security=tls&type=ws&path=%2Fws&host=ws.example&sni=tls.example"
+	r := content.Inspect("trojan-explicit-tls", []byte(link))
+	if len(r.Entries) != 1 || r.Entries[0].Status != "supported" {
+		t.Fatalf("explicit Trojan TLS must use the existing TLS adapter; code=%s", r.Entries[0].Code)
+	}
+	var node map[string]any
+	if json.Unmarshal([]byte(r.Entries[0].NodeJSON), &node) != nil || node["tls"] != true || node["network"] != "ws" {
+		t.Fatal("explicit TLS must remain bound to canonical bytes and the selected transport")
+	}
+	bad := content.Inspect("trojan-plaintext", []byte(strings.Replace(link, "security=tls", "security=none", 1)))
+	if bad.Entries[0].Status != "unsupported" {
+		t.Fatal("Trojan plaintext cannot silently become TLS")
+	}
+}
+
+func TestFingerprintCoverageMatchesActualEngineIDsAndRejectsUnknownWithoutDowngrade(t *testing.T) {
+	const link = "vless://00000000-0000-4000-8000-000000000001@proxy.example:443?security=tls&type=tcp&fp="
+	known := content.Inspect("fingerprint-known", []byte(link+"chrome_padding_psk_shuffle"))
+	if len(known.Entries) != 1 || known.Entries[0].Status != "supported" {
+		t.Fatal("the actual engine fingerprint must not be rejected by a misspelled duplicate allowlist")
+	}
+	var node map[string]any
+	if json.Unmarshal([]byte(known.Entries[0].NodeJSON), &node) != nil || node["client-fingerprint"] != "chrome_padding_psk_shuffle" {
+		t.Fatal("supported fingerprint spelling must remain the original actual adapter value")
+	}
+	bad := content.Inspect("fingerprint-unknown", []byte(link+"documentation-unknown-fingerprint"))
+	if bad.Entries[0].Status != "unsupported" || bad.Entries[0].NodeJSON != "" {
+		t.Fatal("an unavailable fingerprint must not silently downgrade to standard TLS")
+	}
+}
