@@ -56,14 +56,16 @@ type Resolver struct {
 
 func (r *Resolver) LookupIPPrimaryIPv4(ctx context.Context, host string) (ips []netip.Addr, err error) {
 	ch := make(chan []netip.Addr, 1)
-	go func() {
+	if !r.launch(ctx, func(ctx context.Context) {
 		defer close(ch)
 		ip, err := r.lookupIP(ctx, host, D.TypeAAAA)
 		if err != nil {
 			return
 		}
 		ch <- ip
-	}()
+	}) {
+		close(ch)
+	}
 
 	ips, err = r.lookupIP(ctx, host, D.TypeA)
 	if err == nil {
@@ -80,7 +82,7 @@ func (r *Resolver) LookupIPPrimaryIPv4(ctx context.Context, host string) (ips []
 
 func (r *Resolver) LookupIP(ctx context.Context, host string) (ips []netip.Addr, err error) {
 	ch := make(chan []netip.Addr, 1)
-	go func() {
+	if !r.launch(ctx, func(ctx context.Context) {
 		defer close(ch)
 		ip, err := r.lookupIP(ctx, host, D.TypeAAAA)
 		if err != nil {
@@ -88,7 +90,9 @@ func (r *Resolver) LookupIP(ctx context.Context, host string) (ips []netip.Addr,
 		}
 
 		ch <- ip
-	}()
+	}) {
+		close(ch)
+	}
 
 	ips, err = r.lookupIP(ctx, host, D.TypeA)
 	var waitIPv6 *time.Timer
@@ -173,11 +177,11 @@ func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, e
 		// the cache. Starting another refresh here can duplicate a successful
 		// query if this goroutine runs after that worker leaves singleflight.
 		if continueFetch {
-			go func() {
-				ctx, cancel := context.WithTimeout(sharedCtx, resolver.DefaultDNSTimeout)
+			r.launch(sharedCtx, func(ctx context.Context) {
+				ctx, cancel := context.WithTimeout(ctx, resolver.DefaultDNSTimeout)
 				defer cancel()
 				_, _ = r.exchangeWithoutCache(ctx, m) // ignore result, just for putMsgToCache
-			}()
+			})
 		}
 	}()
 
@@ -421,11 +425,18 @@ func (r *Resolver) asyncExchange(ctx context.Context, client []dnsClient, msg *D
 		ch <- &result{Error: err}
 		return ch
 	}
-	go func() {
+	if !r.launch(ctx, func(ctx context.Context) {
 		defer finish()
 		res, _, err := batchExchange(ctx, client, msg)
 		ch <- &result{Msg: res, Error: err}
-	}()
+	}) {
+		finish()
+		err := ctx.Err()
+		if err == nil {
+			err = ErrResolverRetired
+		}
+		ch <- &result{Error: err}
+	}
 	return ch
 }
 
@@ -578,6 +589,9 @@ func NewResolver(config Config) (rs Resolvers) {
 		cache:       config.newCache(),
 		ipv6Timeout: time.Duration(config.IPv6Timeout) * time.Millisecond,
 	}
+	for _, client := range defaultResolver.main {
+		config.Owner.ownClient(client)
+	}
 
 	var nameServerCache []struct {
 		NameServer
@@ -604,6 +618,7 @@ func NewResolver(config Config) (rs Resolvers) {
 					continue
 				}
 				dc = built[0]
+				config.Owner.ownClient(dc)
 			}
 			nameServerCache = append(nameServerCache, struct {
 				NameServer

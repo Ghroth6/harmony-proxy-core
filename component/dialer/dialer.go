@@ -284,42 +284,55 @@ func dualStackDialContext(ctx context.Context, dialFn dialFunc, network string, 
 
 	results := make(chan dialResult)
 	returned := make(chan struct{})
-	defer close(returned)
+	var returnedOnce sync.Once
+	stopResults := func() { returnedOnce.Do(func() { close(returned) }) }
+	defer stopResults()
 
 	var wg sync.WaitGroup
 
-	racer := func(ips []netip.Addr, isPrimary bool) {
+	racer := func(ctx context.Context, finish func(), ips []netip.Addr, isPrimary bool) {
 		defer wg.Done()
+		defer finish()
 		result := dialResult{isPrimary: isPrimary}
 		defer func() {
 			select {
 			case results <- result:
 			case <-returned:
 				if result.Conn != nil && result.error == nil {
-					_ = result.Conn.Close()
+					closeWorkerConn(ctx, result.Conn)
 				}
 			}
 		}()
 		result.Conn, result.error = dialFn(ctx, network, ips, port, opt)
 	}
 
-	if len(ipv4s) != 0 {
+	var admissionErrors []error
+	launch := func(ips []netip.Addr, primary bool) {
+		workerCtx, finish, err := acquireWorker(ctx)
+		if err != nil {
+			admissionErrors = append(admissionErrors, err)
+			return
+		}
 		wg.Add(1)
-		go racer(ipv4s, preferIPVersion != 6)
+		go racer(workerCtx, finish, ips, primary)
 	}
+	launch(ipv4s, preferIPVersion != 6)
+	launch(ipv6s, preferIPVersion != 4)
 
-	if len(ipv6s) != 0 {
-		wg.Add(1)
-		go racer(ipv6s, preferIPVersion != 4)
+	_, finishDrain, admissionErr := acquireWorker(ctx)
+	if admissionErr != nil {
+		stopResults()
+		wg.Wait() // the admitted parent joins every actual child before return.
+		return nil, admissionErr
 	}
-
 	go func() {
+		defer finishDrain()
 		wg.Wait()
 		close(results)
 	}()
 
 	var fallback dialResult
-	var errs []error
+	errs := admissionErrors
 
 loop:
 	for {
@@ -335,9 +348,15 @@ loop:
 			if res.error == nil {
 				if res.isPrimary {
 					if fallback.error == nil && fallback.Conn != nil {
-						go func() { // close fallback connection in new goroutine to avoid blocking
-							_ = fallback.Conn.Close()
-						}()
+						_, finish, admissionErr := acquireWorker(ctx)
+						if admissionErr != nil {
+							// Cancellation denies a new asynchronous owner. This
+							// admitted parent must finish the real close itself.
+							closeWorkerConn(ctx, fallback.Conn)
+						} else {
+							conn := fallback.Conn
+							go func() { defer finish(); closeWorkerConn(ctx, conn) }()
+						}
 					}
 					return res.Conn, nil
 				}
@@ -368,25 +387,33 @@ func parallelDialContext(ctx context.Context, network string, ips []netip.Addr, 
 	results := make(chan dialResult)
 	returned := make(chan struct{})
 	defer close(returned)
-	racer := func(ctx context.Context, ip netip.Addr) {
+	racer := func(ctx context.Context, finish func(), ip netip.Addr) {
+		defer finish()
 		result := dialResult{isPrimary: true, ip: ip}
 		defer func() {
 			select {
 			case results <- result:
 			case <-returned:
 				if result.Conn != nil && result.error == nil {
-					_ = result.Conn.Close()
+					closeWorkerConn(ctx, result.Conn)
 				}
 			}
 		}()
 		result.Conn, result.error = dialContext(ctx, network, ip, port, opt)
 	}
 
-	for _, ip := range ips {
-		go racer(ctx, ip)
-	}
 	var errs []error
-	for i := 0; i < len(ips); i++ {
+	admitted := 0
+	for _, ip := range ips {
+		workerCtx, finish, err := acquireWorker(ctx)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		admitted++
+		go racer(workerCtx, finish, ip)
+	}
+	for i := 0; i < admitted; i++ {
 		res := <-results
 		if res.error == nil {
 			return res.Conn, nil
