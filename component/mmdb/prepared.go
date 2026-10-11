@@ -2,19 +2,13 @@ package mmdb
 
 import (
 	"errors"
-
-	"github.com/oschwald/maxminddb-golang"
 )
 
 // Prepared readers own verified bytes. They never enter global sync.Once,
 // reload paths, downloads or fatal logging, and are closed by the candidate.
 func NewPreparedIP(buffer []byte) (*IPReader, error) {
-	r, err := maxminddb.FromBytes(buffer)
+	r, err := openPreparedReader(buffer)
 	if err != nil {
-		return nil, err
-	}
-	if err = r.Verify(); err != nil {
-		_ = r.Close()
 		return nil, err
 	}
 	reader := &IPReader{Reader: r}
@@ -33,12 +27,8 @@ func NewPreparedIP(buffer []byte) (*IPReader, error) {
 }
 
 func NewPreparedASN(buffer []byte) (*ASNReader, error) {
-	r, err := maxminddb.FromBytes(buffer)
+	r, err := openPreparedReader(buffer)
 	if err != nil {
-		return nil, err
-	}
-	if err = r.Verify(); err != nil {
-		_ = r.Close()
 		return nil, err
 	}
 	switch r.Metadata.DatabaseType {

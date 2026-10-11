@@ -518,6 +518,18 @@ log an invalid rule. GEOIP/MMDB/ASN/GEOSITE readers and matcher caches belong to
 the candidate's resource manifest; changing a policy cannot reuse a country
 matcher from a different manifest or enter upstream download/global caches.
 
+Prepared MMDB verifies the original metadata and separator, every reachable
+search-tree path and every reachable data record using the pinned reader's
+decoder and Mihomo's actual country/ASN types. Optional description and shared
+or embedded data targets are preserved; upstream `Reader.Verify`'s stricter
+sequential layout is not a format requirement. Tree DAG memoization bounds
+repeated branches and rejects cycles/depth beyond the IP width. Decoding is
+bounded before reflection allocation: metadata 128 KiB, containers 4096 items
+and depth 64, each record 65536 decoder visits/1 MiB expanded bytes, database
+64 Mi visits/256 MiB expanded bytes and 1 Mi distinct reachable records.
+Bad pointers/types/tree/separator and small shared-pointer expansion attacks
+fail preparation; validation never re-encodes a resource or changes its digest.
+
 `Fetcher.InitialPrepared` loads verified bytes without a watcher, request or
 timer. Explicit runtime activation starts one original HTTP-provider scheduler;
 its first tick waits a full configured interval. Actual updates preserve the
