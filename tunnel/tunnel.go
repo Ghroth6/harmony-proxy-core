@@ -450,7 +450,9 @@ func handleUDPConn(packet C.PacketAdapter) {
 	}
 
 	key := packet.Key()
+	var flow *udpFlowOwner
 	sender, loaded := natTable.GetOrCreate(key, func() C.PacketSender {
+		flow = retainUDPFlow(packet)
 		sender := newPacketSenderContext(requestContext(metadata))
 		if sniffingEnable && snifferDispatcher.Enable() {
 			return snifferDispatcher.UDPSniff(packet, sender)
@@ -463,9 +465,12 @@ func handleUDPConn(packet C.PacketAdapter) {
 			sender.Close()
 			natTable.Delete(key)
 			packet.Drop()
+			flow.complete(nil)
 			return
 		}
 		stopSender := context.AfterFunc(ctx, sender.Close)
+		readDone := make(chan struct{})
+		readStarted := false
 		dial := func() (C.PacketConn, C.WriteBackProxy, error) {
 			originMetadata := metadata   // save origin metadata
 			metadata := metadata.Clone() // don't modify PacketAdapter's metadata
@@ -494,8 +499,16 @@ func handleUDPConn(packet C.PacketAdapter) {
 			if err != nil {
 				return nil, nil, err
 			}
+			var tracked *udpFlowPacketConn
+			if flow != nil {
+				tracked = &udpFlowPacketConn{PacketConn: rawPc, flow: flow}
+				rawPc = tracked
+			}
 			rawPc, err = forwarding.OwnUDP(ctx, rawPc)
 			if err != nil {
+				if tracked != nil {
+					_ = tracked.Close() // Join the late-result Close started by OwnUDP.
+				}
 				return nil, nil, err
 			}
 			logMetadata(metadata, rule, rawPc)
@@ -512,7 +525,9 @@ func handleUDPConn(packet C.PacketAdapter) {
 				return nil, nil, err
 			}
 			stopRead := context.AfterFunc(ctx, func() { _ = pc.Close() })
+			readStarted = true
 			go func() {
+				defer close(readDone)
 				defer finishRead()
 				defer stopRead()
 				handleUDPToLocal(writeBackProxy, pc, sender, key, oAddrPort)
@@ -520,9 +535,18 @@ func handleUDPConn(packet C.PacketAdapter) {
 			return pc, writeBackProxy, nil
 		}
 
+		// The first packet is admitted before the new flow can finish a fast
+		// rejected dial. Otherwise completion could race its final buffer Drop.
+		sender.Send(packet)
 		go func() {
 			defer finish()
 			defer stopSender()
+			defer func() {
+				if flow != nil && readStarted {
+					<-readDone
+				}
+				flow.complete(nil)
+			}()
 			pc, proxy, err := dial()
 			if err != nil {
 				sender.Close()
@@ -531,6 +555,7 @@ func handleUDPConn(packet C.PacketAdapter) {
 			}
 			sender.Process(pc, proxy)
 		}()
+		return
 	}
 	sender.Send(packet) // nonblocking
 }
