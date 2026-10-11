@@ -56,7 +56,7 @@ func NewManagerWithPolicy(system DescriptorSystem, gate *protection.Gate, owner 
 	return m
 }
 func absent(generation, transfer uint64) Receipt {
-	return Receipt{ContractVersion: ContractVersion, Generation: generation, TransferID: strconv.FormatUint(transfer, 10), TransferState: "not-found", Phase: "absent", Outcome: "rejected", Cleanup: "unknown", FailureCode: "TRANSFER_NOT_FOUND", Stack: StackName, MTU: MTU, Tun: TunReceipt{FD: -1, MetadataBefore: zeroMetadata(), MetadataAfter: zeroMetadata(), CloseResult: -1, AfterClose: "not-observed"}, Resources: []ResourceReceipt{}, Connections: []ConnectionObservation{}}
+	return Receipt{ContractVersion: ContractVersion, CoreInstance: processCoreInstance, Generation: generation, TransferID: strconv.FormatUint(transfer, 10), TransferState: "not-found", Phase: "absent", Outcome: "rejected", Cleanup: "unknown", FailureCode: "TRANSFER_NOT_FOUND", Stack: StackName, MTU: MTU, Tun: TunReceipt{FD: -1, MetadataBefore: zeroMetadata(), MetadataAfter: zeroMetadata(), CloseResult: -1, AfterClose: "not-observed"}, Resources: []ResourceReceipt{}, Connections: []ConnectionObservation{}}
 }
 
 // Consume must be the first operation at every C start entry, even before output
