@@ -128,9 +128,66 @@ rules: ["MATCH,selected"]
 	}
 }
 func (p *flowPacket) Drop() { p.drops.Add(1) }
-func (p *flowPacket) RetainUDPFlow() (func(), func(error)) {
+func (p *flowPacket) RetainUDPFlow() (func(), func(error), bool) {
 	p.retained.Add(1)
-	return func() { p.closing.Store(true) }, func(err error) { p.completed <- err }
+	return func() { p.closing.Store(true) }, func(err error) { p.completed <- err }, true
+}
+
+type deniedFlowPacket struct{ *flowPacket }
+
+func (p *deniedFlowPacket) RetainUDPFlow() (func(), func(error), bool) {
+	p.retained.Add(1)
+	return nil, nil, false
+}
+
+func TestBoundUDPDeniedFlowCannotOpenANewPhysicalSocket(t *testing.T) {
+	peer, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	raw, err := config.UnmarshalRawConfig([]byte("proxies:\n  - {name: sample, type: ss, server: 127.0.0.1, port: 9, cipher: aes-128-gcm, password: test-only}\nproxy-groups:\n  - {name: selected, type: select, proxies: [sample]}\nrules: [\"MATCH,selected\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := config.BuildMobileFixedCandidate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = executor.PublishMobileFixed(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := executor.RetireConfig(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	if err = executor.ActivateMobileFixed(candidate); err != nil {
+		t.Fatal(err)
+	}
+	tunnel.EnableForwardingLifecycle()
+	id := generation.Add(1)
+	if err = tunnel.StartForwarding(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stopRun(t) })
+	bound, err := tunnel.BoundForwardingTunnel(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := &deniedFlowPacket{&flowPacket{completed: make(chan error, 2)}}
+	peerAddr := peer.LocalAddr().(*net.UDPAddr).AddrPort()
+	bound.HandleUDPPacket(packet, &C.Metadata{Type: C.TUN, NetWork: C.UDP, SrcIP: netip.MustParseAddr("10.111.0.2"), SrcPort: 51341, DstIP: peerAddr.Addr(), DstPort: peerAddr.Port(), SpecialProxy: "DIRECT"})
+	_ = peer.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, _, err := peer.ReadFrom(make([]byte, 64)); err == nil {
+		t.Fatal("closing source flow created a fresh real physical UDP socket")
+	}
+	stopRun(t)
+	if packet.retained.Load() != 1 || packet.drops.Load() != 1 {
+		t.Fatalf("denied caller lease did not settle its individual buffer: retained=%d drops=%d", packet.retained.Load(), packet.drops.Load())
+	}
 }
 
 func TestBoundUDPRejectedRouteReleasesFlowAfterBufferDrop(t *testing.T) {
