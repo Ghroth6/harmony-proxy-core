@@ -27,6 +27,8 @@ const (
 	MTU                = 1500
 	MaxTCPTuples       = 32
 	MaxUDPFlows        = 32
+	MaxUDPWrites       = 64
+	MaxDNSWaiters      = 32
 	MaxTransferRecords = 64
 	StartObservation   = 5 * time.Second
 	StopObservation    = 10 * time.Second
@@ -84,35 +86,41 @@ type PendingOwners struct {
 	DNSWaiters    int `json:"dnsWaiters,omitempty"`
 }
 type ConnectionObservation struct {
-	Sequence   uint64 `json:"sequence"`
-	TargetIPv4 string `json:"targetIPv4"`
-	TargetPort uint16 `json:"targetPort"`
-	Rule       string `json:"rule"`
-	Node       string `json:"node"`
-	Upload     int64  `json:"upload"`
-	Download   int64  `json:"download"`
+	Sequence      uint64 `json:"sequence"`
+	TargetIPv4    string `json:"targetIPv4"`
+	TargetAddress string `json:"targetAddress,omitempty"`
+	AddressFamily string `json:"addressFamily,omitempty"`
+	TargetPort    uint16 `json:"targetPort"`
+	Rule          string `json:"rule"`
+	Node          string `json:"node"`
+	Upload        int64  `json:"upload"`
+	Download      int64  `json:"download"`
 }
 type Receipt struct {
-	ContractVersion   int                     `json:"contractVersion"`
-	OperationID       string                  `json:"operationId"`
-	Generation        uint64                  `json:"generation"`
-	NetworkGeneration uint64                  `json:"networkGeneration"`
-	TransferID        string                  `json:"transferId"`
-	TransferConsumed  bool                    `json:"transferConsumed"`
-	TransferState     string                  `json:"transferState"`
-	OwnershipFault    bool                    `json:"ownershipFault"`
-	CandidateDigest   string                  `json:"candidateDigest"`
-	Phase             string                  `json:"phase"`
-	Outcome           string                  `json:"outcome"`
-	Cleanup           string                  `json:"cleanup"`
-	FailureCode       string                  `json:"failureCode"`
-	Stack             string                  `json:"stack"`
-	MTU               int                     `json:"mtu"`
-	ForwardingActive  bool                    `json:"forwardingActive"`
-	Tun               TunReceipt              `json:"tun"`
-	Resources         []ResourceReceipt       `json:"resources"`
-	PendingOwners     PendingOwners           `json:"pendingOwners"`
-	Connections       []ConnectionObservation `json:"connections"`
+	ContractVersion        int                     `json:"contractVersion"`
+	OperationID            string                  `json:"operationId"`
+	Generation             uint64                  `json:"generation"`
+	NetworkGeneration      uint64                  `json:"networkGeneration"`
+	TransferID             string                  `json:"transferId"`
+	TransferConsumed       bool                    `json:"transferConsumed"`
+	TransferState          string                  `json:"transferState"`
+	OwnershipFault         bool                    `json:"ownershipFault"`
+	CandidateDigest        string                  `json:"candidateDigest"`
+	InputDigest            string                  `json:"inputDigest,omitempty"`
+	ResourceManifestDigest string                  `json:"resourceManifestDigest,omitempty"`
+	PlatformPolicyDigest   string                  `json:"platformPolicyDigest,omitempty"`
+	GroupPreferencesDigest string                  `json:"groupPreferencesDigest,omitempty"`
+	Phase                  string                  `json:"phase"`
+	Outcome                string                  `json:"outcome"`
+	Cleanup                string                  `json:"cleanup"`
+	FailureCode            string                  `json:"failureCode"`
+	Stack                  string                  `json:"stack"`
+	MTU                    int                     `json:"mtu"`
+	ForwardingActive       bool                    `json:"forwardingActive"`
+	Tun                    TunReceipt              `json:"tun"`
+	Resources              []ResourceReceipt       `json:"resources"`
+	PendingOwners          PendingOwners           `json:"pendingOwners"`
+	Connections            []ConnectionObservation `json:"connections"`
 }
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9:_-]{1,128}$`)
