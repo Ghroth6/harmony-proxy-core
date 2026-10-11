@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/metacubex/mihomo/component/forwarding"
+	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/dns"
 	RC "github.com/metacubex/mihomo/rules/common"
@@ -61,14 +62,39 @@ func buildMobileDNS(cfg *DNS, generalIPv6 bool) *mobileDNS {
 	return &mobileDNS{owner: owner, resolvers: r, mapper: m, service: dns.NewService(r, m)}
 }
 
-func (c *Config) MobileDNSService() *dns.Service {
+// Client DNS can remain disabled while domain nodes still need bootstrap DNS.
+// Give that system policy its own inactive owner/cache, never the global
+// SystemResolver's shared work. Nameservers are read from the real snapshot at
+// query time, after explicit activation; construction performs no lookup.
+func buildMobileSystemBootstrap(ipv6 bool) *mobileDNS {
+	owner := dns.NewResolverOwner()
+	r := dns.NewResolver(dns.Config{Owner: owner, Main: []dns.NameServer{{Net: "system"}}, IPv6: ipv6})
+	return &mobileDNS{owner: owner, resolvers: r}
+}
+
+func (c *Config) MobileNodeResolvers() (proxy, direct resolver.Resolver) {
 	if c == nil || c.mobileDNS == nil {
+		return nil, nil
+	}
+	r := c.mobileDNS.resolvers
+	proxy, direct = r.Resolver, r.Resolver
+	if r.ProxyResolver.Invalid() {
+		proxy = r.ProxyResolver
+	}
+	if r.DirectResolver.Invalid() {
+		direct = r.DirectResolver
+	}
+	return
+}
+
+func (c *Config) MobileDNSService() *dns.Service {
+	if c == nil || c.mobileDNS == nil || c.mobileDNS.service == nil {
 		return nil
 	}
 	return c.mobileDNS.service
 }
 func (c *Config) MobileDNSResolvers() (dns.Resolvers, *dns.ResolverEnhancer, bool) {
-	if c == nil || c.mobileDNS == nil {
+	if c == nil || c.mobileDNS == nil || c.mobileDNS.service == nil {
 		return dns.Resolvers{}, nil, false
 	}
 	return c.mobileDNS.resolvers, c.mobileDNS.mapper, true

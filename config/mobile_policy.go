@@ -119,7 +119,14 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 			return cfg, &MobileValidationError{Code: "POLICY_DNS_INVALID"}
 		}
 		cfg.mobileDNS = buildMobileDNS(cfg.DNS, raw.IPv6)
+	} else {
+		cfg.mobileDNS = buildMobileSystemBootstrap(raw.IPv6)
 	}
+	// Capture this candidate's bootstrap policy, rather than the mutable
+	// published resolver or the system resolver forced by selected-node mode.
+	// The shared fence remains closed throughout construction.
+	bootstrap, _ := cfg.MobileNodeResolvers()
+	fence.physical = dialer.NewDialer(dialer.WithOnlySingleStack(!raw.IPv6), dialer.WithResolver(bootstrap))
 	return cfg, nil
 }
 
