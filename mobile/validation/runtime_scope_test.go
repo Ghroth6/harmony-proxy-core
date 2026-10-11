@@ -74,7 +74,7 @@ func TestSingleTrojanStaticConstructionReturnsAccurateFixedCoverage(t *testing.T
 	}
 }
 
-func TestTrojanOriginalFieldsAndExactStaticScopeCannotBeExpanded(t *testing.T) {
+func TestTrojanFieldsKeepLegacyLabelSeparateFromNewCoverage(t *testing.T) {
 	for _, mutation := range []struct{ name, before, after string }{
 		{"cipher", "    sni:", "    cipher: aes-128-gcm\n    sni:"},
 		{"chain", "    sni:", "    dialer-proxy: DIRECT\n    sni:"},
@@ -108,7 +108,14 @@ func TestTrojanOriginalFieldsAndExactStaticScopeCannotBeExpanded(t *testing.T) {
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
 			result := validation.Validate("trojan-scope", []byte(strings.Replace(trojanInput, mutation.before, mutation.after, 1)))
-			if result.Category != "incomplete" || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") || slices.Contains(result.Covered, "static-trojan-tcp-tls-sni") {
+			expected := "incomplete"
+			switch mutation.name {
+			case "alpn", "client fingerprint", "non TCP", "UDP", "DNS endpoint":
+				expected = "pass"
+			case "fingerprint":
+				expected = "invalid"
+			}
+			if result.Category != expected || (expected == "pass" && !slices.Contains(result.Covered, "mobile-proxy-ipv4-tcp-v2")) || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") || slices.Contains(result.Covered, "static-trojan-tcp-tls-sni") {
 				t.Fatalf("unaudited Trojan scope accepted: %#v", result)
 			}
 		})
@@ -178,7 +185,11 @@ func TestSelectedChaChaScopeDoesNotCoverOtherCiphersOrConfigurationShapes(t *tes
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
 			result := validation.Validate("selected-chacha-scope", []byte(strings.Replace(input, mutation.before, mutation.after, 1)))
-			if result.Category != "incomplete" || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") || slices.Contains(result.Covered, "static-ss-chacha20-ietf-poly1305") {
+			expected := "incomplete"
+			if mutation.name == "UDP" || mutation.name == "DNS endpoint" {
+				expected = "pass"
+			}
+			if result.Category != expected || (expected == "pass" && !slices.Contains(result.Covered, "mobile-proxy-ipv4-tcp-v2")) || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") || slices.Contains(result.Covered, "static-ss-chacha20-ietf-poly1305") {
 				t.Fatalf("selected cipher widened the fixed configuration contract: %#v", result)
 			}
 		})

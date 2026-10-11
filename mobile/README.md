@@ -1,16 +1,76 @@
 # Mobile core boundaries
 
-## Fixed mobile runtime contract (M1b P3)
+## Subscription node checkpoint (2026-10-11)
+
+`mobile/content.Inspect` is the deterministic byte-to-value boundary exported by
+`cb_content_contract_version_v1` and `cb_content_inspect_v1` (contract 1).
+It inspects plaintext URI lists, Base64 URI lists and YAML `proxies` entries.
+Every nonempty list record or YAML node keeps its original position, including
+malformed, unsupported and duplicate-name entries. Entry identity is a digest of
+the original record, independent of the exact canonical `nodeJson` digest; input
+identity is a digest of the complete original bytes. Canonical nodes use the
+explicit `selected-node` alias. Original YAML policy remains separate.
+
+The mapped node families are SS, Trojan, VMess, VLESS, AnyTLS and Hysteria2.
+Known transport/TLS/Reality parameters pass original-field gates and real Mihomo
+adapter construction and owned cleanup. Unknown query/JSON/YAML fields,
+duplicates, unsupported values and malformed encoding stay explicit negatives;
+the converter never logs raw links, substitutes random headers, drops a row or
+reports constructor success as reachability. Original plaintext URI credentials
+are percent-decoded once; both SS Base64 credential forms retain decoded literal
+percent signs and `@`. Invalid UTF-8 and lone JSON UTF-16 surrogates are rejected.
+Bounds are 1 MiB raw/decoded/node/candidate, 4096 entries and 8 MiB receipt.
+An excess rejects the whole result rather than truncating entries or parameters.
+Private canonical nodes and original bytes are not display/log values.
+
+Preparation injects a deny-only physical dialer before constructing real adapter
+resources, including AnyTLS pools and lazy Hysteria2 clients. It closes and joins
+those resources before returning; any attempted DNS/TCP/datagram operation fails
+the preparation. `config.BuildMobileSelectedCandidate` independently gates the
+selected-node select/MATCH shape and original fields, returns partial owned
+resources on failure and keeps its runtime dialer closed until activation.
+Validation emits the distinct `mobile-proxy-ipv4-tcp-v2` scope; older narrow inputs
+retain their original coverage label. New scope does not reuse the old fixed-IP
+claim. Current client ingress remains IPv4/TCP even when a node's physical
+transport uses DNS, UDP or QUIC and its declared UDP field is preserved.
+
+`mobile/network.Controller.Submit` and `cb_network_submit_v1` (contract 1) accept
+a complete, strict non-VPN snapshot with a monotonic JS-safe generation,
+underlying network ID, DNS endpoints, interfaces, addresses and routes. Validation
+precedes changes; active or unresolved runtime ownership prevents replacement.
+An accepted transition cancels and joins old management work, atomically
+publishes the actual snapshot, resets the SystemResolver and resumes online
+management admission. Invalid/stale data never gets echoed as an accepted path.
+No public DNS fallback is installed when platform DNS is unavailable.
+
+Runtime contract 2 retains the existing `_v1` C symbol names while explicitly
+rejecting contract-1 requests. Required top-level `networkGeneration` is separate
+from persistent platform policy. New node scope requires the current online
+snapshot and available DNS for domain nodes; the receipt records only the
+actually accepted generation. Old fixed-IP scope may use zero. Protected physical
+SystemResolver DNS and QUIC packet sockets are independent of client TUN UDP/DNS.
+
+Public host evidence includes real core inspection → selected composition →
+validation → fresh candidate/discard, deny-only preparation, strict budgets and
+identities, actual snapshot cancellation/join, protected local DNS → real Trojan
+TLS/authentication/traffic → normal-stop cleanup, and protected real QUIC TLS.
+These isolated fixtures do not prove external node availability, ordinary OHOS
+package integration, browser/TUN traffic or target platform protection.
+Full original YAML groups/rules/DNS/providers/resources and client UDP/DNS/IPv6
+remain a separate implementation phase; this checkpoint does not complete #25
+or fresh-process zero-download #26.
+
+## Mobile runtime contract
 
 `mobile/include/cb_runtime.h` and `mobile/runtime/contract.go` are the versioned
-runtime value boundary. `cb_runtime_contract_version_v1` returns 1 for a build
+runtime value boundary. `cb_runtime_contract_version_v1` returns 2 for a build
 with the explicitly selected gVisor runtime, independently of the validation ABI;
 without `with_gvisor` it returns 0, so the adapter rejects capability before dup.
 The three operations own the TUN duplicate, IPv4/TCP stack and stop cleanup.
 Host syscall-boundary tests and ARM64 compilation do not establish target TUN
 acceptance. Resolve all runtime symbols and the contract version before dup.
 
-The start request contains exactly `contractVersion`, `operationId`, `generation`,
+The start request contains exactly `contractVersion:2`, `operationId`, `generation`, `networkGeneration`,
 `transferId`, `inputRevision`, `inputDigest`, `runtimeOptions`, `platformPolicy`,
 and `tunPolicy`. Generation is a JSON integer 1..INT32_MAX and matches the scalar
 C argument. `transferId` is a canonical positive decimal string matching the
@@ -24,12 +84,12 @@ Duplicate, unknown, missing, null or trailing JSON fields are rejected.
 has `revision`, `addressFamily:"ipv4"`, and `applicationIds` (1..16 distinct valid
 bundle IDs, each <=128 bytes). The independent immutable `tunPolicy` is exactly
 `{address:"10.111.0.1",prefixLength:30,route:"0.0.0.0",routePrefixLength:0,mtu:1500}`.
-Input is <=65536 bytes, request UTF-8 JSON <=8192 bytes, receipt <=32768 bytes.
+Input is <=1 MiB, request UTF-8 JSON <=8192 bytes, receipt <=32768 bytes.
 Queue size is 128, MTU 1500, TCP tuple capacity 32, transfer record capacity 64;
 start observes up to 5 seconds and stop up to 10 seconds. Actual cleanup retains
 ownership beyond those observation limits.
 
-Receipt fields are always present: `contractVersion`, `operationId`, `generation`,
+Receipt fields are always present: `contractVersion`, `operationId`, `generation`, `networkGeneration`,
 `transferId`, `transferConsumed`, `transferState`, `ownershipFault`,
 `candidateDigest`, `phase`, `outcome`, `cleanup`, `failureCode`,
 `stack:"gvisor-ipv4-tcp"`, `mtu:1500`, `forwardingActive`, `tun`, `resources`,
@@ -390,9 +450,10 @@ unmarked forwarding or infer that a lost marker is management. P3 must verify
 that propagation before admitting traffic. Required protection rejects a custom
 `NetDialer` that cannot expose the physical socket boundary. The hook preserves
 the existing global hook and interface/mark options rather than replacing them.
-The selected SS/aes-128-gcm or SS/chacha20-ietf-poly1305 and fixed Trojan/TCP/TLS/SNI IPv4 transports use
-this real dialer; this
-increment does not claim all other protocols are integrated.
+Both physical TCP and UDP sockets use the real context-aware protection hook.
+The internal QUIC adapter resolves addresses and creates a protected packet
+socket directly; it does not use an opaque custom NetDialer to bypass the hook.
+Arbitrary unsupported custom dialers remain rejected under required protection.
 
 The diagnostic probe creates only an unconnected IPv4 TCP socket, performs no
 bind/connect/send, reuses `ProtectSocket`, and closes its original once. Probe

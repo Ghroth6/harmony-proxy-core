@@ -46,6 +46,10 @@ var current store
 // Publishing an offline observation does not restore native DNS or enumeration.
 func Publish(snapshot Snapshot) error { return current.publish(snapshot) }
 
+// Validate returns an independent normalized observation without publishing or
+// changing network epochs. The mobile owner uses it before pausing old work.
+func Validate(snapshot Snapshot) (Snapshot, error) { return validate(snapshot) }
+
 func (s *store) publish(snapshot Snapshot) error {
 	next, err := validate(snapshot)
 	if err != nil {

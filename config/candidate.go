@@ -14,6 +14,9 @@ func (c *Config) Discard(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
+	if c.mobileNetwork != nil {
+		c.mobileNetwork.generation.Store(0)
+	}
 	return c.candidateResources.Close(ctx)
 }
 
@@ -38,6 +41,9 @@ func (c *Config) SharesCandidate(other *Config) bool {
 // not close resources: executor still owns cancellation, waiting and closing.
 func (c *Config) RetireCandidate() {
 	if c != nil {
+		if c.mobileNetwork != nil {
+			c.mobileNetwork.generation.Store(0)
+		}
 		c.candidateResources.Retire()
 	}
 }

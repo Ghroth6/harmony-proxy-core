@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"github.com/metacubex/mihomo/mobile/network"
 	"github.com/metacubex/mihomo/mobile/protection"
 	"strconv"
 	"sync"
@@ -51,6 +52,8 @@ func absent(generation, transfer uint64) Receipt {
 // Consume must be the first operation at every C start entry, even before output
 // pointer checks. A valid supplied descriptor is owned from this point onward.
 func (m *Manager) Consume(generation, transfer uint64, fd int) *Transfer {
+	unlockPath := network.LockPath()
+	defer unlockPath()
 	owned := consumeDescriptor(m.system, fd)
 	ctx, cancel := context.WithCancel(context.Background())
 	t := &Transfer{manager: m, fd: owned, ctx: ctx, cancel: cancel, done: make(chan struct{}), buildDone: make(chan struct{}), cleanupDone: make(chan struct{})}
@@ -103,6 +106,22 @@ func (m *Manager) Consume(generation, transfer uint64, fd int) *Transfer {
 		t.Reject("TRANSFER_FAULT")
 	}
 	return t
+}
+
+// NetworkBusy includes pending descriptor transfers and retained cleanup faults,
+// not only active forwarding. Submit and Consume share the path admission lock.
+func (m *Manager) NetworkBusy() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.fault {
+		return true
+	}
+	for _, transfer := range m.transfers {
+		if transfer.snapshot().Cleanup != "complete" {
+			return true
+		}
+	}
+	return false
 }
 func (t *Transfer) Reject(code string) {
 	t.mu.Lock()

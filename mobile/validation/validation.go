@@ -47,6 +47,12 @@ type Receipt struct {
 	Uncovered     []string     `json:"uncovered"`
 }
 
+// Identity is the actual core build provenance shared by value-only mobile APIs.
+func Identity() CoreIdentity {
+	return CoreIdentity{Name: "Mihomo", SourceRevision: SourceRevision,
+		UpstreamRevision: "88dcbf7f1614a67c3b36b848ee3592dfa92ada36", ABIVersion: ABIVersion}
+}
+
 func Validate(operationID string, input []byte) (receipt Receipt) {
 	digest := sha256.Sum256(input)
 	receipt = Receipt{
@@ -54,9 +60,8 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		InputDigest: "sha256:" + hex.EncodeToString(digest[:]),
 		Phase:       "format", Category: "failure",
 		Diagnostics: []Diagnostic{}, Covered: []string{},
-		Uncovered: []string{"semantic-validation"},
-		CoreIdentity: CoreIdentity{Name: "Mihomo", SourceRevision: SourceRevision,
-			UpstreamRevision: "88dcbf7f1614a67c3b36b848ee3592dfa92ada36", ABIVersion: ABIVersion},
+		Uncovered:    []string{"semantic-validation"},
+		CoreIdentity: Identity(),
 	}
 	defer func() {
 		if recover() != nil {
@@ -83,7 +88,8 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 	}
 	receipt.Covered = []string{"mihomo-format"}
 	receipt.Phase = "semantic"
-	if diagnostics := inspectInputScope(input); len(diagnostics) != 0 {
+	extendedSelected := config.MobileSelectedShape(raw) && !config.MobileLegacySelectedShape(raw)
+	if diagnostics := inspectInputScope(input, extendedSelected); len(diagnostics) != 0 {
 		receipt.Category = "incomplete"
 		receipt.Diagnostics = diagnostics
 		for _, diagnostic := range diagnostics {
@@ -93,7 +99,11 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		}
 		return
 	}
-	if err := config.ValidateMobileStatic(raw); err != nil {
+	validateStatic := config.ValidateMobileStatic
+	if extendedSelected {
+		validateStatic = config.ValidateMobileSelected
+	}
+	if err := validateStatic(raw); err != nil {
 		receipt.Category = "invalid"
 		var diagnostic *config.MobileValidationError
 		if errors.As(err, &diagnostic) {
@@ -123,6 +133,11 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		return
 	}
 	receipt.Category = "pass"
+	if extendedSelected {
+		receipt.Covered = append(receipt.Covered, "mobile-proxy-ipv4-tcp-v2", "static-mobile-proxy-node", "explicit-select-references", "MATCH-rule-references", "candidate-resources-closed")
+		receipt.Uncovered = []string{"runtime-connectivity", "application-udp-dns-ipv6", "original-source-policy-and-resources"}
+		return
+	}
 	transport := "static-ss-aes-128-gcm"
 	if len(raw.Proxy) == 1 && raw.Proxy[0]["type"] == "ss" && raw.Proxy[0]["cipher"] == "chacha20-ietf-poly1305" {
 		transport = "static-ss-chacha20-ietf-poly1305"

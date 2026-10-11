@@ -8,7 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
+	"github.com/metacubex/mihomo/mobile/internal/jsonvalue"
+	"github.com/metacubex/mihomo/mobile/network"
 	"regexp"
 	"strconv"
 	"time"
@@ -16,9 +17,9 @@ import (
 )
 
 const (
-	ContractVersion    = 1
+	ContractVersion    = 2
 	MaxGeneration      = 0x7fffffff
-	MaxInputBytes      = 64 * 1024
+	MaxInputBytes      = 1024 * 1024
 	MaxRequestBytes    = 8192
 	MaxOutputBytes     = 32768
 	PacketQueue        = 128
@@ -52,15 +53,16 @@ type TunPolicy struct {
 	MTU               int    `json:"mtu"`
 }
 type StartRequest struct {
-	ContractVersion int            `json:"contractVersion"`
-	OperationID     string         `json:"operationId"`
-	Generation      uint64         `json:"generation"`
-	TransferID      string         `json:"transferId"`
-	InputRevision   string         `json:"inputRevision"`
-	InputDigest     string         `json:"inputDigest"`
-	RuntimeOptions  RuntimeOptions `json:"runtimeOptions"`
-	PlatformPolicy  PlatformPolicy `json:"platformPolicy"`
-	TunPolicy       TunPolicy      `json:"tunPolicy"`
+	ContractVersion   int            `json:"contractVersion"`
+	OperationID       string         `json:"operationId"`
+	Generation        uint64         `json:"generation"`
+	NetworkGeneration uint64         `json:"networkGeneration"`
+	TransferID        string         `json:"transferId"`
+	InputRevision     string         `json:"inputRevision"`
+	InputDigest       string         `json:"inputDigest"`
+	RuntimeOptions    RuntimeOptions `json:"runtimeOptions"`
+	PlatformPolicy    PlatformPolicy `json:"platformPolicy"`
+	TunPolicy         TunPolicy      `json:"tunPolicy"`
 }
 
 // DescriptorMetadata is stat metadata, not an open-file-description identity.
@@ -101,25 +103,26 @@ type ConnectionObservation struct {
 	Download   int64  `json:"download"`
 }
 type Receipt struct {
-	ContractVersion  int                     `json:"contractVersion"`
-	OperationID      string                  `json:"operationId"`
-	Generation       uint64                  `json:"generation"`
-	TransferID       string                  `json:"transferId"`
-	TransferConsumed bool                    `json:"transferConsumed"`
-	TransferState    string                  `json:"transferState"`
-	OwnershipFault   bool                    `json:"ownershipFault"`
-	CandidateDigest  string                  `json:"candidateDigest"`
-	Phase            string                  `json:"phase"`
-	Outcome          string                  `json:"outcome"`
-	Cleanup          string                  `json:"cleanup"`
-	FailureCode      string                  `json:"failureCode"`
-	Stack            string                  `json:"stack"`
-	MTU              int                     `json:"mtu"`
-	ForwardingActive bool                    `json:"forwardingActive"`
-	Tun              TunReceipt              `json:"tun"`
-	Resources        []ResourceReceipt       `json:"resources"`
-	PendingOwners    PendingOwners           `json:"pendingOwners"`
-	Connections      []ConnectionObservation `json:"connections"`
+	ContractVersion   int                     `json:"contractVersion"`
+	OperationID       string                  `json:"operationId"`
+	Generation        uint64                  `json:"generation"`
+	NetworkGeneration uint64                  `json:"networkGeneration"`
+	TransferID        string                  `json:"transferId"`
+	TransferConsumed  bool                    `json:"transferConsumed"`
+	TransferState     string                  `json:"transferState"`
+	OwnershipFault    bool                    `json:"ownershipFault"`
+	CandidateDigest   string                  `json:"candidateDigest"`
+	Phase             string                  `json:"phase"`
+	Outcome           string                  `json:"outcome"`
+	Cleanup           string                  `json:"cleanup"`
+	FailureCode       string                  `json:"failureCode"`
+	Stack             string                  `json:"stack"`
+	MTU               int                     `json:"mtu"`
+	ForwardingActive  bool                    `json:"forwardingActive"`
+	Tun               TunReceipt              `json:"tun"`
+	Resources         []ResourceReceipt       `json:"resources"`
+	PendingOwners     PendingOwners           `json:"pendingOwners"`
+	Connections       []ConnectionObservation `json:"connections"`
 }
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9:_-]{1,128}$`)
@@ -135,11 +138,11 @@ func DecodeStart(generation, transferID uint64, input, request []byte) (StartReq
 	if generation == 0 || generation > MaxGeneration || transferID == 0 || len(input) == 0 || len(input) > MaxInputBytes || len(request) == 0 || len(request) > MaxRequestBytes || !utf8.Valid(request) {
 		return fail("REQUEST_BOUNDS")
 	}
-	if err := strictJSON(request); err != nil {
+	if err := jsonvalue.Validate(request); err != nil {
 		return fail("REQUEST_JSON")
 	}
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(request, &fields) != nil || !exactFields(fields, "contractVersion", "operationId", "generation", "transferId", "inputRevision", "inputDigest", "runtimeOptions", "platformPolicy", "tunPolicy") {
+	if json.Unmarshal(request, &fields) != nil || !exactFields(fields, "contractVersion", "operationId", "generation", "networkGeneration", "transferId", "inputRevision", "inputDigest", "runtimeOptions", "platformPolicy", "tunPolicy") {
 		return fail("REQUEST_FIELDS")
 	}
 	for name, keys := range map[string][]string{
@@ -157,7 +160,7 @@ func DecodeStart(generation, transferID uint64, input, request []byte) (StartReq
 	if decoder.Decode(&target) != nil {
 		return fail("REQUEST_FIELDS")
 	}
-	if target.ContractVersion != ContractVersion || target.Generation != generation || target.TransferID != strconv.FormatUint(transferID, 10) {
+	if target.ContractVersion != ContractVersion || target.Generation != generation || target.NetworkGeneration > network.MaxSafeInteger || target.TransferID != strconv.FormatUint(transferID, 10) {
 		return fail("REQUEST_IDENTITY")
 	}
 	if !safeID.MatchString(target.OperationID) || !safeID.MatchString(target.InputRevision) || !safeID.MatchString(target.PlatformPolicy.Revision) || !digest.MatchString(target.InputDigest) {
@@ -200,57 +203,5 @@ func exactFields(fields map[string]json.RawMessage, keys ...string) bool {
 	return true
 }
 func strictJSON(encoded []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.UseNumber()
-	var value func() error
-	value = func() error {
-		token, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		if delimiter, ok := token.(json.Delim); ok {
-			switch delimiter {
-			case '{':
-				seen := map[string]bool{}
-				for decoder.More() {
-					key, err := decoder.Token()
-					if err != nil {
-						return err
-					}
-					name, ok := key.(string)
-					if !ok || seen[name] {
-						return errors.New("duplicate key")
-					}
-					seen[name] = true
-					if err := value(); err != nil {
-						return err
-					}
-				}
-				end, err := decoder.Token()
-				if err != nil || end != json.Delim('}') {
-					return errors.New("object end")
-				}
-			case '[':
-				for decoder.More() {
-					if err := value(); err != nil {
-						return err
-					}
-				}
-				end, err := decoder.Token()
-				if err != nil || end != json.Delim(']') {
-					return errors.New("array end")
-				}
-			default:
-				return errors.New("delimiter")
-			}
-		}
-		return nil
-	}
-	if err := value(); err != nil {
-		return err
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return errors.New("trailing JSON")
-	}
-	return nil
+	return jsonvalue.Validate(encoded)
 }

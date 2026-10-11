@@ -6,7 +6,8 @@ extern "C" {
 #endif
 
 /* Independent from cb_abi_version_v1. Resolve this and all three operations
- * before duplicating a TUN descriptor. Version 1 has the schema in
+ * before duplicating a TUN descriptor. The retained v1 symbols return contract
+ * version 2 and reject version-1 request shapes. Version 2 has the schema in
  * mobile/runtime/contract.go and mobile/README.md. */
 int32_t cb_runtime_contract_version_v1(void);
 
@@ -16,7 +17,10 @@ int32_t cb_runtime_contract_version_v1(void);
  * generation is 1..INT32_MAX; transfer_id is independently allocated, nonzero,
  * strictly increasing. request JSON mirrors both scalars (generation:number,
  * transferId:canonical decimal string). Borrowed byte buffers are copied.
- * Limits: input 65536, request UTF-8 8192, output 32768 bytes.
+ * request.networkGeneration is mandatory: legacy fixed scope may use zero;
+ * new mobile-proxy-ipv4-tcp-v2 requires an actual matching online submitted path.
+ * Receipt.networkGeneration is zero until accepted against real core state.
+ * Limits: input 1048576, request UTF-8 8192, output 32768 bytes.
  * No fd is acquired by query/stop. transfer_id=0 queries the run; positive IDs
  * query that EXACT entered handoff. Missing handoffs return unknown, never an
  * older clean run. Duplicate IDs/capacity faults remain ownership faults.

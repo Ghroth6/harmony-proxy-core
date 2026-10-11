@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -60,6 +61,14 @@ func TestProductionDialerRequiresProtectionOnlyForMarkedGeneration(t *testing.T)
 		return protection.PlatformFailure
 	})
 	assertCode(protection.WithGeneration(ctx, 1), protection.PlatformFailure)
+	packet, packetErr := dialer.ListenPacket(protection.WithGeneration(ctx, 1), "udp4", "127.0.0.1:0", netip.MustParseAddrPort("127.0.0.1:53"))
+	if packet != nil {
+		packet.Close()
+	}
+	var packetFailure protection.Error
+	if !errors.As(packetErr, &packetFailure) || packetFailure.Code != protection.PlatformFailure {
+		t.Fatal("protected physical datagram listener bypassed the failed platform callback")
+	}
 	gate.Unregister(1)
 	gate.Register(2, func(_, _ uint64, _ uintptr) int32 { return protection.Success })
 	assertCode(protection.WithGeneration(ctx, 1), protection.Inactive)
@@ -68,6 +77,11 @@ func TestProductionDialerRequiresProtectionOnlyForMarkedGeneration(t *testing.T)
 		t.Fatalf("protected production dial: %v", err)
 	}
 	<-accepted
+	packet, packetErr = dialer.ListenPacket(protection.WithGeneration(ctx, 2), "udp4", "127.0.0.1:0", netip.MustParseAddrPort("127.0.0.1:53"))
+	if packetErr != nil || packet == nil {
+		t.Fatal("successful physical datagram protection did not create an owned socket")
+	}
+	packet.Close()
 	customCalled := false
 	custom := dialer.NetDialerFunc(func(context.Context, string, string) (net.Conn, error) {
 		customCalled = true
