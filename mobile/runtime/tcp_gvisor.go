@@ -113,10 +113,15 @@ func (b *tcpBook) callback(request *tcp.ForwarderRequest) {
 	request.Complete(false)
 	b.mu.Lock()
 	b.constructors--
-	slot.forwarding = true
+	isDNS := b.engine.dns != nil && b.engine.dns.matches(address(id.LocalAddress), id.LocalPort)
+	slot.forwarding = !isDNS
 	b.changed.Broadcast()
 	b.mu.Unlock()
 	defer b.release(id)
+	if isDNS {
+		b.engine.dns.handleTCP(conn)
+		return
+	}
 	metadata := &C.Metadata{Type: C.TUN, NetWork: C.TCP, SrcIP: address(id.RemoteAddress), SrcPort: id.RemotePort, DstIP: address(id.LocalAddress), DstPort: id.LocalPort, RequestContext: b.engine.root}
 	if b.engine.sourcePolicy {
 		metadata.RawDstAddr = net.TCPAddrFromAddrPort(netip.AddrPortFrom(metadata.DstIP, metadata.DstPort))

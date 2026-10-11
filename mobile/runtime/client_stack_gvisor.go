@@ -18,6 +18,12 @@ import (
 func (e *runEngine) configurePacketStack(target StartRequest) string {
 	e.options = target.RuntimeOptions
 	e.sourcePolicy = target.PreparedPolicy != nil
+	if e.options.DNS {
+		if e.cfg.MobileDNSService() == nil {
+			return "DNS_SERVICE_NOT_READY"
+		}
+		e.dns = newDNSBook(e, e.cfg.MobileDNSService())
+	}
 	e.endpoint = channel.New(PacketQueue, MTU, "")
 	networks := []stack.NetworkProtocolFactory{ipv4.NewProtocol}
 	transports := []stack.TransportProtocolFactory{tcp.NewProtocol}
@@ -62,6 +68,9 @@ func (e *runEngine) activateClientIngress() {
 	if e.udp != nil {
 		e.udp.activate()
 	}
+	if e.dns != nil {
+		e.dns.activate()
+	}
 }
 
 func (e *runEngine) stopClientIngress() {
@@ -71,12 +80,20 @@ func (e *runEngine) stopClientIngress() {
 	if e.udp != nil {
 		e.udp.stopAdmission()
 	}
+	if e.dns != nil {
+		e.dns.stopAdmission()
+	}
 }
 
 func (e *runEngine) waitClientIngress() bool {
+	fault := false
+	if e.dns != nil {
+		e.dns.wait()
+		fault = e.dns.isFault()
+	}
 	if e.udp != nil {
 		e.udp.wait()
-		return e.udp.isFault()
+		fault = fault || e.udp.isFault()
 	}
-	return false
+	return fault
 }

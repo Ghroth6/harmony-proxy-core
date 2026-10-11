@@ -52,6 +52,9 @@ func (b *udpBook) handlePacket(id stack.TransportEndpointID, packet *stack.Packe
 	if !source.IsValid() || !target.IsValid() || source.Is4() != target.Is4() {
 		return true
 	}
+	if b.engine.dns != nil && b.engine.dns.matches(target, id.LocalPort) {
+		return b.engine.dns.handleUDP(id, packet)
+	}
 	key := netip.AddrPortFrom(source, id.RemotePort)
 	b.mu.Lock()
 	if !b.accepting || b.engine.transfer.ctx.Err() != nil || b.packets >= PacketQueue {
@@ -159,7 +162,11 @@ func (p *clientUDPPacket) RetainUDPFlow() (func(), func(error), bool) {
 // WriteBack survives Drop: its tuple and slot are immutable and independent of
 // the original payload. Nil source preserves the original fake-IP destination.
 func (p *clientUDPPacket) WriteBack(data []byte, from net.Addr) (int, error) {
-	source := p.target
+	return p.book.writeBack(p.source, p.target, p.slot, data, from)
+}
+
+func (b *udpBook) writeBack(client, target netip.AddrPort, slot *udpSlot, data []byte, from net.Addr) (int, error) {
+	source := target
 	if from != nil {
 		addr, ok := from.(*net.UDPAddr)
 		if !ok || addr == nil || addr.Port < 0 || addr.Port > math.MaxUint16 {
@@ -175,7 +182,7 @@ func (p *clientUDPPacket) WriteBack(data []byte, from net.Addr) (int, error) {
 		return 0, errors.New("invalid UDP reply bounds")
 	}
 	proto := header.IPv4ProtocolNumber
-	if p.source.Addr().Is6() {
+	if client.Addr().Is6() {
 		proto = header.IPv6ProtocolNumber
 		if source.Addr().Is4() {
 			source = netip.AddrPortFrom(netip.AddrFrom16(source.Addr().As16()), source.Port())
@@ -183,16 +190,15 @@ func (p *clientUDPPacket) WriteBack(data []byte, from net.Addr) (int, error) {
 	} else if !source.Addr().Is4() {
 		return 0, errors.New("UDP reply address family mismatch")
 	}
-	b := p.book
 	b.mu.Lock()
-	if !b.accepting || b.engine.transfer.ctx.Err() != nil || p.slot.closing || p.slot.unknown || b.slots[p.source] != p.slot || b.writes >= MaxUDPWrites {
+	if !b.accepting || b.engine.transfer.ctx.Err() != nil || b.writes >= MaxUDPWrites || (slot != nil && (slot.closing || slot.unknown || b.slots[client] != slot)) {
 		b.mu.Unlock()
 		return 0, context.Canceled
 	}
 	b.writes++
 	b.mu.Unlock()
 	defer func() { b.mu.Lock(); b.writes--; b.changed.Broadcast(); b.mu.Unlock() }()
-	route, routeErr := b.engine.stack.FindRoute(1, stackAddress(source.Addr()), stackAddress(p.source.Addr()), proto, false)
+	route, routeErr := b.engine.stack.FindRoute(1, stackAddress(source.Addr()), stackAddress(client.Addr()), proto, false)
 	if routeErr != nil {
 		return 0, gonet.TranslateNetstackError(routeErr)
 	}
@@ -202,7 +208,7 @@ func (p *clientUDPPacket) WriteBack(data []byte, from net.Addr) (int, error) {
 	packet.TransportProtocolNumber = header.UDPProtocolNumber
 	udpHeader := header.UDP(packet.TransportHeader().Push(header.UDPMinimumSize))
 	length := uint16(packet.Size())
-	udpHeader.Encode(&header.UDPFields{SrcPort: source.Port(), DstPort: p.source.Port(), Length: length})
+	udpHeader.Encode(&header.UDPFields{SrcPort: source.Port(), DstPort: client.Port(), Length: length})
 	if route.RequiresTXTransportChecksum() {
 		xsum := udpHeader.CalculateChecksum(checksum.Combine(route.PseudoHeaderChecksum(header.UDPProtocolNumber, length), packet.Data().Checksum()))
 		if xsum != math.MaxUint16 {

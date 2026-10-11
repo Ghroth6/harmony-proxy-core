@@ -17,6 +17,16 @@ func WithGeneration(parent context.Context, generation uint64) context.Context {
 	return context.WithValue(parent, generationKey{}, generation)
 }
 
+// Generation reads the actual immutable socket-protection marker. Reading it
+// does not register a gate, adopt a forwarding owner, or open a physical socket.
+func Generation(ctx context.Context) uint64 {
+	if ctx == nil {
+		return 0
+	}
+	generation, _ := ctx.Value(generationKey{}).(uint64)
+	return generation
+}
+
 // InstallDialerHook is called once at mobile process initialization. It never
 // changes DefaultSocketHook or networking/bind policy, including on unregister.
 func (g *Gate) InstallDialerHook() int32 {

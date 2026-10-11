@@ -34,8 +34,9 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 	var opts []dialer.Option
 	var rule C.Rule
 	metadata := &C.Metadata{
-		NetWork: C.TCP,
-		Type:    C.INNER,
+		NetWork:        C.TCP,
+		Type:           C.INNER,
+		RequestContext: ctx,
 	}
 	err := metadata.SetRemoteAddress(addr) // tcp can resolve host by remote
 	if err != nil {
@@ -134,8 +135,9 @@ func (d *DNSDialer) ListenPacket(ctx context.Context, network, addr string) (net
 	proxyName := d.proxyName
 	var opts []dialer.Option
 	metadata := &C.Metadata{
-		NetWork: C.UDP,
-		Type:    C.INNER,
+		NetWork:        C.UDP,
+		Type:           C.INNER,
+		RequestContext: ctx,
 	}
 	err := metadata.SetRemoteAddress(addr)
 	if err != nil {

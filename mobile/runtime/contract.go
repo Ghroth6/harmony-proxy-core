@@ -1,5 +1,5 @@
-// Package runtime owns the single fixed IPv4/TCP mobile run and every entered
-// descriptor transfer. Caller observation deadlines never cancel its cleanup.
+// Package runtime owns the single mobile run, its accepted policy and every
+// entered descriptor transfer. Caller observation deadlines never cancel cleanup.
 package runtime
 
 import (

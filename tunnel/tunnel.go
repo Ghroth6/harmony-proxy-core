@@ -323,6 +323,9 @@ func preHandleMetadata(metadata *C.Metadata) error {
 }
 
 func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err error) {
+	if _, err = mobilePolicyRouting(requestContext(metadata)); err != nil {
+		return
+	}
 	if metadata.SpecialProxy != "" {
 		var exist bool
 		proxy, exist = proxies[metadata.SpecialProxy]
@@ -776,6 +779,11 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 				}
 
 				if metadata.NetWork == C.UDP && !adapter.SupportUDP() {
+					if mobile, err := mobilePolicyRouting(requestContext(metadata)); err != nil {
+						return nil, rule, err
+					} else if mobile {
+						return nil, rule, ErrMobilePolicyUDPUnsupported
+					}
 					log.Debugln("%s UDP is not supported", adapter.Name())
 					continue
 				}

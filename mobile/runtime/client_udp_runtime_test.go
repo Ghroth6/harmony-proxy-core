@@ -81,11 +81,14 @@ func clientPolicyRequest(t *testing.T, input []byte, generation, networkGenerati
 	return encoded
 }
 
-func publishClientNetwork(t *testing.T, manager *R.Manager) uint64 {
+func publishClientNetwork(t *testing.T, manager *R.Manager, dnsServers ...string) uint64 {
 	t.Helper()
 	previous, _ := platformnetwork.Current()
 	generation := previous.Generation + 1
-	receipt := network.NewController(manager.NetworkBusy).Submit("client-policy-network", runtimeSnapshot(generation, []string{}))
+	if dnsServers == nil {
+		dnsServers = []string{}
+	}
+	receipt := network.NewController(manager.NetworkBusy).Submit("client-policy-network", runtimeSnapshot(generation, dnsServers))
 	if receipt.Category != "published" || receipt.Generation != generation {
 		t.Fatalf("actual client network epoch not accepted: %+v", receipt)
 	}

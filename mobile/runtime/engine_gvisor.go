@@ -44,6 +44,7 @@ type runEngine struct {
 	stack               *stack.Stack
 	book                *tcpBook
 	udp                 *udpBook
+	dns                 *dnsBook
 	options             RuntimeOptions
 	sourcePolicy        bool
 	bound               C.Tunnel
@@ -210,6 +211,9 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		return
 	}
 	engine.root = protection.WithGeneration(t.ctx, target.Generation)
+	if sourcePolicy {
+		engine.root = tunnel.WithMobilePolicyRouting(engine.root)
+	}
 	tunnel.EnableForwardingLifecycle()
 	if err = tunnel.PrepareForwarding(engine.root, target.Generation); err != nil {
 		t.failure("FORWARDING_PREPARE")
@@ -281,7 +285,10 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 	}
 	if err = tunnel.ActivateForwarding(target.Generation); err == nil {
 		if sourcePolicy {
-			err = executor.ActivateMobilePolicy(engine.cfg)
+			err = engine.cfg.ActivateMobilePolicyDNS(engine.root)
+			if err == nil {
+				err = executor.ActivateMobilePolicy(engine.cfg)
+			}
 		} else {
 			err = executor.ActivateMobileFixed(engine.cfg)
 		}
@@ -304,6 +311,12 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 	t.receipt.Outcome = "running"
 	t.receipt.ForwardingActive = true
 	t.mu.Unlock()
+	if sourcePolicy {
+		if err = engine.cfg.ActivateMobilePolicyResources(engine.root); err != nil {
+			t.failure("POLICY_RESOURCES_ACTIVATE")
+			return
+		}
+	}
 	log.MobilePhase(target.Generation, log.StageRunning)
 }
 func (t *Transfer) stop() {
@@ -335,6 +348,9 @@ func (t *Transfer) cleanup() {
 	unknown := false
 	if engine != nil {
 		engine.stopClientIngress()
+		if engine.cfg != nil && engine.sourcePolicy {
+			engine.cfg.CancelMobilePolicyServices()
+		}
 		if engine.prepared {
 			tunnel.CancelForwarding()
 		}
@@ -368,6 +384,15 @@ func (t *Transfer) cleanup() {
 			engine.book.waitCallbacks()
 			if engine.book.isFault() {
 				unknown = true
+			}
+		}
+		if engine.cfg != nil && engine.sourcePolicy {
+			t.resource("policy-services", "closing", -1)
+			if err := engine.cfg.WaitMobilePolicyServices(context.Background()); err != nil {
+				unknown = true
+				t.resource("policy-services", "unknown", 1)
+			} else {
+				t.resource("policy-services", "closed", 0)
 			}
 		}
 		if engine.prepared {
@@ -617,6 +642,9 @@ func (e *runEngine) fillReceipt(receipt *Receipt) {
 	}
 	if e.udp != nil {
 		receipt.PendingOwners.UDPFlows, receipt.PendingOwners.UDPPackets, receipt.PendingOwners.UDPWrites = e.udp.counts()
+	}
+	if e.dns != nil {
+		receipt.PendingOwners.DNSWaiters = e.dns.count()
 	}
 	receipt.Connections = []ConnectionObservation{}
 	for _, record := range e.observations {
