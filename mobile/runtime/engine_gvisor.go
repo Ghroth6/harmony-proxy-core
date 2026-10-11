@@ -11,9 +11,9 @@ import (
 
 	"github.com/metacubex/gvisor/pkg/buffer"
 	"github.com/metacubex/gvisor/pkg/tcpip"
-	"github.com/metacubex/gvisor/pkg/tcpip/header"
 	"github.com/metacubex/gvisor/pkg/tcpip/link/channel"
 	"github.com/metacubex/gvisor/pkg/tcpip/network/ipv4"
+	"github.com/metacubex/gvisor/pkg/tcpip/network/ipv6"
 	"github.com/metacubex/gvisor/pkg/tcpip/stack"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/tcp"
 	"github.com/metacubex/mihomo/config"
@@ -21,6 +21,7 @@ import (
 	"github.com/metacubex/mihomo/hub/executor"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/mobile/network"
+	policycontract "github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/mobile/protection"
 	"github.com/metacubex/mihomo/mobile/validation"
 	"github.com/metacubex/mihomo/tunnel"
@@ -42,6 +43,9 @@ type runEngine struct {
 	endpoint            *channel.Endpoint
 	stack               *stack.Stack
 	book                *tcpBook
+	udp                 *udpBook
+	options             RuntimeOptions
+	sourcePolicy        bool
 	bound               C.Tunnel
 	root                context.Context
 	wakeRead, wakeWrite *descriptorOwner
@@ -107,21 +111,56 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 			t.stop()
 		}
 	}()
-	validationReceipt := validation.Validate(target.OperationID, input)
-	covered := false
-	extended := false
-	for _, coverage := range validationReceipt.Covered {
-		if coverage == "m1b-fixed-ipv4-tcp" {
-			covered = true
-		}
-		if coverage == "mobile-proxy-ipv4-tcp-v2" {
-			covered = true
-			extended = true
-		}
-	}
-	if validationReceipt.Category != "pass" || validationReceipt.InputDigest != target.InputDigest || !covered {
+	sourcePolicy := target.PreparedPolicy != nil
+	platform, err := policycontract.CanonicalJSON(policycontract.Platform{RuntimeOptions: target.RuntimeOptions, PlatformPolicy: target.PlatformPolicy, TunPolicy: target.TunPolicy})
+	if err != nil {
 		t.failure("CANDIDATE_RECHECK")
 		return
+	}
+	platformDigest := policycontract.Digest(platform)
+	covered := false
+	extended := false
+	if sourcePolicy {
+		if t.manager.policy == nil {
+			t.failure("POLICY_RUNTIME_NOT_READY")
+			return
+		}
+		prepared := target.PreparedPolicy
+		if policycontract.Digest(input) != target.InputDigest || target.InputDigest != prepared.InputDigest || platformDigest != prepared.PlatformPolicyDigest {
+			t.failure("POLICY_IDENTITY_INVALID")
+			return
+		}
+		validated := t.manager.policy.Validate(target.OperationID, input, *prepared)
+		expectedScope := "original-source-policy-ipv4-v1"
+		if target.RuntimeOptions.IPv6 {
+			expectedScope = "original-source-policy-dual-v1"
+		}
+		for _, coverage := range validated.Covered {
+			covered = covered || coverage == expectedScope
+		}
+		if validated.Category != "pass" || validated.InputDigest != target.InputDigest || validated.CandidateDigest != prepared.CandidateDigest || !covered {
+			code := validated.Code
+			if code == "" || !safeID.MatchString(code) {
+				code = "CANDIDATE_RECHECK"
+			}
+			t.failure(code)
+			return
+		}
+	} else {
+		validationReceipt := validation.Validate(target.OperationID, input)
+		for _, coverage := range validationReceipt.Covered {
+			if coverage == "m1b-fixed-ipv4-tcp" {
+				covered = true
+			}
+			if coverage == "mobile-proxy-ipv4-tcp-v2" {
+				covered = true
+				extended = true
+			}
+		}
+		if validationReceipt.Category != "pass" || validationReceipt.InputDigest != target.InputDigest || !covered {
+			t.failure("CANDIDATE_RECHECK")
+			return
+		}
 	}
 	if t.ctx.Err() != nil {
 		return
@@ -132,8 +171,8 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.failure("CANDIDATE_FORMAT")
 		return
 	}
-	if extended || target.NetworkGeneration != 0 {
-		needsDNS := false
+	if sourcePolicy || extended || target.NetworkGeneration != 0 {
+		needsDNS := sourcePolicy && raw.DNS.Enable
 		for _, node := range raw.Proxy {
 			server, _ := node["server"].(string)
 			if _, err := netip.ParseAddr(server); err != nil {
@@ -149,7 +188,9 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.receipt.NetworkGeneration = accepted
 		t.mu.Unlock()
 	}
-	if extended {
+	if sourcePolicy {
+		engine.cfg, err = t.manager.policy.BuildCandidate(input, *target.PreparedPolicy)
+	} else if extended {
 		engine.cfg, err = config.BuildMobileSelectedCandidate(raw)
 	} else {
 		engine.cfg, err = config.BuildMobileFixedCandidate(raw)
@@ -202,18 +243,8 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 	if t.ctx.Err() != nil {
 		return
 	}
-	engine.endpoint = channel.New(PacketQueue, MTU, "")
-	engine.stack = stack.New(stack.Options{NetworkProtocols: []stack.NetworkProtocolFactory{ipv4.NewProtocol}, TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol}})
-	t.resource("packet-stack", "acquired", -1)
-	engine.book = newTCPBook(engine)
-	engine.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, engine.book.handlePacket)
-	if errorCode := engine.stack.CreateNICWithOptions(1, engine.endpoint, stack.NICOptions{}); errorCode != nil {
-		t.failure("STACK_NIC")
-		return
-	}
-	engine.stack.SetRouteTable([]tcpip.Route{{Destination: header.IPv4EmptySubnet, NIC: 1}})
-	if engine.stack.SetSpoofing(1, true) != nil || engine.stack.SetPromiscuousMode(1, true) != nil {
-		t.failure("STACK_OPTIONS")
+	if code := engine.configurePacketStack(target); code != "" {
+		t.failure(code)
 		return
 	}
 	if t.ctx.Err() != nil {
@@ -223,11 +254,24 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.failure("CANDIDATE_NETWORK_ACTIVATE")
 		return
 	}
-	if err = executor.PublishMobileFixed(t.ctx, engine.cfg); err != nil {
+	if sourcePolicy {
+		err = executor.PublishMobilePolicy(t.ctx, engine.cfg)
+	} else {
+		err = executor.PublishMobileFixed(t.ctx, engine.cfg)
+	}
+	if err != nil {
 		t.failure("CANDIDATE_PUBLISH")
 		return
 	}
 	engine.published = true
+	t.mu.Lock()
+	t.receipt.InputDigest, t.receipt.PlatformPolicyDigest = target.InputDigest, platformDigest
+	if sourcePolicy {
+		t.receipt.CandidateDigest = target.PreparedPolicy.CandidateDigest
+		t.receipt.ResourceManifestDigest = target.PreparedPolicy.ResourceManifestDigest
+		t.receipt.GroupPreferencesDigest = target.PreparedPolicy.GroupPreferencesDigest
+	}
+	t.mu.Unlock()
 	engine.observationCancel = statistic.DefaultManager.SubscribeConnections(engine.observeConnection)
 	t.phase("starting")
 	// Keep activation, pump registration and Stop mutually exclusive. No goroutine
@@ -236,7 +280,11 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		return
 	}
 	if err = tunnel.ActivateForwarding(target.Generation); err == nil {
-		err = executor.ActivateMobileFixed(engine.cfg)
+		if sourcePolicy {
+			err = executor.ActivateMobilePolicy(engine.cfg)
+		} else {
+			err = executor.ActivateMobileFixed(engine.cfg)
+		}
 	}
 	if err != nil {
 		t.failure("ENTRY_ACTIVATE")
@@ -247,7 +295,7 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.mu.Unlock()
 		return
 	}
-	engine.book.activate()
+	engine.activateClientIngress()
 	t.receipt.PendingOwners.Pumps = 2
 	engine.pumps.Add(2)
 	go engine.readPump()
@@ -286,9 +334,7 @@ func (t *Transfer) cleanup() {
 	engine := t.engine
 	unknown := false
 	if engine != nil {
-		if engine.book != nil {
-			engine.book.stopAdmission()
-		}
+		engine.stopClientIngress()
 		if engine.prepared {
 			tunnel.CancelForwarding()
 		}
@@ -297,6 +343,9 @@ func (t *Transfer) cleanup() {
 				unknown = true
 				t.resource("wake-write", "unknown", errno(err))
 			}
+		}
+		if engine.waitClientIngress() {
+			unknown = true
 		}
 		if engine.endpoint != nil {
 			engine.endpoint.Attach(nil)
@@ -460,12 +509,17 @@ func (e *runEngine) readPump() {
 			e.transfer.failure("TUN_READ")
 			return
 		}
-		// IPv4/TCP only; unknown protocols are discarded without constructing sockets.
-		if n < 20 || data[0]>>4 != 4 || data[9] != byte(tcp.ProtocolNumber) {
+		protocol := ipv4.ProtocolNumber
+		if data[0]>>4 == 6 && e.options.IPv6 {
+			if n < 40 {
+				continue
+			}
+			protocol = ipv6.ProtocolNumber
+		} else if n < 20 || data[0]>>4 != 4 || (data[9] != byte(tcp.ProtocolNumber) && !(e.options.UDP && data[9] == 17)) {
 			continue
 		}
 		packet := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(append([]byte{}, data[:n]...))})
-		e.endpoint.InjectInbound(ipv4.ProtocolNumber, packet)
+		e.endpoint.InjectInbound(protocol, packet)
 		packet.DecRef()
 	}
 }
@@ -511,7 +565,18 @@ func (e *runEngine) writePump() {
 }
 func (e *runEngine) observeConnection(tracker statistic.Tracker) {
 	info := tracker.Info()
-	if info.Metadata.ForwardingGeneration != e.transfer.receipt.Generation || !info.Metadata.DstIP.Is4() {
+	if info.Metadata.ForwardingGeneration != e.transfer.receipt.Generation {
+		return
+	}
+	target := info.Metadata.DstIP
+	if e.sourcePolicy {
+		if destination, ok := info.Metadata.RawDstAddr.(interface{ AddrPort() netip.AddrPort }); ok {
+			target = destination.AddrPort().Addr()
+		}
+		if !target.IsValid() {
+			return
+		}
+	} else if !target.Is4() {
 		return
 	}
 	node := "redacted"
@@ -531,7 +596,16 @@ func (e *runEngine) observeConnection(tracker statistic.Tracker) {
 	if sequence > MaxGeneration {
 		sequence = MaxGeneration
 	}
-	value := ConnectionObservation{Sequence: sequence, TargetIPv4: info.Metadata.DstIP.String(), TargetPort: info.Metadata.DstPort, Node: node, Rule: rule}
+	value := ConnectionObservation{Sequence: sequence, TargetPort: info.Metadata.DstPort, Node: node, Rule: rule}
+	if target.Is4() {
+		value.TargetIPv4 = target.String()
+	}
+	if e.sourcePolicy {
+		value.TargetAddress, value.AddressFamily = target.String(), "ipv4"
+		if target.Is6() {
+			value.AddressFamily = "ipv6"
+		}
+	}
 	if len(e.observations) == 16 {
 		e.observations = e.observations[1:]
 	}
@@ -541,6 +615,9 @@ func (e *runEngine) fillReceipt(receipt *Receipt) {
 	if e.book != nil {
 		receipt.PendingOwners.TCPCallbacks, receipt.PendingOwners.Constructions, receipt.PendingOwners.Forwarding = e.book.counts()
 	}
+	if e.udp != nil {
+		receipt.PendingOwners.UDPFlows, receipt.PendingOwners.UDPPackets, receipt.PendingOwners.UDPWrites = e.udp.counts()
+	}
 	receipt.Connections = []ConnectionObservation{}
 	for _, record := range e.observations {
 		value := record.value
@@ -549,4 +626,13 @@ func (e *runEngine) fillReceipt(receipt *Receipt) {
 		receipt.Connections = append(receipt.Connections, value)
 	}
 }
-func address(address tcpip.Address) netip.Addr { return netip.AddrFrom4(address.As4()) }
+func address(address tcpip.Address) netip.Addr {
+	switch address.Len() {
+	case 4:
+		return netip.AddrFrom4(address.As4())
+	case 16:
+		return netip.AddrFrom16(address.As16())
+	default:
+		return netip.Addr{}
+	}
+}

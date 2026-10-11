@@ -259,7 +259,9 @@ func (m *Manager) Start(t *Transfer, input, request []byte) Receipt {
 	}
 	t.startAdmitted = true
 	t.receipt.OperationID = target.OperationID
-	t.receipt.CandidateDigest = target.InputDigest
+	if target.PreparedPolicy == nil {
+		t.receipt.CandidateDigest = target.InputDigest
+	}
 	t.receipt.Phase = "validating"
 	t.mu.Unlock()
 	bytes := append([]byte{}, input...)

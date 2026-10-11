@@ -40,6 +40,7 @@ type result struct {
 }
 
 type Resolver struct {
+	owner                 *ResolverOwner
 	ipv6                  bool
 	ipv6Timeout           time.Duration
 	main                  []dnsClient
@@ -153,6 +154,14 @@ func (r *Resolver) ResolveECH(ctx context.Context, host string) ([]byte, error) 
 
 // ExchangeContext a batch of dns request with context.Context, and it use cache
 func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {
+	if r.owner != nil {
+		var finish func()
+		ctx, finish, err = r.owner.begin(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer finish()
+	}
 	if len(m.Question) == 0 {
 		return nil, errors.New("should have one question at least")
 	}
@@ -199,7 +208,7 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 	retryMax := 3
 	sharedCtx := forwarding.SharedManagementNetworkContext(ctx)
 	groupKey := strconv.FormatUint(forwarding.ManagementNetworkGeneration(sharedCtx), 10) + ":" + key
-	fn := func() (result *D.Msg, err error) {
+	fn := func(sharedCtx context.Context) (result *D.Msg, err error) {
 		ctx, finish, err := forwarding.AcquireManagementNetwork(sharedCtx)
 		if err != nil {
 			return &D.Msg{MsgHdr: D.MsgHdr{Opcode: retryMax}}, err
@@ -211,10 +220,17 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 
 		defer func() {
 			if err == nil && cache {
-				err = forwarding.CommitManagementNetwork(ctx, func() error {
-					putMsgToCache(r.cache, q, key, result)
-					return nil
-				})
+				commit := func() error {
+					return forwarding.CommitManagementNetwork(ctx, func() error {
+						putMsgToCache(r.cache, q, key, result)
+						return nil
+					})
+				}
+				if r.owner != nil {
+					err = r.owner.commit(commit)
+				} else {
+					err = commit()
+				}
 			}
 			if err != nil {
 				result = &D.Msg{}
@@ -238,7 +254,7 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 		return
 	}
 
-	ch := r.group.DoChan(groupKey, fn)
+	ch := r.exchangeGroup(sharedCtx, groupKey, fn)
 
 	var result singleflight.Result[*D.Msg]
 
@@ -250,20 +266,20 @@ func (r *Resolver) exchangeWithoutCache(ctx context.Context, m *D.Msg) (msg *D.M
 		case result = <-ch: // maybe ctxDone and chFinish in same time, get DoChan's result as much as possible
 			break
 		default:
-			go func() { // start a retrying monitor in background
+			r.launch(sharedCtx, func(context.Context) { // monitor is part of this instance.
 				result := <-ch
 				ret, err, shared := result.Val, result.Err, result.Shared
 				if err != nil && !shared && ret.Opcode < retryMax { // retry
-					r.group.DoChan(groupKey, fn)
+					r.exchangeGroup(sharedCtx, groupKey, fn)
 				}
-			}()
+			})
 			return nil, ctx.Err()
 		}
 	}
 
 	ret, err, shared := result.Val, result.Err, result.Shared
 	if err != nil && !shared && ret.Opcode < retryMax { // retry
-		r.group.DoChan(groupKey, fn)
+		r.exchangeGroup(sharedCtx, groupKey, fn)
 	}
 
 	if err == nil {
@@ -500,6 +516,7 @@ type Policy struct {
 }
 
 type Config struct {
+	Owner                *ResolverOwner
 	Main, Fallback       []NameServer
 	Default              []NameServer
 	ProxyServer          []NameServer
@@ -556,6 +573,7 @@ func NewResolverFromClient(client dnsClient) *Resolver {
 
 func NewResolver(config Config) (rs Resolvers) {
 	defaultResolver := &Resolver{
+		owner:       config.Owner,
 		main:        transform(config.Default, nil),
 		cache:       config.newCache(),
 		ipv6Timeout: time.Duration(config.IPv6Timeout) * time.Millisecond,
@@ -626,6 +644,7 @@ func NewResolver(config Config) (rs Resolvers) {
 	}
 
 	r := &Resolver{
+		owner:       config.Owner,
 		ipv6:        config.IPv6,
 		main:        cacheTransform(config.Main),
 		cache:       config.newCache(),
@@ -637,6 +656,7 @@ func NewResolver(config Config) (rs Resolvers) {
 
 	if len(config.ProxyServer) != 0 {
 		rs.ProxyResolver = &Resolver{
+			owner:       config.Owner,
 			ipv6:        config.IPv6,
 			main:        cacheTransform(config.ProxyServer),
 			cache:       config.newCache(),
@@ -647,6 +667,7 @@ func NewResolver(config Config) (rs Resolvers) {
 
 	if len(config.DirectServer) != 0 {
 		rs.DirectResolver = &Resolver{
+			owner:       config.Owner,
 			ipv6:        config.IPv6,
 			main:        cacheTransform(config.DirectServer),
 			cache:       config.newCache(),
