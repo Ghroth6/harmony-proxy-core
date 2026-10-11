@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -98,6 +99,7 @@ type ConnectionObservation struct {
 }
 type Receipt struct {
 	ContractVersion        int                     `json:"contractVersion"`
+	CoreInstance           string                  `json:"coreInstance"`
 	OperationID            string                  `json:"operationId"`
 	Generation             uint64                  `json:"generation"`
 	NetworkGeneration      uint64                  `json:"networkGeneration"`
@@ -122,6 +124,16 @@ type Receipt struct {
 	PendingOwners          PendingOwners           `json:"pendingOwners"`
 	Connections            []ConnectionObservation `json:"connections"`
 }
+
+// The Go process owns its receipt epoch. It does not change with a Manager,
+// run, input, network generation or native library caller.
+var processCoreInstance = func() string {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		panic("core runtime instance entropy unavailable")
+	}
+	return "core-" + hex.EncodeToString(token[:])
+}()
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9:_-]{1,128}$`)
 var bundleID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*){1,15}$`)
