@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/metacubex/mihomo/common/orderedmap"
@@ -353,7 +354,28 @@ func groupFields(group map[string]any, kind string) string {
 			if !ok || n < 0 || n > 65535 {
 				return "POLICY_GROUP_INVALID"
 			}
-		case "interval", "timeout", "max-failed-times":
+		case "interval":
+			var interval int64
+			switch n := value.(type) {
+			case int:
+				interval = int64(n)
+			case string:
+				// Preserve the pinned decoder's base-0/native-int semantics;
+				// validating must not normalize the original group map.
+				parsed, err := strconv.ParseInt(n, 0, strconv.IntSize)
+				if err != nil {
+					return "POLICY_GROUP_INVALID"
+				}
+				interval = parsed
+			default:
+				return "POLICY_GROUP_INVALID"
+			}
+			// HealthCheck multiplies seconds into time.Duration before starting
+			// its ticker. Reject overflow rather than accepting a broken timer.
+			if interval < 0 || interval > int64((1<<63-1)/time.Second) {
+				return "POLICY_GROUP_INVALID"
+			}
+		case "timeout", "max-failed-times":
 			n, ok := value.(int)
 			if !ok || n < 0 {
 				return "POLICY_GROUP_INVALID"
