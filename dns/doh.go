@@ -36,9 +36,9 @@ const (
 	// connections in HTTP transport.
 	transportDefaultIdleConnTimeout = 5 * time.Minute
 
-	dialTimeout        = 10 * time.Second
+	dialTimeout = 10 * time.Second
 
-	maxElapsedTime  = time.Second * 30
+	maxElapsedTime = time.Second * 30
 )
 
 var DefaultHTTPVersions = []C.HTTPVersion{C.HTTPVersion11, C.HTTPVersion2}
@@ -385,7 +385,7 @@ func (doh *dnsOverHTTPS) createClient(ctx context.Context) (*http.Client, error)
 func (doh *dnsOverHTTPS) createTransport(ctx context.Context) (t http.RoundTripper, err error) {
 	transport := &http.Transport{
 		DisableCompression: true,
-		DialContext:        doh.dialer.DialContext,
+		DialContext:        doh.dialOwned,
 		IdleConnTimeout:    transportDefaultIdleConnTimeout,
 	}
 
@@ -439,6 +439,23 @@ func (doh *dnsOverHTTPS) createTransport(ctx context.Context) (t http.RoundTripp
 	}
 
 	return transport, nil
+}
+
+func (doh *dnsOverHTTPS) dialOwned(ctx context.Context, network, addr string) (net.Conn, error) {
+	owner := resolverOwner(ctx)
+	if owner == nil {
+		return doh.dialer.DialContext(ctx, network, addr)
+	}
+	ctx, finish, err := owner.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	conn, err := doh.dialer.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	return owner.ownConn(conn)
 }
 
 // http3Transport is a wrapper over *http3.Transport that tries to optimize
@@ -550,9 +567,18 @@ func (doh *dnsOverHTTPS) dialQuic(ctx context.Context, addr string, tlsCfg *tls.
 	if err != nil {
 		return nil, err
 	}
+	if owner := resolverOwner(ctx); owner != nil {
+		packetConn, err = owner.ownPacketConn(packetConn)
+		if err != nil {
+			return nil, err
+		}
+	}
 	transport := quic.Transport{Conn: packetConn}
 	transport.SetCreatedConn(true) // auto close conn
 	transport.SetSingleUse(true)   // auto close transport
+	if owner := resolverOwner(ctx); owner != nil {
+		owner.ownCloser(&transport) // Close joins actual QUIC handlers/listener.
+	}
 	tlsCfg = tlsCfg.Clone()
 	if host, _, err := net.SplitHostPort(doh.url.Host); err == nil {
 		tlsCfg.ServerName = host
@@ -578,7 +604,7 @@ func (doh *dnsOverHTTPS) probeH3(
 	// We're using bootstrapped address instead of what's passed to the function
 	// it does not create an actual connection, but it helps us determine
 	// what IP is actually reachable (when there are v4/v6 addresses).
-	rawConn, err := doh.dialer.DialContext(ctx, "udp", doh.url.Host)
+	rawConn, err := doh.dialOwned(ctx, "udp", doh.url.Host)
 	if err != nil {
 		return "", fmt.Errorf("failed to dial: %w", err)
 	}
@@ -607,8 +633,15 @@ func (doh *dnsOverHTTPS) probeH3(
 	// Run probeQUIC and probeTLS in parallel and see which one is faster.
 	chQuic := make(chan error, 1)
 	chTLS := make(chan error, 1)
-	go doh.probeQUIC(ctx, addr, probeTLSCfg, chQuic)
-	go doh.probeTLS(ctx, probeTLSCfg, chTLS)
+	ctx, cancelProbes := context.WithCancel(ctx)
+	defer cancelProbes()
+	owner := resolverOwner(ctx)
+	if !owner.launch(ctx, func(ctx context.Context) { doh.probeQUIC(ctx, addr, probeTLSCfg, chQuic) }) {
+		chQuic <- ErrResolverRetired
+	}
+	if !owner.launch(ctx, func(ctx context.Context) { doh.probeTLS(ctx, probeTLSCfg, chTLS) }) {
+		chTLS <- ErrResolverRetired
+	}
 
 	select {
 	case quicErr := <-chQuic:
@@ -713,7 +746,7 @@ func isHTTP3(client *http.Client) (ok bool) {
 func (doh *dnsOverHTTPS) tlsDial(ctx context.Context, network string, config *tls.Config) (*tls.Conn, error) {
 	// We're using bootstrapped address instead of what's passed
 	// to the function.
-	rawConn, err := doh.dialer.DialContext(ctx, network, doh.url.Host)
+	rawConn, err := doh.dialOwned(ctx, network, doh.url.Host)
 	if err != nil {
 		return nil, err
 	}

@@ -130,7 +130,11 @@ func (c *client) exchangeOwned(ctx context.Context, m *D.Msg, owner *ResolverOwn
 		callbackDone := make(chan struct{})
 		stop := context.AfterFunc(ctx, func() { defer close(callbackDone); _ = conn.Close() })
 		dClient := &D.Client{UDPSize: 4096, Timeout: 5 * time.Second}
-		msg, _, err := dClient.ExchangeWithConn(m, &D.Conn{Conn: conn, UDPSize: dClient.UDPSize})
+		var messageConn net.Conn = conn
+		if network == "udp" {
+			messageConn = &connectedDNSUDP{Conn: conn}
+		}
+		msg, _, err := dClient.ExchangeWithConn(m, &D.Conn{Conn: messageConn, UDPSize: dClient.UDPSize})
 		_ = conn.Close()
 		if !stop() {
 			<-callbackDone
@@ -144,6 +148,22 @@ func (c *client) exchangeOwned(ctx context.Context, m *D.Msg, owner *ResolverOwn
 		}
 		return msg, err
 	}
+}
+
+// The ownership wrapper must retain the UDP transport trait. miekg otherwise
+// mistakes a connected datagram socket for TCP and adds a two-byte frame.
+type connectedDNSUDP struct{ net.Conn }
+
+func (c *connectedDNSUDP) ReadFrom(p []byte) (int, net.Addr, error) {
+	n, err := c.Read(p)
+	return n, c.RemoteAddr(), err
+}
+
+func (c *connectedDNSUDP) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if addr != nil && addr.String() != c.RemoteAddr().String() {
+		return 0, fmt.Errorf("DNS datagram destination changed")
+	}
+	return c.Write(p)
 }
 
 func (c *client) ResetConnection() {}

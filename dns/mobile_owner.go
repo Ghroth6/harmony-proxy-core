@@ -3,10 +3,12 @@ package dns
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"sync"
 
 	"github.com/metacubex/mihomo/common/singleflight"
+	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/forwarding"
 	D "github.com/miekg/dns"
 )
@@ -20,19 +22,22 @@ var (
 // activation freezes its run values and management path. Cancellation cannot
 // discard a live worker, a late socket result, or an uncertain Close.
 type ResolverOwner struct {
-	mu        sync.Mutex
-	changed   chan struct{}
-	active    bool
-	retired   bool
-	root      context.Context
-	cancel    context.CancelFunc
-	pending   int
-	conns     map[*resolverConn]struct{}
-	closeErrs []error
+	mu           sync.Mutex
+	changed      chan struct{}
+	active       bool
+	retired      bool
+	root         context.Context
+	cancel       context.CancelFunc
+	pending      int
+	conns        map[*resolverConn]struct{}
+	packets      map[*resolverPacketConn]struct{}
+	closers      map[io.Closer]*resolverCloser
+	closeErrs    []error
+	failedCloses map[io.Closer]error
 }
 
 func NewResolverOwner() *ResolverOwner {
-	return &ResolverOwner{changed: make(chan struct{}), conns: map[*resolverConn]struct{}{}}
+	return &ResolverOwner{changed: make(chan struct{}), conns: map[*resolverConn]struct{}{}, packets: map[*resolverPacketConn]struct{}{}, closers: map[io.Closer]*resolverCloser{}}
 }
 
 func (o *ResolverOwner) notifyLocked() { close(o.changed); o.changed = make(chan struct{}) }
@@ -52,10 +57,17 @@ func (o *ResolverOwner) Activate(parent context.Context) error {
 	}
 	o.root, o.cancel = context.WithCancel(forwarding.SharedManagementNetworkContext(parent))
 	o.active = true
+	root := o.root
+	o.pending++ // admitted before launch; explicit Cancel also wakes the watcher.
+	go func() {
+		defer o.finishIO()
+		select {
+		case <-parent.Done():
+		case <-root.Done():
+		}
+		o.Cancel()
+	}()
 	o.mu.Unlock()
-	// Runtime cancellation closes this instance while preserving other owners
-	// that happen to use the same management-network epoch.
-	context.AfterFunc(parent, o.Cancel)
 	return nil
 }
 
@@ -73,10 +85,25 @@ func (o *ResolverOwner) Cancel() {
 	for conn := range o.conns {
 		conns = append(conns, conn)
 	}
+	packets := make([]*resolverPacketConn, 0, len(o.packets))
+	for conn := range o.packets {
+		packets = append(packets, conn)
+	}
+	closers := make([]*resolverCloser, 0, len(o.closers))
+	for _, closer := range o.closers {
+		o.pending++
+		closers = append(closers, closer)
+	}
 	o.notifyLocked()
 	o.mu.Unlock()
 	for _, conn := range conns {
 		go conn.Close() // the socket's reservation remains until real Close returns.
+	}
+	for _, conn := range packets {
+		go conn.Close()
+	}
+	for _, closer := range closers {
+		go closer.close() // includes transport pool and protocol worker retirement.
 	}
 }
 
@@ -136,6 +163,7 @@ func (o *ResolverOwner) begin(parent context.Context) (context.Context, func(), 
 	o.mu.Unlock()
 	ctx, cancel := context.WithCancel(resolverValues{Context: parent, root: root})
 	ctx = context.WithValue(ctx, resolverOwnerKey{}, o)
+	ctx = dialer.WithWorkerOwner(ctx, o)
 	callbackDone := make(chan struct{})
 	stop := context.AfterFunc(root, func() { defer close(callbackDone); cancel() })
 	if root.Err() != nil {
@@ -156,6 +184,25 @@ func (o *ResolverOwner) begin(parent context.Context) (context.Context, func(), 
 	}, nil
 }
 
+func (o *ResolverOwner) AcquireWorker(ctx context.Context) (context.Context, func(), error) {
+	return o.begin(ctx)
+}
+
+// A worker reports a real Close failure before releasing its reservation. Keep
+// the actual socket reference: the result is unknown, never successful cleanup.
+func (o *ResolverOwner) RetainWorkerCloseFailure(closer io.Closer, err error) {
+	o.mu.Lock()
+	if o.failedCloses == nil {
+		o.failedCloses = make(map[io.Closer]error)
+	}
+	if _, exists := o.failedCloses[closer]; !exists {
+		o.failedCloses[closer] = err
+		o.closeErrs = append(o.closeErrs, err)
+	}
+	o.notifyLocked()
+	o.mu.Unlock()
+}
+
 func resolverOwner(ctx context.Context) *ResolverOwner {
 	owner, _ := ctx.Value(resolverOwnerKey{}).(*ResolverOwner)
 	return owner
@@ -173,11 +220,19 @@ func (o *ResolverOwner) commit(action func() error) error {
 func (r *Resolver) dnsOwner() *ResolverOwner { return r.owner }
 
 func (r *Resolver) launch(ctx context.Context, work func(context.Context)) bool {
-	if r.owner == nil {
+	var owner *ResolverOwner
+	if r != nil {
+		owner = r.owner
+	}
+	return owner.launch(ctx, work)
+}
+
+func (o *ResolverOwner) launch(ctx context.Context, work func(context.Context)) bool {
+	if o == nil {
 		go work(ctx)
 		return true
 	}
-	ctx, finish, err := r.owner.begin(ctx)
+	ctx, finish, err := o.begin(ctx)
 	if err != nil {
 		return false
 	}
@@ -225,6 +280,41 @@ type resolverConn struct {
 	err   error
 }
 
+// Socket Close can return before an in-progress transport Read resumes. Track
+// each actual I/O call separately so Wait also joins its return boundary.
+func (o *ResolverOwner) beginIO() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.retired {
+		return ErrResolverRetired
+	}
+	o.pending++
+	return nil
+}
+
+func (o *ResolverOwner) finishIO() {
+	o.mu.Lock()
+	o.pending--
+	o.notifyLocked()
+	o.mu.Unlock()
+}
+
+func (c *resolverConn) Read(p []byte) (int, error) {
+	if err := c.owner.beginIO(); err != nil {
+		return 0, err
+	}
+	defer c.owner.finishIO()
+	return c.Conn.Read(p)
+}
+
+func (c *resolverConn) Write(p []byte) (int, error) {
+	if err := c.owner.beginIO(); err != nil {
+		return 0, err
+	}
+	defer c.owner.finishIO()
+	return c.Conn.Write(p)
+}
+
 func (c *resolverConn) Close() error {
 	c.once.Do(func() {
 		c.err = c.Conn.Close()
@@ -232,6 +322,114 @@ func (c *resolverConn) Close() error {
 		c.owner.pending--
 		if c.err == nil {
 			delete(c.owner.conns, c)
+		} else {
+			c.owner.closeErrs = append(c.owner.closeErrs, c.err)
+		}
+		c.owner.notifyLocked()
+		c.owner.mu.Unlock()
+	})
+	return c.err
+}
+
+type resolverCloser struct {
+	owner  *ResolverOwner
+	closer io.Closer
+	once   sync.Once
+}
+
+func (o *ResolverOwner) ownCloser(closer io.Closer) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	if _, exists := o.closers[closer]; exists {
+		o.mu.Unlock()
+		return
+	}
+	owned := &resolverCloser{owner: o, closer: closer}
+	o.closers[closer] = owned
+	retired := o.retired
+	if retired {
+		o.pending++
+	}
+	o.mu.Unlock()
+	if retired {
+		owned.close() // late transport admission cannot escape retirement.
+	}
+}
+
+func (c *resolverCloser) close() {
+	c.once.Do(func() {
+		err := c.closer.Close()
+		c.owner.mu.Lock()
+		if err != nil {
+			c.owner.closeErrs = append(c.owner.closeErrs, err)
+		}
+		c.owner.pending--
+		c.owner.notifyLocked()
+		c.owner.mu.Unlock()
+	})
+}
+
+func (o *ResolverOwner) ownClient(client dnsClient) {
+	if o == nil {
+		return
+	}
+	for {
+		wrapper, ok := client.(interface{ Unwrap() dnsClient })
+		if !ok {
+			break
+		}
+		client = wrapper.Unwrap()
+	}
+	if closer, ok := client.(io.Closer); ok {
+		o.ownCloser(closer)
+	}
+}
+
+func (o *ResolverOwner) ownPacketConn(conn net.PacketConn) (*resolverPacketConn, error) {
+	owned := &resolverPacketConn{PacketConn: conn, owner: o}
+	o.mu.Lock()
+	o.pending++
+	o.packets[owned] = struct{}{}
+	retired := o.retired
+	o.mu.Unlock()
+	if retired {
+		return owned, errors.Join(ErrResolverRetired, owned.Close())
+	}
+	return owned, nil
+}
+
+type resolverPacketConn struct {
+	net.PacketConn
+	owner *ResolverOwner
+	once  sync.Once
+	err   error
+}
+
+func (c *resolverPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	if err := c.owner.beginIO(); err != nil {
+		return 0, nil, err
+	}
+	defer c.owner.finishIO()
+	return c.PacketConn.ReadFrom(p)
+}
+
+func (c *resolverPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if err := c.owner.beginIO(); err != nil {
+		return 0, err
+	}
+	defer c.owner.finishIO()
+	return c.PacketConn.WriteTo(p, addr)
+}
+
+func (c *resolverPacketConn) Close() error {
+	c.once.Do(func() {
+		c.err = c.PacketConn.Close()
+		c.owner.mu.Lock()
+		c.owner.pending--
+		if c.err == nil {
+			delete(c.owner.packets, c)
 		} else {
 			c.owner.closeErrs = append(c.owner.closeErrs, c.err)
 		}

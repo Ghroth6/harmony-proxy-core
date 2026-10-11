@@ -336,6 +336,12 @@ func (doq *dnsOverQUIC) openConnection(ctx context.Context) (quicConn *quic.Conn
 	if err != nil {
 		return nil, err
 	}
+	if owner := resolverOwner(ctx); owner != nil {
+		packetConn, err = owner.ownPacketConn(packetConn)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	host, _, err := net.SplitHostPort(doq.addr)
 	if err != nil {
@@ -362,6 +368,9 @@ func (doq *dnsOverQUIC) openConnection(ctx context.Context) (quicConn *quic.Conn
 	transport := quic.Transport{Conn: packetConn}
 	transport.SetCreatedConn(true) // auto close conn
 	transport.SetSingleUse(true)   // auto close transport
+	if owner := resolverOwner(ctx); owner != nil {
+		owner.ownCloser(&transport)
+	}
 	quicConn, err = transport.Dial(ctx, &udpAddr, tlsConfig, doq.getQUICConfig())
 	if err != nil {
 		_ = packetConn.Close()
