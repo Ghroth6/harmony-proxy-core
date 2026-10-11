@@ -113,6 +113,15 @@ func (s *Set) CheckTransfer() error {
 	return nil
 }
 
+func (s *Set) Transferred() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transferred
+}
+
 // Transfer hands ownership to the runtime without closing anything. It drops
 // candidate-only references so later provider refreshes retain their existing
 // lifetime behavior. Reapplying the current published object is allowed.

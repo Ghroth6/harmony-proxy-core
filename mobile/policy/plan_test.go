@@ -1,13 +1,74 @@
 package policy_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
 	"testing"
 
 	"github.com/metacubex/mihomo/mobile/policy"
+	"github.com/metacubex/mihomo/mobile/policy/contract"
 )
+
+func TestPolicyGeoAutoUpdateCannotPretendThatMissingSchedulerIsReady(t *testing.T) {
+	engine, err := policy.NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	input := []byte("ipv6: false\ndns: {enable: false}\ngeo-auto-update: true\ngeo-update-interval: 1\nrules: ['MATCH,DIRECT']\n")
+	plan := engine.Plan("geo-periodic-not-ready", input, nil)
+	if plan.Category != "unsupported" || plan.Code != "POLICY_GEODATA_UPDATE_UNSUPPORTED" || plan.ResourcesComplete {
+		t.Fatal("unimplemented original geodata updates must be an explicit whole-policy refusal")
+	}
+	prepared, err := contract.Seal(plan.InputDigest, nil, publicPlatform(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt := engine.Validate("geo-periodic-validate", input, prepared); receipt.Category == "pass" || receipt.Code != "POLICY_GEODATA_UPDATE_UNSUPPORTED" {
+		t.Fatal("static validation cannot advertise a missing runtime updater")
+	}
+	if cfg, err := engine.BuildCandidate(input, prepared); cfg != nil || err == nil || err.Error() != "POLICY_GEODATA_UPDATE_UNSUPPORTED" {
+		if cfg != nil {
+			_ = cfg.Discard(context.Background())
+		}
+		t.Fatal("independent runtime construction must retain the same refusal")
+	}
+}
+
+func TestPolicyEngineCannotCloseWhileAcceptedCandidateOwnsResources(t *testing.T) {
+	engine, err := policy.NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("ipv6: false\ndns: {enable: false}\nrules: ['MATCH,DIRECT']\n")
+	plan := engine.Plan("engine-owner-plan", input, nil)
+	prepared, err := contract.Seal(plan.InputDigest, nil, publicPlatform(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := engine.BuildCandidate(input, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cfg.Discard(context.Background())
+	if err = engine.Close(); err == nil {
+		t.Fatal("closing the trusted root must retain an actual candidate owner rather than silently revoke its resource root")
+	}
+	if plan := engine.Plan("engine-owner-still-open", input, nil); plan.Category != "planned" {
+		t.Fatal("busy Close must preserve the actual trusted-root owner")
+	}
+	if err = cfg.Discard(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if plan := engine.Plan("engine-owner-retired", input, nil); plan.Category == "planned" || plan.ResourcesComplete {
+		t.Fatal("a closed trusted root must not advertise a prepared policy")
+	}
+}
 
 const originalPolicy = `proxies:
  - {name: PublicNode, type: ss, cipher: chacha20-ietf-poly1305, server: proxy.example, port: 8388, password: documentation-only, udp: true}
@@ -33,6 +94,7 @@ func TestPolicyPlanPreservesOriginalGroupsAndDiscoversFixedResourcesWithoutNetwo
 		t.Fatal(err)
 	}
 	defer engine.Close()
+	baseline := engine.ResourceAcquireCount()
 	input := []byte(originalPolicy)
 	plan := engine.Plan("policy-plan", input, nil)
 	if plan.Category != "planned" || plan.Code != "" || plan.ResourcesComplete || len(plan.Groups) != 2 || !plan.GeneralIPv6 || plan.DNSIPv6 || !plan.DNSEnabled {
@@ -51,7 +113,7 @@ func TestPolicyPlanPreservesOriginalGroupsAndDiscoversFixedResourcesWithoutNetwo
 			t.Fatal("original resource source/interval/default format must be preserved privately")
 		}
 	}
-	if !kinds["rule-provider"] || !kinds["mmdb"] || !kinds["geosite"] || engine.ResourceAcquireCount() != "0" {
+	if !kinds["rule-provider"] || !kinds["mmdb"] || !kinds["geosite"] || engine.ResourceAcquireCount() != baseline {
 		t.Fatal("plan must discover GEOIP and DNS GEOSITE dependencies without any resource acquisition")
 	}
 	digest := sha256.Sum256(input)
@@ -81,5 +143,22 @@ rules: ['MATCH,PublicSelect']
 	plan := engine.Plan("scoped-plan", input, nil)
 	if plan.Category != "planned" || !plan.ResourcesComplete || len(plan.Requirements) != 0 {
 		t.Fatal("resource discovery must inspect actual rule/DNS fields, never credentials or display names")
+	}
+}
+
+func TestPolicyPlanAcceptsTypedProfileTracingWithoutDroppingPolicy(t *testing.T) {
+	engine, err := policy.NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	for _, value := range []string{"false", "true"} {
+		plan := engine.Plan("profile-tracing", []byte("ipv6: false\ndns: {enable: false}\nprofile: {store-selected: true, store-fake-ip: false, tracing: "+value+"}\nrules: ['MATCH,DIRECT']\n"), nil)
+		if plan.Category != "planned" || !plan.StoreSelected {
+			t.Fatalf("typed client profile field must preserve the original policy: %s/%s", plan.Category, plan.Code)
+		}
+	}
+	if plan := engine.Plan("profile-tracing-invalid", []byte("profile: {tracing: [documentation]}\nrules: ['MATCH,DIRECT']\n"), nil); plan.Category == "planned" {
+		t.Fatal("tracing must retain its strict boolean type")
 	}
 }

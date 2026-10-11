@@ -109,9 +109,26 @@ func PublishMobilePolicy(ctx context.Context, cfg *config.Config) error {
 	tunnel.UpdateSniffer(disabled)
 	tunnel.SetMode(cfg.General.Mode)
 	tunnel.SetFindProcessMode(cfg.General.FindProcessMode)
+	// Internal management requests inherit the actual run context. This installs
+	// no listener and grants no admission while forwarding is still suspended.
+	initInnerTcp()
 	resolver.DisableIPv6 = !cfg.General.IPv6
 	resolver.ProxyServerHostResolver = resolver.SystemResolver
 	resolver.DirectHostResolver = resolver.SystemResolver
+	if r, mapper, enabled := cfg.MobileDNSResolvers(); enabled {
+		resolver.DefaultResolver, resolver.DefaultHostMapper, resolver.DefaultService = r, mapper, cfg.MobileDNSService()
+		resolver.UseSystemHosts = cfg.DNS.UseSystemHosts
+		if r.ProxyResolver.Invalid() {
+			resolver.ProxyServerHostResolver = r.ProxyResolver
+		} else {
+			resolver.ProxyServerHostResolver = r.Resolver
+		}
+		if r.DirectResolver.Invalid() {
+			resolver.DirectHostResolver = r.DirectResolver
+		} else {
+			resolver.DirectHostResolver = r.Resolver
+		}
+	}
 	dialer.SetTcpConcurrent(cfg.General.TCPConcurrent)
 	// Raw device-interface/routing marks cannot take ownership from the actual
 	// mobile snapshot and socket-protection gate.

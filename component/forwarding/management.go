@@ -112,6 +112,17 @@ func SharedManagementNetworkContext(parent context.Context) context.Context {
 	return context.WithValue(ctx, managementKey{}, r)
 }
 
+// SnapshotManagementNetwork captures the current path without detaching the
+// caller's cancellation, forwarding owner or protection marker. It grants no
+// admission; every later actual attempt must AcquireManagementNetwork.
+func SnapshotManagementNetwork(parent context.Context) context.Context {
+	r := managementOwner(parent)
+	if r == nil {
+		r = managementRun()
+	}
+	return context.WithValue(parent, managementKey{}, r)
+}
+
 // ManagementNetworkGeneration separates shared work queued on different paths.
 // It is not a forwarding run ID and must not be used for traffic accounting.
 func ManagementNetworkGeneration(ctx context.Context) uint64 {

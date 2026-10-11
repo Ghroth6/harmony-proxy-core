@@ -18,9 +18,12 @@ int32_t cb_runtime_contract_version_v1(void);
  * strictly increasing. request JSON mirrors both scalars (generation:number,
  * transferId:canonical decimal string). Borrowed byte buffers are copied.
  * request.networkGeneration is mandatory: legacy fixed scope may use zero;
- * new mobile-proxy-ipv4-tcp-v2 requires an actual matching online submitted path.
+ * new node and original-policy scopes require the actual matching online path.
  * Receipt.networkGeneration is zero until accepted against real core state.
- * Limits: input 1048576, request UTF-8 8192, output 32768 bytes.
+ * Original-policy requests also carry the strict preparedPolicy value with
+ * four independently verified identities. Its immutable manifest remains
+ * separate from later actual resource acquisition/adoption observations.
+ * Limits: input 1048576, request UTF-8 1048576, output 32768 bytes.
  * No fd is acquired by query/stop. transfer_id=0 queries the run; positive IDs
  * query that EXACT entered handoff. Missing handoffs return unknown, never an
  * older clean run. Duplicate IDs/capacity faults remain ownership faults.

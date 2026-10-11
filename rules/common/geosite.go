@@ -13,9 +13,10 @@ import (
 
 type GEOSITE struct {
 	Base
-	country    string
-	adapter    string
-	recodeSize int
+	country         string
+	adapter         string
+	recodeSize      int
+	preparedMatcher func() (router.DomainMatcher, error)
 }
 
 func (gs *GEOSITE) RuleType() C.RuleType {
@@ -47,6 +48,9 @@ func (gs *GEOSITE) Payload() string {
 }
 
 func (gs *GEOSITE) GetDomainMatcher() (router.DomainMatcher, error) {
+	if gs.preparedMatcher != nil {
+		return gs.preparedMatcher()
+	}
 	matcher, err := geodata.LoadGeoSiteMatcher(gs.country)
 	if err != nil {
 		return nil, fmt.Errorf("load GeoSite data error, %w", err)

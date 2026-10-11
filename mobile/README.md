@@ -67,9 +67,9 @@ identities, actual snapshot cancellation/join, protected local DNS → real Troj
 TLS/authentication/traffic → normal-stop cleanup, and protected real QUIC TLS.
 These isolated fixtures do not prove external node availability, ordinary OHOS
 package integration, browser/TUN traffic or target platform protection.
-Full original YAML groups/rules/DNS/providers/resources and client UDP/DNS/IPv6
-remain a separate implementation phase; this checkpoint does not complete #25
-or fresh-process zero-download #26.
+Full original YAML policy is being implemented through the separate boundary
+below. The node checkpoint does not complete #25 or original-policy fresh-process
+zero-download #26.
 
 ## Mobile runtime contract
 
@@ -77,7 +77,7 @@ or fresh-process zero-download #26.
 runtime value boundary. `cb_runtime_contract_version_v1` returns 2 for a build
 with the explicitly selected gVisor runtime, independently of the validation ABI;
 without `with_gvisor` it returns 0, so the adapter rejects capability before dup.
-The three operations own the TUN duplicate, IPv4/TCP stack and stop cleanup.
+The three operations own the TUN duplicate, packet stack and stop cleanup.
 Host syscall-boundary tests and ARM64 compilation do not establish target TUN
 acceptance. Resolve all runtime symbols and the contract version before dup.
 
@@ -95,7 +95,7 @@ Duplicate, unknown, missing, null or trailing JSON fields are rejected.
 has `revision`, `addressFamily:"ipv4"`, and `applicationIds` (1..16 distinct valid
 bundle IDs, each <=128 bytes). The independent immutable `tunPolicy` is exactly
 `{address:"10.111.0.1",prefixLength:30,route:"0.0.0.0",routePrefixLength:0,mtu:1500}`.
-Input is <=1 MiB, request UTF-8 JSON <=8192 bytes, receipt <=32768 bytes.
+Input and request UTF-8 JSON are each <=1 MiB; receipt <=32768 bytes.
 Queue size is 128, MTU 1500, TCP tuple capacity 32, transfer record capacity 64;
 start observes up to 5 seconds and stop up to 10 seconds. Actual cleanup retains
 ownership beyond those observation limits.
@@ -499,12 +499,59 @@ preserves original group positions and resource declarations, including raw
 general IPv6 defaults independently of DNS IPv6. Discovery reads rule and DNS
 fields, never arbitrary credentials or display names.
 
-The current resource-free checkpoint constructs and discards actual original
-rules/groups/adapters, validates opaque declared select preferences, fences
-DIRECT and remote adapters during preparation, and publishes source mode and
-process lookup settings without creating platform listeners. It explicitly
-rejects DNS-enabled or resource-dependent candidates until their owned fixed
-resource and DNS implementations are connected. The C policy ABI, scheduled
-resource updates, DNS, application UDP/IPv6 ingress and full-policy device
-acceptance are not established by these static host tests. Source-policy
-coverage labels remain distinct from the selected-node IPv4/TCP scope.
+`mobile/include/cb_policy.h` declares the original-policy value ABI (contract 1).
+Native Context binds the trusted resource root once through
+`cb_policy_storage_root_v1`, before any runtime request. `cb_policy_plan_v1`
+receives raw bytes plus a strict available-resource array;
+`cb_policy_validate_v1` receives the independently sealed prepared context;
+`cb_policy_resources_v1` observes the accepted run's actual resource ledger.
+Raw and control JSON are each bounded to 1 MiB; results to 8 MiB. No resource
+bytes or caller-chosen root cross the runtime request. Empty raw has a typed
+invalid result and its actual digest. Unknown/missing/null/duplicate fields,
+malformed Unicode and trailing JSON are rejected before typed preparation.
+
+Fixed resources use exact `immutable/<digest>/<kind>.<format>` paths inside the
+captured trusted root. Preparation checks regular files, byte bounds, full EOF,
+Close and independent digests before compiling all provider rules and geodata.
+Classical payloads are checked in full before the upstream parser can skip or
+log an invalid rule. GEOIP/MMDB/ASN/GEOSITE readers and matcher caches belong to
+the candidate's resource manifest; changing a policy cannot reuse a country
+matcher from a different manifest or enter upstream download/global caches.
+
+`Fetcher.InitialPrepared` loads verified bytes without a watcher, request or
+timer. Explicit runtime activation starts one original HTTP-provider scheduler;
+its first tick waits a full configured interval. Actual updates preserve the
+original URL, headers, proxy and strategy, use the accepted protection/network
+generation, bound and close the response, check dependency closure and reserve
+the total adopted-resource budget before saving. A completed temporary file is
+synced, closed, re-hashed and atomically published without replacing an immutable
+file; only then can the actual provider strategy adopt it. The ledger separates
+initial candidate/manifest identity from acquired, saved and adopted versions.
+Its process-wide acquisition count never resets. Cancellation joins scheduler,
+physical dial racers and close workers; a Close failure retains the real object
+and prevents successful cleanup. Closing the Engine refuses a candidate that
+still owns its trusted root. Geodata auto-update is explicitly unsupported with
+`POLICY_GEODATA_UPDATE_UNSUPPORTED`; a declared enabled updater cannot be ready.
+
+The original DNS candidate constructs its own inactive ResolverOwner, real
+resolver, enhancer and captured service. Original nameserver policy, fallback,
+hosts and resource-scoped GEO/RULE-SET matchers remain bound to this candidate.
+`MobileDNSService` and captured packet/connection relay entrypoints never switch
+to a mutable global service during an operation. DNS activation precedes client
+ingress; cancellation closes admission before waiters join, and retirement
+removes the old published resolver, fake-IP mapper, service and source hosts only
+after its actual workers/transports have joined. The separate runtime client
+implementation connects virtual DNS, bounded UDP and dual IPv6 ingress; source
+Start remains gated until that complete connection is present in the build.
+
+Synthetic public host evidence covers strict wire decoding, independent policy
+identities, actual fixed provider construction/retirement, manifest-scoped DAT
+matchers, original DNS policy through real protected queries, and actual
+interval HTTP acquisition/save/adoption with failure retaining the old strategy.
+It does not establish the new C exports' OHOS build, current original source
+resources, ordinary application restoration, target TUN/browser traffic or full
+policy acceptance. Original group health checks, platform-specific process
+ownership and other stated unimplemented adaptations still need their own
+implementation/evidence. `profile.tracing` is a retained client field absent as
+a runtime switch in pinned Mihomo; platform connection observations remain
+owned independently. These checkpoints do not complete #25/#26.

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/metacubex/mihomo/common/orderedmap"
+	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/mobile/validation"
@@ -27,7 +28,11 @@ func canonical(input any) ([]byte, error) {
 	return contract.CanonicalJSON(input)
 }
 
-func (e *Engine) Plan(operationID string, input []byte, available []PreparedResource) (receipt PlanReceipt) {
+func (e *Engine) Plan(operationID string, input []byte, available []PreparedResource) PlanReceipt {
+	return e.plan(operationID, input, available, nil)
+}
+
+func (e *Engine) plan(operationID string, input []byte, available []PreparedResource, verified *map[string]fixedResource) (receipt PlanReceipt) {
 	receipt = PlanReceipt{SchemaVersion: contract.Version, OperationID: operationID, InputDigest: digest(input), PlannerVersion: contract.PlannerVersion,
 		Category: "failure", Code: "POLICY_FAILURE", Requirements: []contract.Requirement{}, Groups: []contract.Group{}, Adaptations: []contract.Adaptation{}, CoreIdentity: validation.Identity()}
 	defer func() {
@@ -41,6 +46,10 @@ func (e *Engine) Plan(operationID string, input []byte, available []PreparedReso
 		receipt.Code = "POLICY_REQUEST_BOUNDS"
 		return
 	}
+	if !e.available() {
+		receipt.Code = "POLICY_RESOURCE_OWNER_RETIRED"
+		return
+	}
 	raw, document, code := decodePolicy(input)
 	if code != "" {
 		receipt.Category = "invalid"
@@ -49,6 +58,13 @@ func (e *Engine) Plan(operationID string, input []byte, available []PreparedReso
 	}
 	receipt.GeneralIPv6, receipt.DNSEnabled, receipt.DNSIPv6 = raw.IPv6, raw.DNS.Enable, raw.DNS.IPv6
 	receipt.StoreSelected, receipt.StoreFakeIP = raw.Profile.StoreSelected, raw.Profile.StoreFakeIP
+	// This pinned mobile owner has no geodata refresh/swap implementation.
+	// Refuse the declared behavior rather than claiming ready with a dead timer.
+	if raw.GeoAutoUpdate {
+		receipt.Category = "unsupported"
+		receipt.Code = "POLICY_GEODATA_UPDATE_UNSUPPORTED"
+		return
+	}
 	groups, code := planGroups(raw, receipt.InputDigest)
 	if code != "" {
 		receipt.Category = "unsupported"
@@ -67,12 +83,99 @@ func (e *Engine) Plan(operationID string, input []byte, available []PreparedReso
 		receipt.Code = "POLICY_RESOURCE_BOUNDS"
 		return
 	}
-	if len(available) != 0 {
-		receipt.Code = "POLICY_RESOURCE_VALIDATION_NOT_READY"
+	fixed, code := e.loadResources(available)
+	if code != "" {
+		receipt.Category = "invalid"
+		receipt.Code = code
 		return
 	}
-	receipt.ResourcesComplete = len(requirements) == 0
+	if verified != nil {
+		*verified = fixed
+	}
+	providerRules := []string{}
+	for name, mapping := range raw.RuleProvider {
+		behavior, _ := mapping["behavior"].(string)
+		if mapping["type"] == "inline" {
+			encoded, err := yaml.Marshal(map[string]any{"payload": mapping["payload"]})
+			if err != nil {
+				receipt.Category = "invalid"
+				receipt.Code = "POLICY_RESOURCE_PAYLOAD_INVALID"
+				return
+			}
+			if _, code = providerPayload(encoded, "yaml", behavior); code != "" {
+				receipt.Category = "invalid"
+				receipt.Code = code
+				return
+			}
+			continue
+		}
+		ref := digest([]byte(receipt.InputDigest + ":resource:rule-provider:" + name))
+		resource, present := fixed[ref]
+		if !present {
+			continue
+		}
+		for _, requirement := range requirements {
+			if requirement.RefID == ref {
+				if code = matchResource(requirement, resource); code != "" {
+					receipt.Category = "invalid"
+					receipt.Code = code
+					return
+				}
+			}
+		}
+		payload, payloadCode := providerPayload(resource.bytes, resource.value.Format, behavior)
+		if payloadCode != "" {
+			receipt.Category = "invalid"
+			receipt.Code = payloadCode
+			return
+		}
+		if behavior == "classical" {
+			providerRules = append(providerRules, payload...)
+		}
+	}
+	if len(providerRules) != 0 {
+		requirements, code = planRequirements(raw, document, receipt.InputDigest, providerRules)
+		if code != "" {
+			receipt.Category = "invalid"
+			receipt.Code = code
+			return
+		}
+		receipt.Requirements = requirements
+	}
+	receipt.ResourcesComplete = true
+	known := map[string]bool{}
+	for _, requirement := range requirements {
+		known[requirement.RefID] = true
+		resource, present := fixed[requirement.RefID]
+		if !present {
+			receipt.ResourcesComplete = false
+			continue
+		}
+		if code = matchResource(requirement, resource); code != "" {
+			receipt.Category = "invalid"
+			receipt.Code = code
+			receipt.ResourcesComplete = false
+			return
+		}
+		if requirement.Kind != "rule-provider" && geodata.VerifyPrepared(requirement.Kind, resource.bytes) != nil {
+			receipt.Category = "invalid"
+			receipt.Code = "POLICY_RESOURCE_PAYLOAD_INVALID"
+			receipt.ResourcesComplete = false
+			return
+		}
+	}
+	for ref := range fixed {
+		if !known[ref] {
+			receipt.Category = "invalid"
+			receipt.Code = "POLICY_RESOURCE_IDENTITY_INVALID"
+			receipt.ResourcesComplete = false
+			return
+		}
+	}
 	receipt.Adaptations = []contract.Adaptation{{Code: "PLATFORM_OWNS_TUN", Implemented: true}, {Code: "PLATFORM_OWNS_CONTROL_LISTENERS", Implemented: true}}
+	if raw.Profile.Tracing != nil {
+		receipt.Adaptations = append(receipt.Adaptations, contract.Adaptation{Code: "PLATFORM_OWNS_CONNECTION_OBSERVATIONS", Implemented: true})
+	}
 	for _, rule := range append(append([]string{}, raw.Rule...), allSubRules(raw)...) {
 		if strings.Contains(rule, "PROCESS-NAME,") || strings.Contains(rule, "PROCESS-PATH,") {
 			receipt.Adaptations = append(receipt.Adaptations, contract.Adaptation{Code: "PROCESS_LOOKUP_UNVERIFIED", Implemented: false})
@@ -220,7 +323,7 @@ func allSubRules(raw *config.RawConfig) []string {
 	return result
 }
 
-func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest string) ([]contract.Requirement, string) {
+func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest string, preparedRules ...[]string) ([]contract.Requirement, string) {
 	if len(raw.ProxyProvider) != 0 {
 		return nil, "POLICY_PROXY_PROVIDER_UNSUPPORTED"
 	}
@@ -318,6 +421,11 @@ func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest st
 	}
 	for _, rule := range append(append([]string{}, raw.Rule...), allSubRules(raw)...) {
 		scanRule(rule)
+	}
+	for _, payload := range preparedRules {
+		for _, rule := range payload {
+			scanRule(rule)
+		}
 	}
 	for _, provider := range raw.RuleProvider {
 		if payload, ok := provider["payload"].([]any); ok {

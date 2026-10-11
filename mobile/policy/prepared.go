@@ -44,6 +44,7 @@ func (e *Engine) Validate(operationID string, input []byte, prepared contract.Pr
 	candidate, err := e.BuildCandidate(input, prepared)
 	if candidate != nil {
 		if cleanup := candidate.Discard(context.Background()); cleanup != nil {
+			e.retainCandidate(candidate, cleanup)
 			receipt.Code = "POLICY_CLEANUP_FAILED"
 			return
 		}
@@ -79,38 +80,54 @@ func (e *Engine) Validate(operationID string, input []byte, prepared contract.Pr
 }
 
 func (e *Engine) BuildCandidate(input []byte, prepared contract.PreparedContext) (*config.Config, error) {
-	raw, preferences, code := e.verify(input, prepared)
+	verified, code := e.verify(input, prepared)
 	if code != "" {
 		return nil, errors.New(code)
 	}
-	return config.BuildMobilePolicyCandidate(raw, prepared, preferences)
+	inputs, err := e.prepareProviders(verified.raw, verified.context, verified.plan.Requirements, verified.fixed)
+	if err != nil {
+		if cleanup := discardPreparedProviders(inputs); cleanup != nil {
+			return nil, errors.New("POLICY_CLEANUP_FAILED")
+		}
+		return nil, err
+	}
+	return config.BuildMobilePolicyCandidate(verified.raw, verified.context, verified.preferences, inputs)
 }
 
-func (e *Engine) verify(input []byte, prepared contract.PreparedContext) (*config.RawConfig, map[string]string, string) {
+type preparedVerification struct {
+	context     contract.PreparedContext
+	raw         *config.RawConfig
+	preferences map[string]string
+	plan        PlanReceipt
+	fixed       map[string]fixedResource
+}
+
+func (e *Engine) verify(input []byte, prepared contract.PreparedContext) (*preparedVerification, string) {
 	encoded, err := json.Marshal(prepared)
 	if err != nil || len(encoded) > contract.MaxControlBytes || len(input) > contract.MaxControlBytes {
-		return nil, nil, "POLICY_REQUEST_BOUNDS"
+		return nil, "POLICY_REQUEST_BOUNDS"
 	}
 	if prepared.SchemaVersion != contract.Version || prepared.PlannerVersion != contract.PlannerVersion || prepared.InputDigest != contract.Digest(input) {
-		return nil, nil, "POLICY_IDENTITY_INVALID"
+		return nil, "POLICY_IDENTITY_INVALID"
 	}
 	sealed, err := contract.Seal(prepared.InputDigest, prepared.Resources, prepared.Platform, prepared.GroupPreferences)
 	if err != nil || sealed.CandidateDigest != prepared.CandidateDigest || sealed.ResourceManifestDigest != prepared.ResourceManifestDigest || sealed.PlatformPolicyDigest != prepared.PlatformPolicyDigest || sealed.GroupPreferencesDigest != prepared.GroupPreferencesDigest {
-		return nil, nil, "POLICY_IDENTITY_INVALID"
+		return nil, "POLICY_IDENTITY_INVALID"
 	}
-	plan := e.Plan("policy-independent-build", input, prepared.Resources)
+	var fixed map[string]fixedResource
+	plan := e.plan("policy-independent-build", input, prepared.Resources, &fixed)
 	if plan.Category != "planned" {
-		return nil, nil, plan.Code
+		return nil, plan.Code
 	}
 	if !plan.ResourcesComplete {
-		return nil, nil, "POLICY_RESOURCES_MISSING"
+		return nil, "POLICY_RESOURCES_MISSING"
 	}
 	raw, _, code := decodePolicy(input)
 	if code != "" {
-		return nil, nil, code
+		return nil, code
 	}
 	if !policyPlatform(raw, plan, prepared.Platform) {
-		return nil, nil, "POLICY_PLATFORM_INVALID"
+		return nil, "POLICY_PLATFORM_INVALID"
 	}
 	preferences := map[string]string{}
 	for _, preference := range prepared.GroupPreferences {
@@ -120,7 +137,7 @@ func (e *Engine) verify(input []byte, prepared contract.PreparedContext) (*confi
 				continue
 			}
 			if group.Type != "select" {
-				return nil, nil, "POLICY_GROUP_PREFERENCE_INVALID"
+				return nil, "POLICY_GROUP_PREFERENCE_INVALID"
 			}
 			for _, member := range group.Members {
 				if member.MemberRef != preference.MemberRef {
@@ -133,10 +150,10 @@ func (e *Engine) verify(input []byte, prepared contract.PreparedContext) (*confi
 			}
 		}
 		if !matched {
-			return nil, nil, "POLICY_GROUP_PREFERENCE_INVALID"
+			return nil, "POLICY_GROUP_PREFERENCE_INVALID"
 		}
 	}
-	return raw, preferences, ""
+	return &preparedVerification{context: sealed, raw: raw, preferences: preferences, plan: plan, fixed: fixed}, ""
 }
 
 func policyPlatform(raw *config.RawConfig, plan PlanReceipt, platform contract.Platform) bool {

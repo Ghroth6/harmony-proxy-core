@@ -25,12 +25,43 @@ func publicPlatform() contract.Platform {
 	return contract.Platform{RuntimeOptions: contract.RuntimeOptions{Entry: "system-vpn", Transport: "tcp-udp", UDP: true}, PlatformPolicy: contract.PlatformPolicy{Revision: "public-policy-v1", AddressFamily: "ipv4", ApplicationIDs: []string{}}, TunPolicy: contract.TunPolicy{Address: "10.111.0.1", PrefixLength: 30, Route: "0.0.0.0", MTU: 1500}}
 }
 
+func TestOriginalPolicyCandidateIdentityDoesNotAliasCallerOrReturnedSlices(t *testing.T) {
+	engine, err := policy.NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	input := []byte(noResourcePolicy)
+	platform := publicPlatform()
+	platform.PlatformPolicy.ApplicationIDs = []string{"org.example.public"}
+	prepared, err := contract.Seal(contract.Digest(input), nil, platform, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := engine.BuildCandidate(input, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.Discard(context.Background())
+	prepared.Platform.PlatformPolicy.ApplicationIDs[0] = "org.example.mutated"
+	first, _ := candidate.MobilePolicyContext()
+	if first.Platform.PlatformPolicy.ApplicationIDs[0] != "org.example.public" {
+		t.Fatal("accepted identity aliases mutable caller input")
+	}
+	first.Platform.PlatformPolicy.ApplicationIDs[0] = "org.example.returned"
+	second, _ := candidate.MobilePolicyContext()
+	if second.Platform.PlatformPolicy.ApplicationIDs[0] != "org.example.public" {
+		t.Fatal("accepted identity aliases a returned copy")
+	}
+}
+
 func TestOriginalPolicyBuildPreservesRulesAndOpaqueSelectionWithoutPreparationNetwork(t *testing.T) {
 	engine, err := policy.NewEngine(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer engine.Close()
+	baseline := engine.ResourceAcquireCount()
 	input := []byte(noResourcePolicy)
 	plan := engine.Plan("original-plan", input, nil)
 	if plan.Category != "planned" || !plan.ResourcesComplete || len(plan.Requirements) != 0 {
@@ -42,7 +73,7 @@ func TestOriginalPolicyBuildPreservesRulesAndOpaqueSelectionWithoutPreparationNe
 		t.Fatal(err)
 	}
 	validated := engine.Validate("original-validate", input, prepared)
-	if validated.Category != "pass" || validated.CandidateDigest != prepared.CandidateDigest || validated.ResourceManifestDigest != prepared.ResourceManifestDigest || engine.ResourceAcquireCount() != "0" {
+	if validated.Category != "pass" || validated.CandidateDigest != prepared.CandidateDigest || validated.ResourceManifestDigest != prepared.ResourceManifestDigest || engine.ResourceAcquireCount() != baseline {
 		t.Fatalf("actual construction and cleanup must validate the independent source identities: %s/%s", validated.Category, validated.Code)
 	}
 	first, err := engine.BuildCandidate(input, prepared)

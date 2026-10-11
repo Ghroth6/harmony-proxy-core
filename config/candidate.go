@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"errors"
 
 	"github.com/metacubex/mihomo/component/configresources"
 	P "github.com/metacubex/mihomo/constant/provider"
@@ -14,10 +15,14 @@ func (c *Config) Discard(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
+	if c.candidateResources != nil && c.candidateResources.Transferred() {
+		return configresources.ErrTransferred
+	}
+	c.CancelMobilePolicyServices()
 	if c.mobileNetwork != nil {
 		c.mobileNetwork.generation.Store(0)
 	}
-	return c.candidateResources.Close(ctx)
+	return errors.Join(c.candidateResources.Close(ctx), c.WaitMobilePolicyServices(ctx))
 }
 
 // CheckCandidate rejects a discarded or retired candidate before active
@@ -41,6 +46,7 @@ func (c *Config) SharesCandidate(other *Config) bool {
 // not close resources: executor still owns cancellation, waiting and closing.
 func (c *Config) RetireCandidate() {
 	if c != nil {
+		c.CancelMobilePolicyServices()
 		if c.mobileNetwork != nil {
 			c.mobileNetwork.generation.Store(0)
 		}

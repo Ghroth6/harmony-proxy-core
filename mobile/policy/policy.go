@@ -4,10 +4,13 @@
 package policy
 
 import (
+	"errors"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/mobile/validation"
+	"io"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
 )
 
@@ -15,8 +18,17 @@ type PreparedContext = contract.PreparedContext
 type PreparedResource = contract.Resource
 type Engine struct {
 	root             *os.Root
-	resourceAttempts atomic.Uint64
+	mu               sync.Mutex
+	current          *resourceSession
+	sessions         map[*resourceSession]struct{}
+	closed           bool
+	closeErr         error
+	failedCloses     map[io.Closer]error
+	failedCandidates map[any]error
 }
+
+var actualResourceAttempts atomic.Uint64
+var resourceEventSequence atomic.Uint64
 
 type PlanReceipt struct {
 	SchemaVersion     int                     `json:"schemaVersion"`
@@ -42,9 +54,45 @@ func NewEngine(root string) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Engine{root: owned}, nil
+	return &Engine{root: owned, sessions: map[*resourceSession]struct{}{}, failedCloses: map[io.Closer]error{}, failedCandidates: map[any]error{}}, nil
 }
-func (e *Engine) Close() error { return e.root.Close() }
+func (e *Engine) Close() error {
+	e.mu.Lock()
+	if len(e.sessions) != 0 {
+		e.mu.Unlock()
+		return errors.New("POLICY_RESOURCE_OWNER_BUSY")
+	}
+	if e.closed || e.closeErr != nil {
+		err := e.closeErr
+		e.mu.Unlock()
+		return err
+	}
+	e.closed = true
+	e.mu.Unlock()
+	err := e.root.Close()
+	e.retainClose(e.root, err)
+	return err
+}
+func (e *Engine) retainClose(closer io.Closer, err error) {
+	if err == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.failedCloses[closer] = err
+	e.closeErr = errors.New("POLICY_RESOURCE_CLOSE_FAILED")
+}
+func (e *Engine) available() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !e.closed && e.closeErr == nil
+}
+func (e *Engine) retainCandidate(candidate any, err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.failedCandidates[candidate] = err
+	e.closeErr = errors.New("POLICY_CLEANUP_FAILED")
+}
 func (e *Engine) ResourceAcquireCount() string {
-	return strconv.FormatUint(e.resourceAttempts.Load(), 10)
+	return strconv.FormatUint(actualResourceAttempts.Load(), 10)
 }
