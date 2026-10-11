@@ -184,9 +184,23 @@ func (doq *dnsOverQUIC) exchangeQUIC(ctx context.Context, msg *D.Msg) (resp *D.M
 		return nil, err
 	}
 
-	stop := contextutils.AfterFunc(ctx, func() {
+	cancelIO := func() {
 		_ = stream.SetDeadline(time.Now()) // cancel any read or write operation on this stream
-	})
+	}
+	var stop func() bool
+	if resolverOwner(ctx) == nil {
+		stop = contextutils.AfterFunc(ctx, cancelIO)
+	} else {
+		callbackDone := make(chan struct{})
+		stopCallback := context.AfterFunc(ctx, func() { defer close(callbackDone); cancelIO() })
+		stop = func() bool {
+			stopped := stopCallback()
+			if !stopped {
+				<-callbackDone
+			}
+			return stopped
+		}
+	}
 	defer stop()
 
 	_, err = stream.Write(buf[:2+len(b)])
