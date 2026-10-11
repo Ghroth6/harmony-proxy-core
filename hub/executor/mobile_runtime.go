@@ -83,9 +83,9 @@ func PublishMobilePolicy(ctx context.Context, cfg *config.Config) error {
 	if err := cfg.BindMobilePolicyHealthChecks(ctx); err != nil {
 		return err
 	}
-	disabled, err := sniffer.NewDispatcher(&sniffer.Config{Enable: false})
+	dispatcher, err := sniffer.NewDispatcher(cfg.Sniffer)
 	if err != nil {
-		return errors.New("mobile sniffer configuration")
+		return errors.New("POLICY_SNIFFER_INVALID")
 	}
 	mux.Lock()
 	defer mux.Unlock()
@@ -109,7 +109,7 @@ func PublishMobilePolicy(ctx context.Context, cfg *config.Config) error {
 	updateProxies(cfg.Proxies, cfg.Providers)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
 	updateHosts(cfg.Hosts)
-	tunnel.UpdateSniffer(disabled)
+	tunnel.UpdateSniffer(dispatcher)
 	tunnel.SetMode(cfg.General.Mode)
 	tunnel.SetFindProcessMode(cfg.General.FindProcessMode)
 	// Internal management requests inherit the actual run context. This installs

@@ -221,6 +221,7 @@ type Config struct {
 	mobileNetwork         *mobileCandidateDialer
 	mobilePolicy          *contract.PreparedContext
 	mobilePolicyResources *MobilePolicyResources
+	mobilePolicyFailure   func(string)
 	mobileDNS             *mobileDNS
 }
 
@@ -1611,13 +1612,18 @@ func parseDNS(rawCfg *RawConfig, ruleProviders map[string]P.RuleProvider, inputs
 		dnsCfg.FakeIPTTL = cfg.FakeIPTTL
 
 		if dnsCfg.FakeIPRange.IsValid() {
+			var scoped *fakeip.ScopedPersistence
 			if len(inputs) != 0 && rawCfg.Profile.StoreFakeIP {
-				return nil, errors.New("POLICY_FAKEIP_PERSISTENCE_NOT_READY")
+				if inputs[0] == nil || inputs[0].FakeIPState == nil {
+					return nil, errors.New("POLICY_FAKEIP_STATE_INVALID")
+				}
+				scoped = inputs[0].FakeIPState
 			}
 			pool, err := fakeip.New(fakeip.Options{
-				IPNet:       dnsCfg.FakeIPRange,
-				Size:        1000,
-				Persistence: rawCfg.Profile.StoreFakeIP,
+				IPNet:             dnsCfg.FakeIPRange,
+				Size:              1000,
+				Persistence:       rawCfg.Profile.StoreFakeIP,
+				ScopedPersistence: scoped,
 			})
 			if err != nil {
 				return nil, err
@@ -1626,13 +1632,18 @@ func parseDNS(rawCfg *RawConfig, ruleProviders map[string]P.RuleProvider, inputs
 		}
 
 		if dnsCfg.FakeIPRange6.IsValid() {
+			var scoped *fakeip.ScopedPersistence
 			if len(inputs) != 0 && rawCfg.Profile.StoreFakeIP {
-				return nil, errors.New("POLICY_FAKEIP_PERSISTENCE_NOT_READY")
+				if inputs[0] == nil || inputs[0].FakeIPState == nil {
+					return nil, errors.New("POLICY_FAKEIP_STATE_INVALID")
+				}
+				scoped = inputs[0].FakeIPState
 			}
 			pool6, err := fakeip.New(fakeip.Options{
-				IPNet:       dnsCfg.FakeIPRange6,
-				Size:        1000,
-				Persistence: rawCfg.Profile.StoreFakeIP,
+				IPNet:             dnsCfg.FakeIPRange6,
+				Size:              1000,
+				Persistence:       rawCfg.Profile.StoreFakeIP,
+				ScopedPersistence: scoped,
 			})
 			if err != nil {
 				return nil, err
@@ -1853,7 +1864,7 @@ func parseTuicServer(rawTuic RawTuicServer, general *General) error {
 	return nil
 }
 
-func parseSniffer(snifferRaw RawSniffer, ruleProviders map[string]P.RuleProvider) (*sniffer.Config, error) {
+func parseSniffer(snifferRaw RawSniffer, ruleProviders map[string]P.RuleProvider, parsers ...RC.ParseRuleFunc) (*sniffer.Config, error) {
 	snifferConfig := &sniffer.Config{
 		Enable:          snifferRaw.Enable,
 		ForceDnsMapping: snifferRaw.ForceDnsMapping,
@@ -1916,25 +1927,25 @@ func parseSniffer(snifferRaw RawSniffer, ruleProviders map[string]P.RuleProvider
 
 	snifferConfig.Sniffers = loadSniffer
 
-	forceDomain, err := parseDomain(snifferRaw.ForceDomain, nil, "sniffer.force-domain", ruleProviders)
+	forceDomain, err := parseDomain(snifferRaw.ForceDomain, nil, "sniffer.force-domain", ruleProviders, parsers...)
 	if err != nil {
 		return nil, err
 	}
 	snifferConfig.ForceDomain = forceDomain
 
-	skipSrcAddress, err := parseIPCIDR(snifferRaw.SkipSrcAddress, nil, "sniffer.skip-src-address", ruleProviders)
+	skipSrcAddress, err := parseIPCIDR(snifferRaw.SkipSrcAddress, nil, "sniffer.skip-src-address", ruleProviders, parsers...)
 	if err != nil {
 		return nil, fmt.Errorf("error in skip-src-address, error:%w", err)
 	}
 	snifferConfig.SkipSrcAddress = skipSrcAddress
 
-	skipDstAddress, err := parseIPCIDR(snifferRaw.SkipDstAddress, nil, "sniffer.skip-dst-address", ruleProviders)
+	skipDstAddress, err := parseIPCIDR(snifferRaw.SkipDstAddress, nil, "sniffer.skip-dst-address", ruleProviders, parsers...)
 	if err != nil {
 		return nil, fmt.Errorf("error in skip-dst-address, error:%w", err)
 	}
 	snifferConfig.SkipDstAddress = skipDstAddress
 
-	skipDomain, err := parseDomain(snifferRaw.SkipDomain, nil, "sniffer.skip-domain", ruleProviders)
+	skipDomain, err := parseDomain(snifferRaw.SkipDomain, nil, "sniffer.skip-domain", ruleProviders, parsers...)
 	if err != nil {
 		return nil, err
 	}

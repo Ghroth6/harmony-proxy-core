@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/metacubex/mihomo/component/fakeip"
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
@@ -29,6 +30,13 @@ func (e *Engine) prepareProviders(raw *config.RawConfig, prepared contract.Prepa
 	}
 	session.geo = geo
 	inputs.Services = session
+	if raw.Profile.StoreFakeIP && raw.DNS.Enable && raw.DNS.EnhancedMode == C.DNSFakeIP {
+		inputs.FakeIPState, err = fakeip.NewScopedPersistence(e.root, prepared.InputDigest)
+		if err != nil {
+			return inputs, err
+		}
+		session.fakeIPState = inputs.FakeIPState
+	}
 	inputs.ParseRule = rules.ScopedParser(inputs.RuleProviders, parseGeo)
 	names := make([]string, 0, len(raw.RuleProvider))
 	for name := range raw.RuleProvider {

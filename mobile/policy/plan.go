@@ -282,6 +282,9 @@ func planGroups(raw *config.RawConfig, inputDigest string) ([]contract.Group, st
 		if kind != "select" && kind != "url-test" && kind != "fallback" {
 			return nil, "POLICY_GROUP_UNSUPPORTED"
 		}
+		if code := groupFields(group, kind); code != "" {
+			return nil, code
+		}
 		members, ok := group["proxies"].([]any)
 		if !ok {
 			return nil, "POLICY_GROUP_UNSUPPORTED"
@@ -301,6 +304,60 @@ func planGroups(raw *config.RawConfig, inputDigest string) ([]contract.Group, st
 		groups = append(groups, item)
 	}
 	return groups, ""
+}
+
+// Group maps bypass yaml.KnownFields and the upstream decoder is deliberately
+// weak. Gate every declared value before that decoder can drop or coerce it.
+func groupFields(group map[string]any, kind string) string {
+	for key, value := range group {
+		switch key {
+		case "name", "type", "url", "empty-fallback", "filter", "exclude-filter", "exclude-type", "icon":
+			if _, ok := value.(string); !ok {
+				return "POLICY_GROUP_INVALID"
+			}
+		case "expected-status":
+			if _, ok := value.(string); !ok {
+				if status, ok := value.(int); !ok || status < 0 || status > 65535 {
+					return "POLICY_GROUP_INVALID"
+				}
+			}
+		case "default-selected":
+			if kind != "select" {
+				return "POLICY_GROUP_PARAMETER_UNSUPPORTED"
+			}
+			if _, ok := value.(string); !ok {
+				return "POLICY_GROUP_INVALID"
+			}
+		case "tolerance":
+			if kind != "url-test" {
+				return "POLICY_GROUP_PARAMETER_UNSUPPORTED"
+			}
+			n, ok := value.(int)
+			if !ok || n < 0 || n > 65535 {
+				return "POLICY_GROUP_INVALID"
+			}
+		case "interval", "timeout", "max-failed-times":
+			n, ok := value.(int)
+			if !ok || n < 0 {
+				return "POLICY_GROUP_INVALID"
+			}
+		case "lazy", "disable-udp", "hidden":
+			if _, ok := value.(bool); !ok {
+				return "POLICY_GROUP_INVALID"
+			}
+		case "proxies":
+			if _, ok := value.([]any); !ok {
+				return "POLICY_GROUP_INVALID"
+			}
+		case "use", "include-all", "include-all-proxies", "include-all-providers":
+			// These alter the effective member list, which this exact opaque
+			// original-member contract does not yet construct or expose.
+			return "POLICY_GROUP_PARAMETER_UNSUPPORTED"
+		default:
+			return "POLICY_GROUP_PARAMETER_UNSUPPORTED"
+		}
+	}
+	return ""
 }
 
 func safeName(name string) string {
@@ -433,6 +490,20 @@ func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest st
 				if text, ok := entry.(string); ok {
 					scanRule(text)
 				}
+			}
+		}
+	}
+	for _, value := range append(append([]string{}, raw.Sniffer.ForceDomain...), raw.Sniffer.SkipDomain...) {
+		if strings.HasPrefix(strings.ToLower(value), "geosite:") {
+			flags["geosite"] = true
+		}
+	}
+	for _, value := range append(append([]string{}, raw.Sniffer.SkipSrcAddress...), raw.Sniffer.SkipDstAddress...) {
+		if strings.HasPrefix(strings.ToLower(value), "geoip:") {
+			if raw.GeodataMode {
+				flags["geoip"] = true
+			} else {
+				flags["mmdb"] = true
 			}
 		}
 	}

@@ -41,18 +41,31 @@ type Pool struct {
 
 // Lookup return a fake ip with host
 func (p *Pool) Lookup(host string) netip.Addr {
+	ip, _ := p.LookupWithError(host)
+	return ip
+}
+
+// LookupWithError makes synchronous scoped persistence failures observable at
+// the DNS reply boundary. Legacy memory/global-cache behavior is unchanged.
+func (p *Pool) LookupWithError(host string) (netip.Addr, error) {
 	p.mux.Lock()
 	defer p.mux.Unlock()
 
 	// RFC4343: DNS Case Insensitive, we SHOULD return result with all cases.
 	host = strings.ToLower(host)
+	if scoped, ok := p.store.(*scopedStore); ok {
+		if len(host) == 0 || len(host) > 253 {
+			return netip.Addr{}, ErrStateFailed
+		}
+		return scoped.lookup(p, host)
+	}
 	if ip, exist := p.store.GetByHost(host); exist {
-		return ip
+		return ip, nil
 	}
 
 	ip := p.get(host)
 	p.store.PutByHost(host, ip)
-	return ip
+	return ip, nil
 }
 
 // LookBack return host with the fake ip
@@ -91,13 +104,18 @@ func (p *Pool) CloneFrom(o *Pool) {
 	o.store.CloneTo(p.store)
 }
 
-func (p *Pool) get(host string) netip.Addr {
+func (p *Pool) next() netip.Addr {
 	p.offset = p.offset.Next()
 
 	if !p.offset.Less(p.last) {
 		p.cycle = true
 		p.offset = p.first
 	}
+	return p.offset
+}
+
+func (p *Pool) get(host string) netip.Addr {
+	p.next()
 
 	if p.cycle || p.store.Exist(p.offset) {
 		p.store.DelByIP(p.offset)
@@ -153,6 +171,10 @@ type Options struct {
 	// Persistence will save the data to disk.
 	// Size will not work and record will be fully stored.
 	Persistence bool
+
+	// ScopedPersistence replaces the daemon-global cache only when supplied by
+	// the mobile candidate's trusted resource owner. It stays inactive in New.
+	ScopedPersistence *ScopedPersistence
 }
 
 // New return Pool instance
@@ -177,7 +199,15 @@ func New(options Options) (*Pool, error) {
 		ipnet:   options.IPNet,
 	}
 	if options.Persistence {
-		pool.store = newCachefileStore(cachefile.Cache(), options.IPNet)
+		if options.ScopedPersistence != nil {
+			var err error
+			pool.store, err = options.ScopedPersistence.register(pool)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			pool.store = newCachefileStore(cachefile.Cache(), options.IPNet)
+		}
 	} else {
 		pool.store = newMemoryStore(options.Size)
 	}

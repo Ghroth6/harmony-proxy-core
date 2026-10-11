@@ -203,6 +203,9 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.failure("CANDIDATE_CONSTRUCT")
 		return
 	}
+	if sourcePolicy {
+		engine.cfg.BindMobilePolicyFailure(t.failure)
+	}
 	if t.ctx.Err() != nil {
 		return
 	}

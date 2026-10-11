@@ -79,8 +79,9 @@ func activatePublicPolicy(t *testing.T, cfg *config.Config, servers []string, pr
 		t.Fatal("actual platform snapshot rejected")
 	}
 	ctx, cancel := context.WithCancel(protection.WithGeneration(context.Background(), generation))
+	marked := tunnel.WithMobilePolicyRouting(ctx)
 	tunnel.EnableForwardingLifecycle()
-	if err := tunnel.PrepareForwarding(ctx, generation); err != nil {
+	if err := tunnel.PrepareForwarding(marked, generation); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -102,13 +103,13 @@ func activatePublicPolicy(t *testing.T, cfg *config.Config, servers []string, pr
 	if err := cfg.ActivateMobileNetwork(generation); err != nil {
 		t.Fatal(err)
 	}
-	if err := executor.PublishMobilePolicy(ctx, cfg); err != nil {
+	if err := executor.PublishMobilePolicy(marked, cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := tunnel.ActivateForwarding(generation); err != nil {
 		t.Fatal(err)
 	}
-	if err := cfg.ActivateMobilePolicyDNS(ctx); err != nil {
+	if err := cfg.ActivateMobilePolicyDNS(marked); err != nil {
 		t.Fatal(err)
 	}
 	if len(deferGroups) == 0 || !deferGroups[0] {
@@ -116,7 +117,7 @@ func activatePublicPolicy(t *testing.T, cfg *config.Config, servers []string, pr
 			t.Fatal(err)
 		}
 	}
-	return ctx, generation
+	return marked, generation
 }
 
 func TestSourceDomainNodeUsesCapturedProxyDNSRatherThanSystemOrMutableGlobal(t *testing.T) {

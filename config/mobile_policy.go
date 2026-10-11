@@ -7,6 +7,7 @@ import (
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/fakeip"
 	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
@@ -25,6 +26,7 @@ type MobilePolicyResources struct {
 	RuleProviders map[string]P.RuleProvider
 	ParseRule     RC.ParseRuleFunc
 	Services      MobilePolicyServices
+	FakeIPState   *fakeip.ScopedPersistence
 }
 
 // Builtins must obey the same preparation fence as remote adapters. Groups
@@ -65,6 +67,14 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 		for _, provider := range cfg.RuleProviders {
 			owned.AddProvider(provider)
 		}
+		if inputs[0].FakeIPState != nil {
+			inputs[0].FakeIPState.SetFailureHandler(func() {
+				cfg.CancelMobilePolicyServices()
+				if cfg.mobilePolicyFailure != nil {
+					cfg.mobilePolicyFailure("POLICY_FAKEIP_STATE_FAILED")
+				}
+			})
+		}
 	}
 	defer func() {
 		if recover() != nil {
@@ -87,6 +97,10 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 		return cfg, &MobileValidationError{Code: "POLICY_GENERAL_INVALID"}
 	}
 	cfg.Profile = &Profile{StoreSelected: raw.Profile.StoreSelected, StoreFakeIP: raw.Profile.StoreFakeIP, Tracing: raw.Profile.Tracing}
+	cfg.Sniffer, err = parseSniffer(raw.Sniffer, cfg.RuleProviders, parse)
+	if err != nil {
+		return cfg, &MobileValidationError{Code: "POLICY_SNIFFER_INVALID"}
+	}
 	cfg.Hosts, err = parseHosts(raw)
 	if err != nil {
 		return cfg, &MobileValidationError{Code: "POLICY_HOSTS_INVALID"}
@@ -181,12 +195,22 @@ func (c *Config) WaitMobilePolicyServices(ctx context.Context) error {
 		}
 	}
 	if c != nil && c.mobileDNS != nil {
-		errs = append(errs, c.mobileDNS.owner.Wait(ctx))
+		if err := c.mobileDNS.owner.Wait(ctx); err != nil {
+			// The DB is borrowed by real DNS handlers. A timed-out DNS wait must
+			// not close that store or release the engine root underneath them.
+			return errors.Join(append(errs, err)...)
+		}
 	}
 	if c != nil && c.mobilePolicyResources != nil && c.mobilePolicyResources.Services != nil {
 		errs = append(errs, c.mobilePolicyResources.Services.Wait(ctx))
 	}
 	return errors.Join(errs...)
+}
+
+// BindMobilePolicyFailure reports sticky state failures to the actual runtime
+// owner. It is installed before activation; static callers need no handler.
+func (c *Config) BindMobilePolicyFailure(handler func(string)) {
+	c.mobilePolicyFailure = handler
 }
 
 // A mobile publication binds health checks but starts none. Their timers and

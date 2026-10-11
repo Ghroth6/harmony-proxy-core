@@ -116,6 +116,11 @@ func (c *Config) ActivateMobilePolicyDNS(root context.Context) error {
 	if c.mobileDNS.activated {
 		return nil
 	}
+	if c.mobilePolicyResources != nil && c.mobilePolicyResources.FakeIPState != nil {
+		if err := c.mobilePolicyResources.FakeIPState.Activate(); err != nil {
+			return err
+		}
+	}
 	scope, err := forwarding.Context(c.mobileNetwork.generation.Load())
 	if err != nil {
 		return err

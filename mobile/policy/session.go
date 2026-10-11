@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/metacubex/mihomo/component/fakeip"
 	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/component/platformnetwork"
@@ -21,6 +22,7 @@ type resourceSession struct {
 	prepared                      contract.PreparedContext
 	providers                     map[string]P.RuleProvider
 	geo                           *geodata.Prepared
+	fakeIPState                   *fakeip.ScopedPersistence
 	mu                            sync.Mutex
 	activated, retired            bool
 	generation, networkGeneration uint64
@@ -124,6 +126,9 @@ func (s *resourceSession) Cancel() {
 			owner.Cancel()
 		}
 	}
+	if s.fakeIPState != nil {
+		s.fakeIPState.Cancel()
+	}
 }
 func (s *resourceSession) Wait(ctx context.Context) error {
 	var errorsFound []error
@@ -147,6 +152,15 @@ func (s *resourceSession) Wait(ctx context.Context) error {
 	s.mu.Unlock()
 	if err := errors.Join(errorsFound...); err != nil {
 		return err
+	}
+	if s.fakeIPState != nil {
+		if err := s.fakeIPState.Wait(ctx); err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				s.recordClose(err)
+				s.engine.retainClose(s.fakeIPState, err)
+			}
+			return err
+		}
 	}
 	if s.geo != nil {
 		if err := s.geo.Close(); err != nil {

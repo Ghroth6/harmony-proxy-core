@@ -583,8 +583,31 @@ to a mutable global service during an operation. DNS activation precedes client
 ingress; cancellation closes admission before waiters join, and retirement
 removes the old published resolver, fake-IP mapper, service and source hosts only
 after its actual workers/transports have joined. The separate runtime client
-implementation connects virtual DNS, bounded UDP and dual IPv6 ingress; source
-Start remains gated until that complete connection is present in the build.
+implementation connects virtual DNS, bounded UDP and dual IPv6 ingress in the
+`with_gvisor` build; a build without that engine cannot start a source policy.
+
+Original `sniffer` settings construct the pinned HTTP/TLS/QUIC dispatcher with
+the same candidate's scoped GEO and rule-provider parser. Force/skip matchers,
+pure-IP and DNS mapping decisions, ports and global/per-protocol destination
+overrides retain their original semantics. Sniffer resource dependencies enter
+the fixed Plan closure; preparation neither starts a dispatcher nor fetches a
+resource. Publication installs it for the actual owned TCP handler and UDP/NAT
+sender. Their cancellation and join also retire pending sniff reads and QUIC
+senders. Fixed selected-node publication continues to disable sniffing.
+
+`profile.store-fake-ip` uses `component/fakeip.ScopedPersistence`, not the daemon
+cachefile singleton. It borrows the Engine's captured root at the fixed path
+`state/fakeip/<raw-sha256-hex>.db`; candidate preferences and run generations do
+not change that identity. IPv4/IPv6 prefixes have independent buckets. Pure
+Plan/Validate/Build register inactive pools without creating a directory or DB;
+explicit activation restores them before opening DNS admission. The DB has a
+64 MiB bound. Mapping updates commit synchronously before returning a DNS answer.
+A real read/write failure returns `POLICY_FAKEIP_STATE_FAILED`, cancels services
+and fails the actual runtime rather than acknowledging an uncommitted mapping.
+DNS workers join before the resource session Syncs/Closes the real database.
+`policy-services` reports that Close result; unknown Close retains the actual DB,
+file and root-owning session and blocks subsequent candidates. Engine.Close
+refuses both prepared and active owners until successful Discard/retirement.
 
 Synthetic public host evidence covers strict wire decoding, independent policy
 identities, actual fixed provider construction/retirement, manifest-scoped DAT
