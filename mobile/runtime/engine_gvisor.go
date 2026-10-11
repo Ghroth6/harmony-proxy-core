@@ -107,6 +107,12 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 			t.stop()
 		}
 	}()
+	// A shape-only preparedPolicy cannot authorize resources or forwarding.
+	// Replace this gate only with the typed policy identity/builder path.
+	if target.PreparedPolicy != nil {
+		t.failure("POLICY_RUNTIME_NOT_READY")
+		return
+	}
 	validationReceipt := validation.Validate(target.OperationID, input)
 	covered := false
 	extended := false
