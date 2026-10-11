@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"github.com/metacubex/mihomo/mobile/network"
+	"github.com/metacubex/mihomo/mobile/policy"
 	"github.com/metacubex/mihomo/mobile/protection"
 	"strconv"
 	"sync"
@@ -18,6 +19,7 @@ type Manager struct {
 	lastTransfer   uint64
 	fault          bool
 	gate           *protection.Gate
+	policy         *policy.Engine
 }
 type Transfer struct {
 	manager         *Manager
@@ -43,6 +45,14 @@ func NewManager(system DescriptorSystem, gate ...*protection.Gate) *Manager {
 	if len(gate) > 0 {
 		m.gate = gate[0]
 	}
+	return m
+}
+
+// NewManagerWithPolicy binds the already opened application-owned resource
+// root. No root/path comes from a Start request, and node callers remain valid.
+func NewManagerWithPolicy(system DescriptorSystem, gate *protection.Gate, owner *policy.Engine) *Manager {
+	m := NewManager(system, gate)
+	m.policy = owner
 	return m
 }
 func absent(generation, transfer uint64) Receipt {
