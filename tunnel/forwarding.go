@@ -57,3 +57,10 @@ type ownedPacket struct {
 }
 
 func (p *ownedPacket) Drop() { p.once.Do(func() { p.UDPPacket.Drop(); p.finish() }) }
+
+func (p *ownedPacket) RetainUDPFlow() (func(), func(error)) {
+	if owner, ok := p.UDPPacket.(C.UDPFlowOwner); ok {
+		return owner.RetainUDPFlow()
+	}
+	return nil, nil
+}
