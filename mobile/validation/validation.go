@@ -124,6 +124,9 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 	}
 	receipt.Category = "pass"
 	transport := "static-ss-aes-128-gcm"
+	if len(raw.Proxy) == 1 && raw.Proxy[0]["type"] == "ss" && raw.Proxy[0]["cipher"] == "chacha20-ietf-poly1305" {
+		transport = "static-ss-chacha20-ietf-poly1305"
+	}
 	if len(raw.Proxy) == 1 && raw.Proxy[0]["type"] == "trojan" {
 		transport = "static-trojan-tcp-tls-sni"
 	}

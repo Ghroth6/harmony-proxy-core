@@ -122,7 +122,7 @@ func inspectEntries(sequence *yaml.Node, field string, proxy bool) []Diagnostic 
 			if key.Value == "type" && value.Kind == yaml.ScalarNode && ((proxy && value.Value != "ss" && value.Value != "trojan") || (!proxy && value.Value != "select")) {
 				return scopeDiagnostic("UNSUPPORTED_CAPABILITY", child, "This node or group capability has not been checked.")
 			}
-			if proxy && key.Value == "cipher" && value.Kind == yaml.ScalarNode && value.Value != "aes-128-gcm" {
+			if proxy && key.Value == "cipher" && value.Kind == yaml.ScalarNode && value.Value != "aes-128-gcm" && value.Value != "chacha20-ietf-poly1305" {
 				return scopeDiagnostic("UNSUPPORTED_CAPABILITY", child, "This encryption capability has not been checked.")
 			}
 		}

@@ -44,7 +44,7 @@ func BuildMobileFixedCandidate(raw *RawConfig) (cfg *Config, err error) {
 			return fail()
 		}
 	case "ss":
-		if node["cipher"] != "aes-128-gcm" {
+		if node["cipher"] != "aes-128-gcm" && node["cipher"] != "chacha20-ietf-poly1305" {
 			return fail()
 		}
 		for key, value := range node {

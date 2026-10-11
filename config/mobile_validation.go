@@ -72,8 +72,20 @@ func ValidateMobileStatic(raw *RawConfig) (err error) {
 				return &MobileValidationError{Code: "PROXY_INVALID", Field: path + ".udp"}
 			}
 		}
-		if proxy["type"] != "ss" || proxy["cipher"] != "aes-128-gcm" {
+		if proxy["type"] != "ss" || (proxy["cipher"] != "aes-128-gcm" && proxy["cipher"] != "chacha20-ietf-poly1305") {
 			return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED", Field: "proxies"}
+		}
+		// This added cipher is audited only for the same fixed IPv4/TCP family
+		// constructed at runtime; the older AES static scope stays unchanged.
+		if proxy["cipher"] == "chacha20-ietf-poly1305" {
+			if proxy["password"] == "" {
+				return &MobileValidationError{Code: "PROXY_INVALID", Field: path + ".password"}
+			}
+			address, parseErr := netip.ParseAddr(proxy["server"].(string))
+			if !mobileFixedShape(raw) || parseErr != nil || !address.Is4() || address.IsUnspecified() || address.IsMulticast() ||
+				(proxy["udp"] != nil && proxy["udp"] != false) {
+				return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED", Field: "proxies"}
+			}
 		}
 		for field := range proxy {
 			switch field {

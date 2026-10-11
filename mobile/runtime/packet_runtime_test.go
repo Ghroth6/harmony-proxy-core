@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -103,6 +104,29 @@ func register(generation uint64, callback protection.Callback) {
 	})
 	if productionGate.Register(generation, callback) != protection.Success {
 		panic("gate registration")
+	}
+}
+
+func TestSelectedChaChaInputStartsTheRealMobileEngineAndStopsNormally(t *testing.T) {
+	input := []byte(strings.Replace(string(fixed), "aes-128-gcm", "chacha20-ietf-poly1305", 1))
+	generation := nextGeneration()
+	register(generation, func(uint64, uint64, uintptr) int32 { return protection.Success })
+	var fields map[string]any
+	json.Unmarshal(fixedRequest(generation, 1), &fields)
+	sum := sha256.Sum256(input)
+	fields["inputDigest"] = "sha256:" + hex.EncodeToString(sum[:])
+	request, _ := json.Marshal(fields)
+	system := newPacketDescriptors()
+	manager := R.NewManager(system, &productionGate)
+	started := manager.Start(manager.Consume(generation, 1, 9), input, request)
+	stopped := manager.Stop(generation)
+	if started.Outcome != "running" || !started.ForwardingActive || stopped.Phase != "stopped" || stopped.Cleanup != "complete" || stopped.PendingOwners != (R.PendingOwners{}) {
+		t.Fatalf("real selected-cipher engine/normal-stop path failed: start=%+v stop=%+v", started, stopped)
+	}
+	for _, fd := range []int{9, 40, 41} {
+		if system.closes[fd] != 1 {
+			t.Fatalf("descriptor %d close count %d", fd, system.closes[fd])
+		}
 	}
 }
 

@@ -157,6 +157,34 @@ func TestFixedRuntimeCoverageRequiresRealStaticChecks(t *testing.T) {
 	}
 }
 
+func TestSelectedChaChaNodeGetsItsOwnRealCoverage(t *testing.T) {
+	input := strings.Replace(runtimeInput, "aes-128-gcm", "chacha20-ietf-poly1305", 1)
+	result := validation.Validate("selected-chacha", []byte(input))
+	if result.Category != "pass" || !slices.Contains(result.Covered, "static-ss-chacha20-ietf-poly1305") || !slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") || slices.Contains(result.Covered, "static-ss-aes-128-gcm") {
+		t.Fatalf("selected cipher needs accurate real construction coverage: %#v", result)
+	}
+}
+
+func TestSelectedChaChaScopeDoesNotCoverOtherCiphersOrConfigurationShapes(t *testing.T) {
+	input := strings.Replace(runtimeInput, "aes-128-gcm", "chacha20-ietf-poly1305", 1)
+	for _, mutation := range []struct{ name, before, after string }{
+		{"other cipher", "chacha20-ietf-poly1305", "aes-256-gcm"},
+		{"plugin", "    cipher:", "    plugin: obfs\n    cipher:"},
+		{"UDP", "    port: 8388", "    udp: true\n    port: 8388"},
+		{"DNS endpoint", "192.0.2.1", "node.example.invalid"},
+		{"direct route", "MATCH,m1b-proxy", "MATCH,DIRECT"},
+		{"DOMAIN rule", "MATCH,m1b-proxy", "DOMAIN,example.invalid,m1b-proxy"},
+		{"second node", "proxy-groups:", "  - {name: second, type: ss, server: 192.0.2.2, port: 8388, cipher: chacha20-ietf-poly1305, password: documentation-only}\nproxy-groups:"},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			result := validation.Validate("selected-chacha-scope", []byte(strings.Replace(input, mutation.before, mutation.after, 1)))
+			if result.Category != "incomplete" || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") || slices.Contains(result.Covered, "static-ss-chacha20-ietf-poly1305") {
+				t.Fatalf("selected cipher widened the fixed configuration contract: %#v", result)
+			}
+		})
+	}
+}
+
 func TestRuntimeCoverageExcludesDifferentRouteOrUnsupportedTransport(t *testing.T) {
 	cases := []struct{ name, before, after string }{
 		{"DNS endpoint", "192.0.2.1", "example.invalid"},

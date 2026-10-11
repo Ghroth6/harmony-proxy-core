@@ -267,17 +267,34 @@ the entire historical patch set.
 
 The unchanged ABI 1 validation operation appends `m1b-fixed-ipv4-tcp`
 only after original-field scope, real constructor/reference checks and resource
-cleanup succeed. The fixed family allows one IPv4 SS/aes-128-gcm node, or one
+cleanup succeed. The fixed family allows one IPv4 SS/aes-128-gcm or
+SS/chacha20-ietf-poly1305 node, or one
 IPv4 Trojan/TCP node with TLS and explicit DNS-hostname SNI, each with a nonempty
 password and UDP absent/false; one select containing exactly that node; and
 exactly MATCH to that group without a DIRECT fallback. SS retains its broader
-M1a static scope, including DOMAIN rules, while Trojan is accepted only in this
+M1a AES static scope, including DOMAIN rules, while ChaCha and Trojan are accepted only in this
 single fixed shape. `mobile/validation/runtime_scope.go` checks decoded content;
 original-field gating still rejects every additional configuration key. The
 runtime token never means runtime defaults, platform policy, authorization,
 socket protection, reachability or resource setup have been checked. Generic
 M1a pass remains available without this token. No new global configuration,
 listener or download path was introduced.
+
+The added ChaCha scope emits `static-ss-chacha20-ietf-poly1305`, never the AES
+marker. The original YAML gate, real static validation and independent runtime
+constructor each keep the one-node IPv4/TCP/select/MATCH restriction; plugins,
+DNS endpoints, UDP, other ciphers and multi-node shapes remain unsupported.
+Construction reuses Mihomo's existing Shadowsocks implementation. Application
+subscription recognition, full entry preview, separate local base and selection
+identity remain in the coordinating application repository. Only its exact
+composed bytes and existing ABI identity fields enter this core.
+
+`TestSelectedChaChaNodeGetsItsOwnRealCoverage` checks real construction and the
+accurate protocol marker; `TestSelectedChaChaScopeDoesNotCoverOtherCiphersOrConfigurationShapes`
+checks the added scope stays narrow. The `with_gvisor` runtime test starts the
+real fixed mobile engine and normally stops it with injected descriptor syscalls.
+These host checks perform no live proxy request and do not prove target-device
+protection, a remote node, or normal target TUN cleanup.
 
 Trojan original fields are exactly `name/type/server/port/password/sni` and
 optional `udp:false`, `network:tcp`, and boolean `skip-cert-verify`. Defaults for the
@@ -373,7 +390,7 @@ unmarked forwarding or infer that a lost marker is management. P3 must verify
 that propagation before admitting traffic. Required protection rejects a custom
 `NetDialer` that cannot expose the physical socket boundary. The hook preserves
 the existing global hook and interface/mark options rather than replacing them.
-M1b's selected SS/aes-128-gcm and fixed Trojan/TCP/TLS/SNI IPv4 transports use
+The selected SS/aes-128-gcm or SS/chacha20-ietf-poly1305 and fixed Trojan/TCP/TLS/SNI IPv4 transports use
 this real dialer; this
 increment does not claim all other protocols are integrated.
 
