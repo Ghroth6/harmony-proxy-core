@@ -14,6 +14,7 @@ type RuleSet struct {
 	adapter          string
 	isSrc            bool
 	noResolveIP      bool
+	boundProvider    P.RuleProvider
 }
 
 func (rs *RuleSet) RuleType() C.RuleType {
@@ -60,8 +61,19 @@ func (rs *RuleSet) ProviderNames() []string {
 }
 
 func (rs *RuleSet) getProvider() (P.RuleProvider, bool) {
+	if rs.boundProvider != nil {
+		return rs.boundProvider, true
+	}
 	pp, ok := tunnel.RuleProviders()[rs.ruleProviderName]
 	return pp, ok
+}
+
+func NewBoundRuleSet(name, adapter string, isSrc, noResolve bool, provider P.RuleProvider) (*RuleSet, error) {
+	rule, err := NewRuleSet(name, adapter, isSrc, noResolve)
+	if err == nil {
+		rule.boundProvider = provider
+	}
+	return rule, err
 }
 
 func NewRuleSet(ruleProviderName string, adapter string, isSrc bool, noResolveIP bool) (*RuleSet, error) {

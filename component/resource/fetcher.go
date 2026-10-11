@@ -32,22 +32,26 @@ func WithDiscard[V any](discard func(V) error) FetcherOption[V] {
 }
 
 type Fetcher[V any] struct {
-	ctx          context.Context
-	ctxCancel    context.CancelFunc
-	name         string
-	vehicle      P.Vehicle
-	bundleFile   BundleFile
-	updatedAt    time.Time
-	hash         utils.HashType
-	parser       Parser[V]
-	interval     time.Duration
-	onUpdate     func(V)
-	discard      func(V) error
-	loadBufMutex sync.Mutex
-	stateMutex   sync.RWMutex
-	startMutex   sync.Mutex
-	started      bool
-	backoff      slowdown.Backoff
+	ctx           context.Context
+	ctxCancel     context.CancelFunc
+	name          string
+	vehicle       P.Vehicle
+	bundleFile    BundleFile
+	updatedAt     time.Time
+	hash          utils.HashType
+	parser        Parser[V]
+	interval      time.Duration
+	onUpdate      func(V)
+	discard       func(V) error
+	loadBufMutex  sync.Mutex
+	stateMutex    sync.RWMutex
+	startMutex    sync.Mutex
+	started       bool
+	prepared      bool
+	networkRoot   context.Context
+	networkCancel context.CancelFunc
+	updateMutex   sync.Mutex
+	backoff       slowdown.Backoff
 
 	// lifecycleMutex protects admission and short commits, never downloads/parsers.
 	lifecycleMutex sync.Mutex
@@ -107,6 +111,9 @@ func (f *Fetcher[V]) Cancel() {
 	}
 	f.retired = true
 	f.ctxCancel()
+	if f.networkCancel != nil {
+		f.networkCancel()
+	}
 	if f.active == 0 {
 		close(f.done)
 	}
@@ -156,6 +163,12 @@ func (f *Fetcher[V]) recordCleanupError(err error) bool {
 }
 
 func (f *Fetcher[V]) Initial() (V, error) {
+	f.startMutex.Lock()
+	prepared := f.prepared
+	f.startMutex.Unlock()
+	if prepared {
+		return lo.Empty[V](), errors.New("prepared resource has no implicit initial acquisition")
+	}
 	if err := f.begin(); err != nil {
 		return lo.Empty[V](), err
 	}
@@ -238,10 +251,31 @@ func (f *Fetcher[V]) Update() (V, bool, error) {
 		return lo.Empty[V](), false, err
 	}
 	defer f.finish()
+	f.startMutex.Lock()
+	prepared := f.prepared
+	f.startMutex.Unlock()
+	if prepared {
+		f.updateMutex.Lock()
+		defer f.updateMutex.Unlock()
+		value, same, err := f.update()
+		if observer, ok := f.vehicle.(interface{ PreparedUpdateResult(bool, error) }); ok {
+			observer.PreparedUpdateResult(same, err)
+		}
+		return value, same, err
+	}
 	return f.update()
 }
 func (f *Fetcher[V]) update() (V, bool, error) {
-	ctx, finish, err := forwarding.AcquireManagementNetwork(f.ctx)
+	f.startMutex.Lock()
+	root := f.ctx
+	if f.prepared {
+		root = f.networkRoot
+	}
+	f.startMutex.Unlock()
+	if root == nil {
+		return lo.Empty[V](), false, errors.New("prepared resource is inactive")
+	}
+	ctx, finish, err := forwarding.AcquireManagementNetwork(root)
 	if err != nil {
 		return lo.Empty[V](), false, err
 	}
@@ -280,7 +314,7 @@ func (f *Fetcher[V]) loadBufContext(ctx context.Context, buf []byte, hash utils.
 	if same {
 		err := Commit(ctx, func() error {
 			now := time.Now()
-			if updateFile {
+			if updateFile && !f.prepared {
 				_ = os.Chtimes(f.vehicle.Path(), now, now)
 			}
 			f.stateMutex.Lock()
@@ -387,6 +421,12 @@ func (f *Fetcher[V]) startPullLoop(forceUpdate bool) error {
 }
 func (f *Fetcher[V]) updateWithLog() {
 	_, same, err := f.Update()
+	f.startMutex.Lock()
+	prepared := f.prepared
+	f.startMutex.Unlock()
+	if prepared {
+		return
+	} // The private mobile owner emits only fixed diagnostics.
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			log.Errorln("[Provider] %s pull error: %s", f.Name(), err)

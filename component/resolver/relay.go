@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"time"
@@ -27,10 +28,17 @@ func RequestUDPSize(msg *D.Msg) int {
 }
 
 func RelayDnsConn(ctx context.Context, conn net.Conn, readTimeout time.Duration) error {
+	return relayDnsConn(ctx, conn, readTimeout, nil, false)
+}
+
+func relayDnsConn(ctx context.Context, conn net.Conn, readTimeout time.Duration, service Service, strict bool) (result error) {
 	buff := pool.Get(pool.UDPBufferSize)
 	defer func() {
 		_ = pool.Put(buff)
-		_ = conn.Close()
+		closeErr := conn.Close()
+		if strict {
+			result = errors.Join(result, closeErr)
+		}
 	}()
 	for {
 		if readTimeout > 0 {
@@ -39,15 +47,30 @@ func RelayDnsConn(ctx context.Context, conn net.Conn, readTimeout time.Duration)
 
 		length := uint16(0)
 		if err := binary.Read(conn, binary.BigEndian, &length); err != nil {
+			if strict && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if strict && !errors.Is(err, io.EOF) {
+				return err
+			}
 			break
 		}
 
 		if int(length) > len(buff) {
+			if strict {
+				return errors.New("DNS packet exceeds relay bound")
+			}
 			break
 		}
 
 		n, err := io.ReadFull(conn, buff[:length])
 		if err != nil {
+			if strict && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if strict {
+				return err
+			}
 			break
 		}
 
@@ -56,7 +79,7 @@ func RelayDnsConn(ctx context.Context, conn net.Conn, readTimeout time.Duration)
 			defer cancel()
 			inData := buff[:n]
 			outBuff := buff[2:]
-			msg, err := relayDnsPacket(ctx, inData, outBuff, 0)
+			msg, err := relayDnsPacketWithService(ctx, inData, outBuff, 0, service, strict)
 			if err != nil {
 				return err
 			}
@@ -86,16 +109,38 @@ func RelayDnsConn(ctx context.Context, conn net.Conn, readTimeout time.Duration)
 }
 
 func relayDnsPacket(ctx context.Context, payload []byte, target []byte, maxSize int) ([]byte, error) {
+	return relayDnsPacketWithService(ctx, payload, target, maxSize, nil, false)
+}
+
+func relayDnsPacketWithService(ctx context.Context, payload []byte, target []byte, maxSize int, service Service, strict bool) ([]byte, error) {
+	if strict && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	msg := &D.Msg{}
 	if err := msg.Unpack(payload); err != nil {
 		return nil, err
 	}
 
-	r, err := ServeMsg(ctx, msg)
+	var r *D.Msg
+	var err error
+	if strict {
+		if service == nil {
+			return nil, ErrIPNotFound
+		}
+		r, err = service.ServeMsg(ctx, msg)
+	} else {
+		r, err = ServeMsg(ctx, msg)
+	}
 	if err != nil {
+		if strict {
+			return nil, err
+		}
 		m := new(D.Msg)
 		m.SetRcode(msg, D.RcodeServerFailure)
 		return m.PackBuffer(target)
+	}
+	if strict && ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	r.SetRcode(msg, r.Rcode)
@@ -122,4 +167,19 @@ func relayDnsPacket(ctx context.Context, payload []byte, target []byte, maxSize 
 // RelayDnsPacket will truncate udp message up to SafeDnsPacketSize
 func RelayDnsPacket(ctx context.Context, payload []byte, target []byte) ([]byte, error) {
 	return relayDnsPacket(ctx, payload, target, SafeDnsPacketSize)
+}
+
+// Captured mobile entry points bind one service for the entire operation.
+func RelayDnsPacketWithService(ctx context.Context, payload []byte, target []byte, service Service) ([]byte, error) {
+	bound := SafeDnsPacketSize
+	if len(target) < bound {
+		bound = len(target)
+	}
+	if bound < D.MinMsgSize {
+		return nil, errors.New("DNS target is below packet bound")
+	}
+	return relayDnsPacketWithService(ctx, payload, target, bound, service, true)
+}
+func RelayDnsConnWithService(ctx context.Context, conn net.Conn, readTimeout time.Duration, service Service) error {
+	return relayDnsConn(ctx, conn, readTimeout, service, true)
 }

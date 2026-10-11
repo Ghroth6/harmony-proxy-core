@@ -17,10 +17,12 @@ import (
 
 type GEOIP struct {
 	Base
-	country     string
-	adapter     string
-	noResolveIP bool
-	isSourceIP  bool
+	country         string
+	adapter         string
+	noResolveIP     bool
+	isSourceIP      bool
+	preparedMatch   func(netip.Addr) bool
+	preparedMatcher func() (router.IPMatcher, error)
 }
 
 var _ C.Rule = (*GEOIP)(nil)
@@ -47,6 +49,9 @@ func (g *GEOIP) Match(metadata *C.Metadata, helper C.RuleMatchHelper) (bool, str
 
 	if g.country == "lan" {
 		return g.isLan(ip), g.adapter
+	}
+	if g.preparedMatch != nil {
+		return g.preparedMatch(ip), g.adapter
 	}
 
 	if geodata.GeodataMode() {
@@ -104,6 +109,9 @@ func (g *GEOIP) MatchIp(ip netip.Addr) bool {
 	if g.country == "lan" {
 		return g.isLan(ip)
 	}
+	if g.preparedMatch != nil {
+		return g.preparedMatch(ip)
+	}
 
 	if geodata.GeodataMode() {
 		matcher, err := g.getIPMatcher()
@@ -129,6 +137,9 @@ func (g dnsFallbackFilter) MatchIp(ip netip.Addr) bool {
 
 	if g.country == "lan" {
 		return !g.isLan(ip)
+	}
+	if g.preparedMatch != nil {
+		return !g.preparedMatch(ip)
 	}
 
 	if geodata.GeodataMode() {
@@ -172,6 +183,9 @@ func (g *GEOIP) GetCountry() string {
 }
 
 func (g *GEOIP) GetIPMatcher() (router.IPMatcher, error) {
+	if g.preparedMatcher != nil {
+		return g.preparedMatcher()
+	}
 	if geodata.GeodataMode() {
 		return g.getIPMatcher()
 	}

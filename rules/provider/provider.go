@@ -62,8 +62,9 @@ type mrsRuleStrategy interface {
 }
 
 type baseProvider struct {
-	behavior P.RuleBehavior
-	strategy ruleStrategy
+	strategyMu sync.RWMutex
+	behavior   P.RuleBehavior
+	strategy   ruleStrategy
 }
 
 func (bp *baseProvider) Type() P.ProviderType {
@@ -75,14 +76,20 @@ func (bp *baseProvider) Behavior() P.RuleBehavior {
 }
 
 func (bp *baseProvider) Count() int {
+	bp.strategyMu.RLock()
+	defer bp.strategyMu.RUnlock()
 	return bp.strategy.Count()
 }
 
 func (bp *baseProvider) Match(metadata *C.Metadata, helper C.RuleMatchHelper) bool {
+	bp.strategyMu.RLock()
+	defer bp.strategyMu.RUnlock()
 	return bp.strategy != nil && bp.strategy.Match(metadata, helper)
 }
 
 func (bp *baseProvider) Strategy() any {
+	bp.strategyMu.RLock()
+	defer bp.strategyMu.RUnlock()
 	return bp.strategy
 }
 
@@ -156,7 +163,7 @@ func (rp *ruleSetProvider) MarshalJSON() ([]byte, error) {
 			Behavior:    rp.behavior.String(),
 			Format:      rp.format.String(),
 			Name:        rp.Fetcher.Name(),
-			RuleCount:   rp.strategy.Count(),
+			RuleCount:   rp.Count(),
 			Type:        rp.Type().String(),
 			UpdatedAt:   rp.UpdatedAt(),
 			VehicleType: rp.VehicleType().String(),
@@ -179,7 +186,9 @@ func NewRuleSetProvider(name string, behavior P.RuleBehavior, format P.RuleForma
 
 	var wrapper *RuleSetProvider
 	onUpdate := func(strategy ruleStrategy) {
+		rp.strategyMu.Lock()
 		rp.strategy = strategy
+		rp.strategyMu.Unlock()
 		// Register before leaving the short fetcher commit. The provider joins
 		// selected observers without holding the fetcher's commit lock.
 		rp.notify(wrapper)

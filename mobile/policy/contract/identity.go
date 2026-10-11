@@ -62,6 +62,7 @@ func identityASCII(value string) bool {
 // Seal computes value identities only. The policy Engine must independently
 // verify source semantics and the actual trusted resource bytes before use.
 func Seal(inputDigest string, resources []Resource, platform Platform, preferences []Preference) (PreparedContext, error) {
+	platform = ClonePlatform(platform)
 	invalid := errors.New("policy identity invalid")
 	if !IsDigest(inputDigest) || len(resources) > MaxResources || len(preferences) > MaxGroups {
 		return PreparedContext{}, invalid
@@ -125,4 +126,20 @@ func Seal(inputDigest string, resources []Resource, platform Platform, preferenc
 	}
 	prepared.CandidateDigest = Digest(identity)
 	return prepared, nil
+}
+
+func ClonePlatform(value Platform) Platform {
+	value.PlatformPolicy.ApplicationIDs = append([]string{}, value.PlatformPolicy.ApplicationIDs...)
+	value.TunPolicy.DNSServers = append([]string(nil), value.TunPolicy.DNSServers...)
+	if value.TunPolicy.IPv6 != nil {
+		copy := *value.TunPolicy.IPv6
+		value.TunPolicy.IPv6 = &copy
+	}
+	return value
+}
+func ClonePrepared(value PreparedContext) PreparedContext {
+	value.Platform = ClonePlatform(value.Platform)
+	value.Resources = append([]Resource{}, value.Resources...)
+	value.GroupPreferences = append([]Preference{}, value.GroupPreferences...)
+	return value
 }

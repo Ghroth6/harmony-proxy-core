@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"github.com/metacubex/mihomo/mobile/network"
 	"github.com/metacubex/mihomo/mobile/policy"
 	"github.com/metacubex/mihomo/mobile/protection"
@@ -54,6 +55,32 @@ func NewManagerWithPolicy(system DescriptorSystem, gate *protection.Gate, owner 
 	m := NewManager(system, gate)
 	m.policy = owner
 	return m
+}
+
+// BindPolicy installs one process owner before runtime admission. Repeating
+// the same owner is harmless; replacement would detach actual task/history
+// ownership and is refused even after a successful Stop.
+func (m *Manager) BindPolicy(owner *policy.Engine) error {
+	if owner == nil {
+		return errors.New("POLICY_OWNER_INVALID")
+	}
+	unlock := network.LockPath()
+	defer unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.policy == owner {
+		return nil
+	}
+	if m.policy != nil || m.fault {
+		return errors.New("POLICY_OWNER_BUSY")
+	}
+	for _, transfer := range m.transfers {
+		if transfer.snapshot().Cleanup != "complete" {
+			return errors.New("POLICY_OWNER_BUSY")
+		}
+	}
+	m.policy = owner
+	return nil
 }
 func absent(generation, transfer uint64) Receipt {
 	return Receipt{ContractVersion: ContractVersion, CoreInstance: processCoreInstance, Generation: generation, TransferID: strconv.FormatUint(transfer, 10), TransferState: "not-found", Phase: "absent", Outcome: "rejected", Cleanup: "unknown", FailureCode: "TRANSFER_NOT_FOUND", Stack: StackName, MTU: MTU, Tun: TunReceipt{FD: -1, MetadataBefore: zeroMetadata(), MetadataAfter: zeroMetadata(), CloseResult: -1, AfterClose: "not-observed"}, Resources: []ResourceReceipt{}, Connections: []ConnectionObservation{}}

@@ -7,6 +7,8 @@ import (
 	"io"
 	"sync"
 
+	"github.com/metacubex/mihomo/component/resolver"
+	"github.com/metacubex/mihomo/component/trie"
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
@@ -43,6 +45,7 @@ func (c *configClose) wait(ctx context.Context, closeFn func() error) error {
 }
 
 type configRetirement struct {
+	services  map[*config.Config]struct{}
 	providers map[P.Provider]struct{}
 	proxies   map[C.Proxy]struct{}
 	legacy    map[P.Provider]*configClose
@@ -88,6 +91,7 @@ func cancelConfigTasksLocked(next *config.Config) error {
 	keep := providerSet(next)
 	if retiringConfig == nil {
 		retiringConfig = &configRetirement{
+			services:  make(map[*config.Config]struct{}),
 			providers: make(map[P.Provider]struct{}), legacy: make(map[P.Provider]*configClose),
 			proxies:  make(map[C.Proxy]struct{}),
 			adapters: make(map[C.ProxyAdapter]*configClose),
@@ -99,6 +103,7 @@ func cancelConfigTasksLocked(next *config.Config) error {
 		}
 	}
 	if appliedCandidate != nil && !appliedCandidate.SharesCandidate(next) {
+		retiringConfig.services[appliedCandidate] = struct{}{}
 		appliedCandidate.RetireCandidate()
 		appliedCandidate = nil
 	}
@@ -194,6 +199,11 @@ func retireConfigLocked(ctx context.Context, next *config.Config) error {
 		return err
 	}
 	var errs []error
+	for candidate := range retiringConfig.services {
+		if err := candidate.WaitMobilePolicyServices(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	for p := range retiringConfig.proxies {
 		if owner, ok := p.(proxyTestOwner); ok {
 			if err := owner.WaitURLTests(ctx); err != nil {
@@ -263,5 +273,14 @@ func RetireConfig(ctx context.Context) error {
 	inner.New(nil)
 	tunnel.UpdateProxies(map[string]C.Proxy{}, map[string]P.ProxyProvider{})
 	tunnel.UpdateRules(nil, nil, map[string]P.RuleProvider{})
+	// Client waiters and this instance's shared DNS workers/transports have now
+	// joined. Do not let the next fixed-node or DNS-disabled policy inherit its
+	// retired fake-IP mapper, service, resolver, or source hosts.
+	resolver.DefaultResolver = nil
+	resolver.DefaultHostMapper = nil
+	resolver.DefaultService = nil
+	resolver.ProxyServerHostResolver = resolver.SystemResolver
+	resolver.DirectHostResolver = resolver.SystemResolver
+	resolver.DefaultHosts = resolver.NewHosts(trie.New[resolver.HostValue]())
 	return nil
 }

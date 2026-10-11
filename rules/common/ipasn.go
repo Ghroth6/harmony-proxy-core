@@ -5,14 +5,16 @@ import (
 	"github.com/metacubex/mihomo/component/mmdb"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
+	"net/netip"
 )
 
 type ASN struct {
 	Base
-	asn         string
-	adapter     string
-	noResolveIP bool
-	isSourceIP  bool
+	asn            string
+	adapter        string
+	noResolveIP    bool
+	isSourceIP     bool
+	preparedLookup func(netip.Addr) (string, string)
 }
 
 func (a *ASN) Match(metadata *C.Metadata, helper C.RuleMatchHelper) (bool, string) {
@@ -28,7 +30,12 @@ func (a *ASN) Match(metadata *C.Metadata, helper C.RuleMatchHelper) (bool, strin
 		return false, ""
 	}
 
-	asn, aso := mmdb.ASNInstance().LookupASN(ip.AsSlice())
+	var asn, aso string
+	if a.preparedLookup != nil {
+		asn, aso = a.preparedLookup(ip)
+	} else {
+		asn, aso = mmdb.ASNInstance().LookupASN(ip.AsSlice())
+	}
 	if a.isSourceIP {
 		metadata.SrcIPASN = asn + " " + aso
 	} else {
