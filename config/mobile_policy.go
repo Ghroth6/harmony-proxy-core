@@ -51,13 +51,22 @@ func (b *mobilePolicyBuiltin) ListenPacketContext(ctx context.Context, metadata 
 	return b.ProxyAdapter.ListenPacketContext(ctx, metadata)
 }
 
+func mobilePolicyDialer(ipv6 bool, bootstrap resolver.Resolver) dialer.Dialer {
+	options := []dialer.Option{dialer.WithResolver(bootstrap)}
+	if !ipv6 {
+		// Enabled IPv6 permits both families; false in this option means IPv6-only.
+		options = append(options, dialer.WithOnlySingleStack(true))
+	}
+	return dialer.NewDialer(options...)
+}
+
 // BuildMobilePolicyCandidate is independent of full-parser side effects.
 // Resources are supplied as verified immutable bytes by mobile/policy. The
 // original rules/groups/general settings remain distinct from selected MATCH.
 func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContext, preferences map[string]string, inputs ...*MobilePolicyResources) (cfg *Config, err error) {
 	prepared = contract.ClonePrepared(prepared)
 	owned := &configresources.Set{}
-	fence := &mobileCandidateDialer{physical: dialer.NewDialer(dialer.WithOnlySingleStack(!raw.IPv6), dialer.WithResolver(resolver.SystemResolver))}
+	fence := &mobileCandidateDialer{physical: mobilePolicyDialer(raw.IPv6, resolver.SystemResolver)}
 	cfg = &Config{candidateResources: owned, mobileNetwork: fence, mobilePolicy: &prepared, Providers: map[string]P.ProxyProvider{}, RuleProviders: map[string]P.RuleProvider{}, SubRules: map[string][]C.Rule{}}
 	parse := rules.ScopedParser(cfg.RuleProviders, nil)
 	if len(inputs) == 1 && inputs[0] != nil {
@@ -140,7 +149,7 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 	// published resolver or the system resolver forced by selected-node mode.
 	// The shared fence remains closed throughout construction.
 	bootstrap, _ := cfg.MobileNodeResolvers()
-	fence.physical = dialer.NewDialer(dialer.WithOnlySingleStack(!raw.IPv6), dialer.WithResolver(bootstrap))
+	fence.physical = mobilePolicyDialer(raw.IPv6, bootstrap)
 	return cfg, nil
 }
 
