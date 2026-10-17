@@ -107,14 +107,22 @@ func clientSSStreamExchange(t *testing.T, conn net.Conn, password, host, request
 }
 
 func TestClientTUNFakeIPOriginalDomainRuleUsesActualTCPAndJoinsStop(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0")
+	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0", false)
 }
 
 func TestClientTUNDefaultDualStackPolicyUsesIPv4NodeWithOriginalDNSIPv6Disabled(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "", true, "tcp4", "127.0.0.1:0")
+	testClientTUNFakeIPTCP(t, "", true, "tcp4", "127.0.0.1:0", false)
 }
 
-func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork, peerAddress string) {
+func TestClientTUNDualStackPolicyUsesIPv6NodeWithOriginalDNSIPv6Disabled(t *testing.T) {
+	testClientTUNFakeIPTCP(t, "ipv6: true\n", true, "tcp6", "[::1]:0", false)
+}
+
+func TestClientTUNIPv4OnlyPolicyRejectsIPv6PhysicalNode(t *testing.T) {
+	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp6", "[::1]:0", true)
+}
+
+func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork, peerAddress string, rejectNode bool) {
 	t.Helper()
 	peer, err := net.Listen(peerNetwork, peerAddress)
 	if err != nil {
@@ -223,7 +231,9 @@ func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork
 	system.inject(clientTCP4Packet(fakeIP, 443, 51300, 2, serverSequence+1, 16, nil))
 	system.inject(clientTCP4Packet(fakeIP, 443, 51300, 2, serverSequence+1, 24, []byte(request)))
 	var response []byte
+	rejected := false
 	deadline := time.After(2 * time.Second)
+responseLoop:
 	for len(response) < len(reply) {
 		select {
 		case packet := <-system.output:
@@ -232,6 +242,10 @@ func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork
 			}
 			ipLength := int(packet[0]&15) * 4
 			tcpLength := int(packet[ipLength+12]>>4) * 4
+			if packet[ipLength+13]&4 != 0 {
+				rejected = true
+				break responseLoop
+			}
 			body := packet[ipLength+tcpLength:]
 			if len(body) != 0 {
 				sequence := binary.BigEndian.Uint32(packet[ipLength+4 : ipLength+8])
@@ -245,31 +259,44 @@ func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork
 			t.Fatal("actual encrypted original-domain TCP response did not return through TUN")
 		}
 	}
-	if string(response) != reply {
-		t.Fatal("real fake-IP TCP response bytes were not preserved")
-	}
-	if err = <-verified; err != nil {
-		t.Fatal(err)
-	}
-	observed := manager.Query(generation, 1)
-	if len(observed.Connections) != 1 {
-		t.Fatal("real fake-IP TCP flow did not publish its original rule/node observation")
-	}
-	connection := observed.Connections[0]
-	if connection.TargetAddress != fakeIP.String() || connection.TargetIPv4 != fakeIP.String() || connection.AddressFamily != "ipv4" || connection.Rule != "DomainSuffix" || connection.Node != "fakeip-tcp-node" || connection.Upload < int64(len(request)) || connection.Download < int64(len(reply)) || protects.Load() == 0 {
-		t.Fatalf("original domain rule was not tied to the raw fake-IP target and authenticated TCP bytes: %+v", connection)
+	if rejectNode {
+		if !rejected || len(response) != 0 || protects.Load() != 0 || len(manager.Query(generation, 1).Connections) != 0 {
+			t.Fatal("IPv4-only source policy did not reject the IPv6 physical node before connecting")
+		}
+		select {
+		case <-peerConn:
+			t.Fatal("IPv4-only source policy reached the IPv6 physical peer")
+		default:
+		}
+	} else {
+		if rejected || string(response) != reply {
+			t.Fatal("real fake-IP TCP response bytes were not preserved")
+		}
+		if err = <-verified; err != nil {
+			t.Fatal(err)
+		}
+		observed := manager.Query(generation, 1)
+		if len(observed.Connections) != 1 {
+			t.Fatal("real fake-IP TCP flow did not publish its original rule/node observation")
+		}
+		connection := observed.Connections[0]
+		if connection.TargetAddress != fakeIP.String() || connection.TargetIPv4 != fakeIP.String() || connection.AddressFamily != "ipv4" || connection.Rule != "DomainSuffix" || connection.Node != "fakeip-tcp-node" || connection.Upload < int64(len(request)) || connection.Download < int64(len(reply)) || protects.Load() == 0 {
+			t.Fatalf("original domain rule was not tied to the raw fake-IP target and authenticated TCP bytes: %+v", connection)
+		}
 	}
 	stopped := manager.Stop(generation)
 	if stopped.Cleanup != "complete" || stopped.Phase != "stopped" || stopped.PendingOwners != (R.PendingOwners{}) {
 		t.Fatalf("fake-IP TCP stop did not join the actual client and physical owners: %+v", stopped)
 	}
-	select {
-	case err = <-physicalEOF:
-		if !errors.Is(err, io.EOF) {
-			t.Fatalf("normal fake-IP TCP stop did not physically close the real encrypted connection: %v", err)
+	if !rejectNode {
+		select {
+		case err = <-physicalEOF:
+			if !errors.Is(err, io.EOF) {
+				t.Fatalf("normal fake-IP TCP stop did not physically close the real encrypted connection: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("actual encrypted TCP peer remained open after normal stop")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("actual encrypted TCP peer remained open after normal stop")
 	}
 	for _, fd := range []int{9, 40, 41} {
 		if system.closes[fd] != 1 {
