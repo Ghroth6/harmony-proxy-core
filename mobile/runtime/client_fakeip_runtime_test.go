@@ -128,6 +128,39 @@ func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork
 	if err != nil {
 		t.Fatal(err)
 	}
+	dnsPeer, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		peer.Close()
+		t.Fatal(err)
+	}
+	var bootstrapQueries atomic.Int32
+	dnsDone := make(chan struct{})
+	go func() {
+		defer close(dnsDone)
+		packet := make([]byte, 512)
+		for {
+			n, address, err := dnsPeer.ReadFrom(packet)
+			if err != nil {
+				return
+			}
+			question := new(D.Msg)
+			if question.Unpack(packet[:n]) != nil || len(question.Question) != 1 || question.Question[0].Name != "ipv6-node.original-policy.test." || question.Question[0].Qtype != D.TypeA {
+				t.Error("physical IPv4-only lookup did not preserve the original DNS A-only policy")
+				return
+			}
+			bootstrapQueries.Add(1)
+			answer := new(D.Msg).SetReply(question)
+			payload, err := answer.Pack()
+			if err == nil {
+				_, err = dnsPeer.WriteTo(payload, address)
+			}
+			if err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() { dnsPeer.Close(); <-dnsDone })
 	const password = "fakeip-tcp-fixture-only"
 	const host = "tcp.original-policy.test"
 	const request = "tcp-fakeip-request"
@@ -171,7 +204,13 @@ func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork
 	manager := R.NewManagerWithPolicy(system, &productionGate, owner)
 	t.Cleanup(func() { manager.Stop(generation); owner.Close() })
 	networkGeneration := publishClientNetwork(t, manager, "192.0.2.53")
-	input := []byte(fmt.Sprintf("%sdns:\n  enable: true\n  ipv6: false\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  use-hosts: false\n  nameserver: [127.0.0.1:9]\n  fallback-filter: {geoip: false}\nproxies:\n  - {name: fakeip-tcp-node, type: ss, server: '%s', port: %d, cipher: aes-128-gcm, password: %s, udp: true}\nproxy-groups:\n  - {name: original-domain-select, type: select, proxies: [fakeip-tcp-node]}\nrules:\n  - DOMAIN-SUFFIX,original-policy.test,original-domain-select\n  - MATCH,REJECT\n", general, peer.Addr().(*net.TCPAddr).IP.String(), peer.Addr().(*net.TCPAddr).Port, password))
+	server := peer.Addr().(*net.TCPAddr).IP.String()
+	if peerNetwork == "tcp6" {
+		// Domain nodes are supported; IPv6 literals are outside the current node gate.
+		server = "ipv6-node.original-policy.test"
+		general += "hosts: {ipv6-node.original-policy.test: '::1'}\n"
+	}
+	input := []byte(fmt.Sprintf("%sdns:\n  enable: true\n  ipv6: false\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  use-hosts: false\n  nameserver: ['%s']\n  fallback-filter: {geoip: false}\nproxies:\n  - {name: fakeip-tcp-node, type: ss, server: '%s', port: %d, cipher: aes-128-gcm, password: %s, udp: true}\nproxy-groups:\n  - {name: original-domain-select, type: select, proxies: [fakeip-tcp-node]}\nrules:\n  - DOMAIN-SUFFIX,original-policy.test,original-domain-select\n  - MATCH,REJECT\n", general, dnsPeer.LocalAddr().String(), server, peer.Addr().(*net.TCPAddr).Port, password))
 	started := manager.Start(manager.Consume(generation, 1, 9), input, clientPolicyRequest(t, input, generation, networkGeneration, true, ipv6))
 	if started.Outcome != "running" || !started.ForwardingActive {
 		t.Fatalf("actual original source fake-IP candidate did not activate: %+v", started)
@@ -242,7 +281,7 @@ responseLoop:
 			}
 			ipLength := int(packet[0]&15) * 4
 			tcpLength := int(packet[ipLength+12]>>4) * 4
-			if packet[ipLength+13]&4 != 0 {
+			if packet[ipLength+13]&5 != 0 {
 				rejected = true
 				break responseLoop
 			}
@@ -260,8 +299,8 @@ responseLoop:
 		}
 	}
 	if rejectNode {
-		if !rejected || len(response) != 0 || protects.Load() != 0 || len(manager.Query(generation, 1).Connections) != 0 {
-			t.Fatal("IPv4-only source policy did not reject the IPv6 physical node before connecting")
+		if !rejected || len(response) != 0 || bootstrapQueries.Load() == 0 || len(manager.Query(generation, 1).Connections) != 0 {
+			t.Fatal("IPv4-only source policy did not reject the IPv6 physical node after an original A-only lookup")
 		}
 		select {
 		case <-peerConn:
@@ -269,7 +308,7 @@ responseLoop:
 		default:
 		}
 	} else {
-		if rejected || string(response) != reply {
+		if rejected || string(response) != reply || bootstrapQueries.Load() != 0 {
 			t.Fatal("real fake-IP TCP response bytes were not preserved")
 		}
 		if err = <-verified; err != nil {
