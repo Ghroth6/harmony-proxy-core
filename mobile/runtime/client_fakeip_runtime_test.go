@@ -107,7 +107,16 @@ func clientSSStreamExchange(t *testing.T, conn net.Conn, password, host, request
 }
 
 func TestClientTUNFakeIPOriginalDomainRuleUsesActualTCPAndJoinsStop(t *testing.T) {
-	peer, err := net.Listen("tcp4", "127.0.0.1:0")
+	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0")
+}
+
+func TestClientTUNDefaultDualStackPolicyUsesIPv4NodeWithOriginalDNSIPv6Disabled(t *testing.T) {
+	testClientTUNFakeIPTCP(t, "", true, "tcp4", "127.0.0.1:0")
+}
+
+func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork, peerAddress string) {
+	t.Helper()
+	peer, err := net.Listen(peerNetwork, peerAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,14 +163,30 @@ func TestClientTUNFakeIPOriginalDomainRuleUsesActualTCPAndJoinsStop(t *testing.T
 	manager := R.NewManagerWithPolicy(system, &productionGate, owner)
 	t.Cleanup(func() { manager.Stop(generation); owner.Close() })
 	networkGeneration := publishClientNetwork(t, manager, "192.0.2.53")
-	input := []byte(fmt.Sprintf("ipv6: false\ndns:\n  enable: true\n  ipv6: false\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  use-hosts: false\n  nameserver: [127.0.0.1:9]\n  fallback-filter: {geoip: false}\nproxies:\n  - {name: fakeip-tcp-node, type: ss, server: 127.0.0.1, port: %d, cipher: aes-128-gcm, password: %s, udp: true}\nproxy-groups:\n  - {name: original-domain-select, type: select, proxies: [fakeip-tcp-node]}\nrules:\n  - DOMAIN-SUFFIX,original-policy.test,original-domain-select\n  - MATCH,REJECT\n", peer.Addr().(*net.TCPAddr).Port, password))
-	started := manager.Start(manager.Consume(generation, 1, 9), input, clientPolicyRequest(t, input, generation, networkGeneration, true, false))
+	input := []byte(fmt.Sprintf("%sdns:\n  enable: true\n  ipv6: false\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  use-hosts: false\n  nameserver: [127.0.0.1:9]\n  fallback-filter: {geoip: false}\nproxies:\n  - {name: fakeip-tcp-node, type: ss, server: '%s', port: %d, cipher: aes-128-gcm, password: %s, udp: true}\nproxy-groups:\n  - {name: original-domain-select, type: select, proxies: [fakeip-tcp-node]}\nrules:\n  - DOMAIN-SUFFIX,original-policy.test,original-domain-select\n  - MATCH,REJECT\n", general, peer.Addr().(*net.TCPAddr).IP.String(), peer.Addr().(*net.TCPAddr).Port, password))
+	started := manager.Start(manager.Consume(generation, 1, 9), input, clientPolicyRequest(t, input, generation, networkGeneration, true, ipv6))
 	if started.Outcome != "running" || !started.ForwardingActive {
 		t.Fatalf("actual original source fake-IP candidate did not activate: %+v", started)
 	}
-	question := new(D.Msg).SetQuestion(host+".", D.TypeA)
-	question.Id = 6789
+	question := new(D.Msg).SetQuestion(host+".", D.TypeAAAA)
+	question.Id = 6788
 	payload, err := question.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	system.inject(clientUDP4Packet(&net.UDPAddr{IP: net.IPv4(10, 111, 0, 2), Port: 53}, 51235, payload))
+	select {
+	case packet := <-system.output:
+		answer := new(D.Msg)
+		if len(packet) < 28 || packet[9] != 17 || answer.Unpack(packet[28:]) != nil || answer.Id != 6788 || answer.Rcode != D.RcodeSuccess || len(answer.Answer) != 0 {
+			t.Fatal("physical node address-family support changed the original DNS ipv6=false answer policy")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("original AAAA suppression did not return through the real TUN pump")
+	}
+	question = new(D.Msg).SetQuestion(host+".", D.TypeA)
+	question.Id = 6789
+	payload, err = question.Pack()
 	if err != nil {
 		t.Fatal(err)
 	}
