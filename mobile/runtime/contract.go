@@ -108,10 +108,10 @@ type Receipt struct {
 	TransferState          string                  `json:"transferState"`
 	OwnershipFault         bool                    `json:"ownershipFault"`
 	CandidateDigest        string                  `json:"candidateDigest"`
-	InputDigest            string                  `json:"inputDigest,omitempty"`
-	ResourceManifestDigest string                  `json:"resourceManifestDigest,omitempty"`
-	PlatformPolicyDigest   string                  `json:"platformPolicyDigest,omitempty"`
-	GroupPreferencesDigest string                  `json:"groupPreferencesDigest,omitempty"`
+	InputDigest            string                  `json:"inputDigest"`
+	ResourceManifestDigest string                  `json:"resourceManifestDigest"`
+	PlatformPolicyDigest   string                  `json:"platformPolicyDigest"`
+	GroupPreferencesDigest string                  `json:"groupPreferencesDigest"`
 	Phase                  string                  `json:"phase"`
 	Outcome                string                  `json:"outcome"`
 	Cleanup                string                  `json:"cleanup"`

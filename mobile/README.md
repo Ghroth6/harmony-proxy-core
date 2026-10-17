@@ -110,7 +110,8 @@ ownership beyond those observation limits.
 
 Receipt fields are always present: `contractVersion`, `coreInstance`, `operationId`, `generation`, `networkGeneration`,
 `transferId`, `transferConsumed`, `transferState`, `ownershipFault`,
-`candidateDigest`, `phase`, `outcome`, `cleanup`, `failureCode`,
+`candidateDigest`, `inputDigest`, `resourceManifestDigest`, `platformPolicyDigest`,
+`groupPreferencesDigest`, `phase`, `outcome`, `cleanup`, `failureCode`,
 `stack:"gvisor-ipv4-tcp"`, `mtu:1500`, `forwardingActive`, `tun`, `resources`,
 `pendingOwners`, and `connections`. Phases are absent/validating/constructing/
 starting/running/stopping/stopped/failed; outcomes pending/running/stopped/
@@ -118,10 +119,13 @@ rejected/failed; cleanup pending/complete/unknown. Transfer state is consumed,
 not-found, or fault. Operation identity and digest are empty before a request
 has been decoded; absence does not fabricate a request identity.
 `coreInstance` is process-owned, fixed within one Go process and different in a
-new process. Accepted original-source receipts additionally contain actual
-`inputDigest`, `resourceManifestDigest`, `platformPolicyDigest` and
-`groupPreferencesDigest`; they never substitute the raw digest for the composed
-candidate identity. `stack` retains its legacy wire label; original-policy
+new process. Identity fields remain strings in every receipt, including absent,
+failed, stopped and selected-node runs; an unavailable identity is an empty
+string, never an omitted field or fabricated digest. Selected-node runs bind
+their actual input and platform digests while resource and preference digests
+remain empty. Accepted original-source receipts bind all four actual digests;
+they never substitute the raw digest for the composed candidate identity.
+`stack` retains its legacy wire label; original-policy
 capability follows the accepted immutable runtime options and prepared context.
 An absent specific transfer is unknown, never replaced with
 the last run. Duplicate ID or record-capacity faults are retained and block
