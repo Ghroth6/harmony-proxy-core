@@ -4,7 +4,7 @@
 
 本仓直接派生自 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，维护 OHOS 所需的连接活动、流量分类、事件订阅与平台网络快照适配。以下合同已经宿主测试；原生库交付与设备验收状态以协调仓为准。
 
-当前服务于独立应用 **clashoh**，应用与整体设计归 [clashbox-meta](https://github.com/Ghroth6/clashbox-meta)，旧 ClashBox 仅作参考。模块设计、交付计划和实际验收分别由应用仓 `docs/design/overview.md`、`docs/delivery/plan.md` 和 `docs/delivery/verification/README.md` 维护。下列后端合同说明接口行为，不表示所有能力都已接入应用或通过真机验收；源码主线、清单固定版本和远端发布分别核对。
+当前服务于独立应用 **clashoh**，应用与整体设计归 [clashbox-meta](https://github.com/Ghroth6/clashbox-meta)，旧 ClashBox 仅作参考。模块设计、交付计划和实际验收分别由应用仓 `docs/design/overview.md`、`docs/delivery/plan.md` 和 `docs/delivery/verification/README.md` 维护。下列后端合同说明接口行为，不表示所有能力都已接入应用或通过真机验收；源码主线、清单获取策略和远端发布分别核对。工程日常清单跟踪本仓 codex/ohos-adaptation 分支，历史验收仍按记录中的精确提交复现；清单源与运行时生效状态见协调仓入口。
 
 `NowTraffic(onlyProxy)` 返回上一秒的字节桶，读取不清零；`TotalTraffic(onlyProxy)` 保留初始化或 Reset 后的累计，包括已关闭连接。proxy 分类依据连接创建时固定的实际出口类型，不依赖名称或组的后续选择；Direct、Compatible、控制出口、组型和未知类型不算代理。内部 `pushToManager=false` 流量仍排除，计数、轮桶和 Reset 共享一个边界。字节上报保留官方 tracker 的缓冲 API 局限，不代表精确的线上传输字节。
 
