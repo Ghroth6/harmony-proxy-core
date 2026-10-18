@@ -1,13 +1,10 @@
 # harmony-proxy-core：Mihomo 的 OHOS 适配分支
 
-M1b P3 的固定 IPv4/TCP 运行导出、TUN 副本消费及停止账目见
-[mobile/README.md](mobile/README.md#fixed-mobile-runtime-contract-m1b-p3)。核心独立复核并
-重新构造候选，使用窄发布和自有 channel/gVisor 生命周期；宿主边界用例与 ARM64
-编译不代替应用仓的目标 TUN、平台 destroy 和实际浏览器代理验收。
+移动端导出、支持范围、配置准备与运行生命周期见 [mobile/README.md](mobile/README.md)。核心独立复核候选并管理自身资源；宿主测试和 ARM64 编译不能代替应用的系统 VPN、真实代理请求与停止验收。
 
 本仓直接派生自 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，维护 OHOS 所需的连接活动、流量分类、事件订阅与平台网络快照适配。以下合同已经宿主测试；原生库交付与设备验收状态以协调仓为准。
 
-当前服务于独立应用 **clashoh**，应用与整体设计归 [clashbox-meta](https://github.com/Ghroth6/clashbox-meta)，旧 ClashBox 仅作参考。2026-10-06，M1a 校验实现已在本地合入本仓默认分支 `codex/ohos-adaptation`（`5328a5d`）；应用已合入其 `main`，均尚未推送。导出接口和支持范围见 [mobile/README.md](mobile/README.md)，真机 20/20 行为与记录检查及 25 次 socket 比较未验证的边界见应用仓 `docs/delivery/verification/m1a-2026-10-06.md`。模块设计与后续能力分解见应用仓 docs/design/overview.md 和 docs/delivery/plan.md；该结果不证明新应用 VPN 转发或长期后台已实现。下列既有后端合同仍逐项评估是否适用于后续增量，不整体视为新应用已验收能力。
+当前服务于独立应用 **clashoh**，应用与整体设计归 [clashbox-meta](https://github.com/Ghroth6/clashbox-meta)，旧 ClashBox 仅作参考。模块设计、交付计划和实际验收分别由应用仓 `docs/design/overview.md`、`docs/delivery/plan.md` 和 `docs/delivery/verification/README.md` 维护。下列后端合同说明接口行为，不表示所有能力都已接入应用或通过真机验收；源码主线、清单固定版本和远端发布分别核对。
 
 `NowTraffic(onlyProxy)` 返回上一秒的字节桶，读取不清零；`TotalTraffic(onlyProxy)` 保留初始化或 Reset 后的累计，包括已关闭连接。proxy 分类依据连接创建时固定的实际出口类型，不依赖名称或组的后续选择；Direct、Compatible、控制出口、组型和未知类型不算代理。内部 `pushToManager=false` 流量仍排除，计数、轮桶和 Reset 共享一个边界。字节上报保留官方 tracker 的缓冲 API 局限，不代表精确的线上传输字节。
 
