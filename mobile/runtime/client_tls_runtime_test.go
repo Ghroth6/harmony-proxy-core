@@ -20,8 +20,6 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -230,26 +228,10 @@ func startSourceTLS(t *testing.T, owner *policyowner.Engine, root string, input 
 	if plan.Category != "planned" || len(plan.Requirements) != 1 || len(plan.Groups) != 2 || len(plan.Groups[0].Members) != 2 {
 		t.Fatalf("full source structure was not retained: %+v", plan)
 	}
-	content := []byte("payload:\n - DOMAIN-SUFFIX,proxy-fixture.test\n")
-	digest := contract.Digest(content)
-	requirement := plan.Requirements[0]
-	resource := contract.Resource{RefID: requirement.RefID, Kind: requirement.Kind, Format: requirement.Format, SourceDigest: requirement.SourceDigest, ContentDigest: digest, ByteLength: int64(len(content)), RelativePath: "immutable/" + digest[7:] + "/rule-provider.yaml"}
-	path := filepath.Join(root, filepath.FromSlash(resource.RelativePath))
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, content, 0600); err != nil {
-		t.Fatal(err)
-	}
-	var request R.StartRequest
-	if err := json.Unmarshal(clientPolicyRequest(t, input, generation, networkGeneration, true, false), &request); err != nil {
-		t.Fatal(err)
-	}
-	prepared, err := contract.Seal(plan.InputDigest, []contract.Resource{resource}, request.PreparedPolicy.Platform, []contract.Preference{{GroupRef: plan.Groups[0].GroupRef, MemberRef: plan.Groups[0].Members[1].MemberRef}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.PreparedPolicy = &prepared
+	resource := domainRuleProviderResource(plan.Requirements[0])
+	writeDomainRuleProvider(t, root, resource)
+	preferences := []contract.Preference{{GroupRef: plan.Groups[0].GroupRef, MemberRef: plan.Groups[0].Members[1].MemberRef}}
+	request, prepared := sealDomainPolicyRequest(t, clientPolicyRequest(t, input, generation, networkGeneration, true, false), plan.InputDigest, resource, preferences)
 	encoded, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)

@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -164,28 +162,11 @@ func startDNSFailureSource(t *testing.T, input []byte) dnsFailureRun {
 	if plan.Category != "planned" || len(plan.Requirements) != 1 || len(plan.Groups) != 2 {
 		t.Fatalf("full DNS source lost original resources/groups: %+v", plan)
 	}
-	content := []byte("payload:\n - DOMAIN-SUFFIX,proxy-fixture.test\n")
-	requirement := plan.Requirements[0]
-	contentDigest := contract.Digest(content)
-	resource := contract.Resource{RefID: requirement.RefID, Kind: requirement.Kind, Format: requirement.Format, SourceDigest: requirement.SourceDigest, ContentDigest: contentDigest, ByteLength: int64(len(content)), RelativePath: "immutable/" + contentDigest[7:] + "/rule-provider.yaml"}
-	path := filepath.Join(root, filepath.FromSlash(resource.RelativePath))
-	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(path, content, 0600); err != nil {
-		t.Fatal(err)
-	}
-	var request R.StartRequest
-	if err = json.Unmarshal(clientPolicyRequest(t, input, generation, networkGeneration, true, false), &request); err != nil {
-		t.Fatal(err)
-	}
+	resource := domainRuleProviderResource(plan.Requirements[0])
+	writeDomainRuleProvider(t, root, resource)
 	preferences := []contract.Preference{{GroupRef: plan.Groups[0].GroupRef, MemberRef: plan.Groups[0].Members[1].MemberRef}}
-	prepared, err := contract.Seal(plan.InputDigest, []contract.Resource{resource}, request.PreparedPolicy.Platform, preferences)
-	if err != nil {
-		t.Fatal(err)
-	}
+	request, prepared := sealDomainPolicyRequest(t, clientPolicyRequest(t, input, generation, networkGeneration, true, false), plan.InputDigest, resource, preferences)
 	request.OperationID = fmt.Sprintf("dns-policy-%d", generation)
-	request.PreparedPolicy = &prepared
 	encoded, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)

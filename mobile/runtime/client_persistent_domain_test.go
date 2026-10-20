@@ -217,34 +217,16 @@ func runPersistentDomainChild(t *testing.T, mode, root string) {
 	if plan.Category != "planned" || plan.ResourcesComplete || len(plan.Requirements) != 1 || len(plan.Groups) != 2 || len(plan.Groups[0].Members) != 2 || !plan.StoreFakeIP || !plan.StoreSelected {
 		t.Fatalf("fresh process did not plan the complete declared saved policy: %+v", plan)
 	}
-	content := []byte("payload:\n - DOMAIN-SUFFIX,proxy-fixture.test\n")
-	contentDigest := contract.Digest(content)
-	requirement := plan.Requirements[0]
-	resource := contract.Resource{RefID: requirement.RefID, Kind: requirement.Kind, Format: requirement.Format, SourceDigest: requirement.SourceDigest,
-		ContentDigest: contentDigest, ByteLength: int64(len(content)), RelativePath: "immutable/" + contentDigest[7:] + "/rule-provider.yaml"}
+	resource := domainRuleProviderResource(plan.Requirements[0])
 	if mode == "seed" {
-		path := filepath.Join(policyRoot, filepath.FromSlash(resource.RelativePath))
-		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err = os.WriteFile(path, content, 0600); err != nil {
-			t.Fatal(err)
-		}
+		writeDomainRuleProvider(t, policyRoot, resource)
 	}
-	var request R.StartRequest
-	if err = json.Unmarshal(clientPolicyRequest(t, input, generation, networkGeneration, true, false), &request); err != nil {
-		t.Fatal(err)
-	}
-	prepared, err := contract.Seal(plan.InputDigest, []contract.Resource{resource}, request.PreparedPolicy.Platform,
-		[]contract.Preference{{GroupRef: plan.Groups[0].GroupRef, MemberRef: plan.Groups[0].Members[1].MemberRef}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	preferences := []contract.Preference{{GroupRef: plan.Groups[0].GroupRef, MemberRef: plan.Groups[0].Members[1].MemberRef}}
+	request, prepared := sealDomainPolicyRequest(t, clientPolicyRequest(t, input, generation, networkGeneration, true, false), plan.InputDigest, resource, preferences)
 	validated := owner.Validate(mode+"-fresh-validation", input, prepared)
 	if validated.Category != "pass" || validated.CandidateDigest != prepared.CandidateDigest {
 		t.Fatalf("new actual process failed its own full saved-policy validation: %+v", validated)
 	}
-	request.PreparedPolicy = &prepared
 	encoded, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
