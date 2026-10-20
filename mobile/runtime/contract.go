@@ -30,6 +30,9 @@ const (
 	MaxUDPFlows        = 32
 	MaxUDPWrites       = 64
 	MaxDNSWaiters      = 32
+	MaxDNSObservations = 16
+	MaxDNSAnswers      = 4
+	MaxObservation     = uint64(1<<53 - 1)
 	MaxTransferRecords = 64
 	StartObservation   = 5 * time.Second
 	StopObservation    = 10 * time.Second
@@ -87,15 +90,43 @@ type PendingOwners struct {
 	DNSWaiters    int `json:"dnsWaiters,omitempty"`
 }
 type ConnectionObservation struct {
-	Sequence      uint64 `json:"sequence"`
-	TargetIPv4    string `json:"targetIPv4"`
-	TargetAddress string `json:"targetAddress,omitempty"`
-	AddressFamily string `json:"addressFamily,omitempty"`
-	TargetPort    uint16 `json:"targetPort"`
-	Rule          string `json:"rule"`
-	Node          string `json:"node"`
-	Upload        int64  `json:"upload"`
-	Download      int64  `json:"download"`
+	Sequence      uint64                 `json:"sequence"`
+	TargetIPv4    string                 `json:"targetIPv4"`
+	TargetAddress string                 `json:"targetAddress,omitempty"`
+	AddressFamily string                 `json:"addressFamily,omitempty"`
+	TargetPort    uint16                 `json:"targetPort"`
+	Rule          string                 `json:"rule"`
+	Node          string                 `json:"node"`
+	Upload        int64                  `json:"upload"`
+	Download      int64                  `json:"download"`
+	Attribution   *ConnectionAttribution `json:"attribution,omitempty"`
+}
+
+type ConnectionAttribution struct {
+	DomainDigest      string `json:"domainDigest"`
+	DNSSequence       uint64 `json:"dnsSequence"`
+	RulePayloadDigest string `json:"rulePayloadDigest"`
+	NodeDigest        string `json:"nodeDigest"`
+}
+
+type DNSQueryObservation struct {
+	Sequence         uint64   `json:"sequence"`
+	Transport        string   `json:"transport"`
+	QuestionDigest   string   `json:"questionDigest"`
+	QueryType        uint16   `json:"queryType"`
+	Outcome          string   `json:"outcome"`
+	Rcode            int      `json:"rcode"`
+	FailureCode      string   `json:"failureCode"`
+	AnswerAddresses  []string `json:"answerAddresses"`
+	FakeIP           bool     `json:"fakeIP"` // Confirmed mapping for retained addresses only.
+	AnswersTruncated bool     `json:"answersTruncated"`
+}
+
+type DNSObservation struct {
+	Sequence  uint64                `json:"sequence"`
+	Dropped   uint64                `json:"dropped"`
+	Saturated bool                  `json:"saturated"`
+	Queries   []DNSQueryObservation `json:"queries"`
 }
 type Receipt struct {
 	ContractVersion        int                     `json:"contractVersion"`
@@ -123,6 +154,7 @@ type Receipt struct {
 	Resources              []ResourceReceipt       `json:"resources"`
 	PendingOwners          PendingOwners           `json:"pendingOwners"`
 	Connections            []ConnectionObservation `json:"connections"`
+	DNS                    *DNSObservation         `json:"dns,omitempty"`
 }
 
 // The Go process owns its receipt epoch. It does not change with a Manager,

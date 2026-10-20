@@ -153,6 +153,31 @@ with `sequence`, `targetIPv4`, `targetPort`, `rule`, `node`, `upload`, `download
 and optional original TUN `targetAddress`/`addressFamily` for IPv6;
 it contains neither physical proxy endpoints, credentials, payloads nor full parser errors.
 
+Original-source connections additionally carry optional `attribution`; captured
+client TUN DNS carries optional `dns` with the last 16 completed service results,
+four retained A/AAAA addresses per result, dropped and saturation indicators.
+This observes actual service return values, including nonzero DNS rcodes and
+finite errors; it does not measure upstream queries/cache hits or prove client
+delivery. A fake-IP indication requires the actual captured mapper's domain
+association for every retained address, not range membership; truncated addresses
+remain unobserved. The connection binds an unambiguous question/address only at
+connection creation, never a later lookup. Snapshots clear an evicted link without
+substituting a later equivalent question. Stopped history belongs to that run;
+new generations start empty. Absent observations are unavailable, not zero proof.
+Hostnames are lowercased and one final dot removed before UTF-8 SHA256; actual
+rule payload and Chain[0] labels use exact UTF-8 bytes. These local identifiers
+are correlatable, not anonymized, global node identities or physical peer proof.
+The application repository's VPN runtime contract owns the exact fields and
+limits. Updated consumers accept old v2 output; old strict apps reject the new
+fields, so runtime libraries and apps must be paired by exact tested revisions.
+
+Public real-gVisor tests cover the mapping/question/original-rule association,
+initial ambiguity and later-query/eviction boundaries, answer/history bounds,
+new-generation reset and joined stop. A complete synthetic multi-node/group
+source with an explicit member preference and fixed rule-provider file exercises
+actual proxy and direct hostname traffic. These fixtures do not establish the
+user's private-source coverage, browser/system DNS ownership or phone acceptance.
+
 Entering start consumes every actually valid supplied fd before other checks,
 including invalid output pointers. The adapter must never close it after entry.
 All ABI status failures and corrupted output require query of the exact transfer.

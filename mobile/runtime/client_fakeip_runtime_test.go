@@ -107,22 +107,26 @@ func clientSSStreamExchange(t *testing.T, conn net.Conn, password, host, request
 }
 
 func TestClientTUNFakeIPOriginalDomainRuleUsesActualTCPAndJoinsStop(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0", false)
+	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0", false, false)
+}
+
+func TestClientTUNFakeIPAmbiguousClientQuestionsStayUnattributed(t *testing.T) {
+	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0", false, true)
 }
 
 func TestClientTUNDefaultDualStackPolicyUsesIPv4NodeWithOriginalDNSIPv6Disabled(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "", true, "tcp4", "127.0.0.1:0", false)
+	testClientTUNFakeIPTCP(t, "", true, "tcp4", "127.0.0.1:0", false, false)
 }
 
 func TestClientTUNDualStackPolicyUsesIPv6NodeWithOriginalDNSIPv6Disabled(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "ipv6: true\n", true, "tcp6", "[::1]:0", false)
+	testClientTUNFakeIPTCP(t, "ipv6: true\n", true, "tcp6", "[::1]:0", false, false)
 }
 
 func TestClientTUNIPv4OnlyPolicyRejectsIPv6PhysicalNode(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp6", "[::1]:0", true)
+	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp6", "[::1]:0", true, false)
 }
 
-func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork, peerAddress string, rejectNode bool) {
+func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork, peerAddress string, rejectNode, ambiguous bool) {
 	t.Helper()
 	peer, err := net.Listen(peerNetwork, peerAddress)
 	if err != nil {
@@ -215,6 +219,10 @@ func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork
 	if started.Outcome != "running" || !started.ForwardingActive {
 		t.Fatalf("actual original source fake-IP candidate did not activate: %+v", started)
 	}
+	initial := domainWire(t, started)
+	if initial.DNS == nil || initial.DNS.Sequence != 0 || initial.DNS.Dropped != 0 || initial.DNS.Saturated || len(initial.DNS.Queries) != 0 {
+		t.Fatal("active captured client DNS must expose an empty current-run observation, not unavailable or inherited history")
+	}
 	question := new(D.Msg).SetQuestion(host+".", D.TypeAAAA)
 	question.Id = 6788
 	payload, err := question.Pack()
@@ -255,6 +263,20 @@ func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork
 	}
 	if protects.Load() != 0 || owner.ResourceAcquireCount() != "0" {
 		t.Fatal("preparing/starting or serving fake-IP silently acquired network data")
+	}
+	dnsObserved := domainWire(t, manager.Query(generation, 1)).DNS
+	if dnsObserved == nil || dnsObserved.Sequence != 2 || dnsObserved.Dropped != 0 || dnsObserved.Saturated || len(dnsObserved.Queries) != 2 {
+		t.Fatalf("actual TUN questions did not produce bounded same-run DNS observations: %+v", dnsObserved)
+	}
+	query := dnsObserved.Queries[1]
+	if query.Sequence != 2 || query.Transport != "udp" || query.QuestionDigest != domainHash(host) || query.QueryType != D.TypeA || query.Outcome != "response" || query.Rcode != D.RcodeSuccess || query.FailureCode != "" || !query.FakeIP || query.AnswersTruncated || len(query.AnswerAddresses) != 1 || query.AnswerAddresses[0] != fakeIP.String() {
+		t.Fatalf("actual fake-IP service mapping was not tied to its normalized question and delivered address: %+v", query)
+	}
+	expectedQueries, expectedSequence := uint64(2), query.Sequence
+	if ambiguous {
+		clientDomainQuestion(t, system, host+".", D.TypeA, 51237)
+		expectedQueries++
+		expectedSequence = 0
 	}
 	system.inject(clientTCP4Packet(fakeIP, 443, 51300, 1, 0, 2, nil))
 	var serverSequence uint32
@@ -322,10 +344,39 @@ responseLoop:
 		if connection.TargetAddress != fakeIP.String() || connection.TargetIPv4 != fakeIP.String() || connection.AddressFamily != "ipv4" || connection.Rule != "DomainSuffix" || connection.Node != "fakeip-tcp-node" || connection.Upload < int64(len(request)) || connection.Download < int64(len(reply)) || protects.Load() == 0 {
 			t.Fatalf("original domain rule was not tied to the raw fake-IP target and authenticated TCP bytes: %+v", connection)
 		}
+		attribution := domainWire(t, observed).Connections[0].Attribution
+		if attribution == nil || attribution.DomainDigest != domainHash(host) || attribution.DNSSequence != expectedSequence || attribution.RulePayloadDigest != domainHash("original-policy.test") || attribution.NodeDigest != domainHash("fakeip-tcp-node") {
+			t.Fatalf("actual restored domain, client DNS address and original rule payload were not correlated: %+v", attribution)
+		}
+		answer := clientDomainQuestion(t, system, host+".", D.TypeA, 51238)
+		if len(answer.Answer) != 1 || answer.Answer[0].(*D.A).A.String() != fakeIP.String() {
+			t.Fatal("repeated real TUN DNS question did not return the same mapped fake-IP")
+		}
+		expectedQueries++
+		if repeated := domainWire(t, manager.Query(generation, 1)); repeated.Connections[0].Attribution.DNSSequence != expectedSequence {
+			t.Fatal("a later same-host query must not replace the connection-time attribution or invent an initially unavailable link")
+		}
+		for index := 0; index < 16; index++ {
+			clientDomainQuestion(t, system, fmt.Sprintf("fresh-%d.original-policy.test.", index), D.TypeA, uint16(52000+index))
+			expectedQueries++
+		}
+		clientDomainQuestion(t, system, host+".", D.TypeA, 52016)
+		expectedQueries++
+		evicted := domainWire(t, manager.Query(generation, 1))
+		if evicted.DNS.Sequence != expectedQueries || evicted.DNS.Dropped != expectedQueries-16 || evicted.DNS.Saturated || len(evicted.DNS.Queries) != 16 || evicted.Connections[0].Attribution.DNSSequence != 0 {
+			t.Fatal("evicted original DNS attribution must stay unavailable even when a later equivalent question remains")
+		}
 	}
 	stopped := manager.Stop(generation)
 	if stopped.Cleanup != "complete" || stopped.Phase != "stopped" || stopped.PendingOwners != (R.PendingOwners{}) {
 		t.Fatalf("fake-IP TCP stop did not join the actual client and physical owners: %+v", stopped)
+	}
+	wantedRetained := int(expectedQueries)
+	if wantedRetained > 16 {
+		wantedRetained = 16
+	}
+	if stoppedDNS := domainWire(t, stopped).DNS; stoppedDNS == nil || stoppedDNS.Sequence != expectedQueries || len(stoppedDNS.Queries) != wantedRetained {
+		t.Fatal("normal stop lost its own run's bounded diagnostic evidence")
 	}
 	if !rejectNode {
 		select {

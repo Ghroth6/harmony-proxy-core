@@ -633,6 +633,16 @@ func (e *runEngine) observeConnection(tracker statistic.Tracker) {
 		if target.Is6() {
 			value.AddressFamily = "ipv6"
 		}
+		value.Attribution = &ConnectionAttribution{RulePayloadDigest: observationDigest(info.RulePayload)}
+		if host := normalizedDomain(info.Metadata.RuleHost()); host != "" {
+			value.Attribution.DomainDigest = observationDigest(host)
+			if e.dns != nil {
+				value.Attribution.DNSSequence = e.dns.sequenceFor(value.Attribution.DomainDigest, target)
+			}
+		}
+		if len(info.Chain) > 0 {
+			value.Attribution.NodeDigest = observationDigest(info.Chain[0])
+		}
 	}
 	if len(e.observations) == 16 {
 		e.observations = e.observations[1:]
@@ -648,10 +658,28 @@ func (e *runEngine) fillReceipt(receipt *Receipt) {
 	}
 	if e.dns != nil {
 		receipt.PendingOwners.DNSWaiters = e.dns.count()
+		receipt.DNS = e.dns.observation()
 	}
 	receipt.Connections = []ConnectionObservation{}
 	for _, record := range e.observations {
 		value := record.value
+		if value.Attribution != nil {
+			attribution := *value.Attribution
+			retained := false
+			if receipt.DNS != nil && attribution.DNSSequence != 0 {
+				for _, query := range receipt.DNS.Queries {
+					if query.Sequence == attribution.DNSSequence && query.QuestionDigest == attribution.DomainDigest && query.Outcome == "response" && query.Rcode == 0 {
+						for _, address := range query.AnswerAddresses {
+							retained = retained || address == value.TargetAddress
+						}
+					}
+				}
+			}
+			if !retained {
+				attribution.DNSSequence = 0
+			}
+			value.Attribution = &attribution
+		}
 		value.Upload = record.tracker.Info().UploadTotal.Load()
 		value.Download = record.tracker.Info().DownloadTotal.Load()
 		receipt.Connections = append(receipt.Connections, value)

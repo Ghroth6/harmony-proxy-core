@@ -21,6 +21,8 @@ type dnsBook struct {
 	changed   *sync.Cond
 	engine    *runEngine
 	service   resolver.Service
+	mapper    resolver.Enhancer
+	observed  DNSObservation
 	accepting bool
 	pending   int
 	fault     bool
@@ -29,6 +31,7 @@ type dnsBook struct {
 
 func newDNSBook(engine *runEngine, service resolver.Service) *dnsBook {
 	b := &dnsBook{engine: engine, service: service, unknown: make(map[net.Conn]error)}
+	_, b.mapper, _ = engine.cfg.MobileDNSResolvers()
 	b.changed = sync.NewCond(&b.mu)
 	return b
 }
@@ -82,7 +85,7 @@ func (b *dnsBook) handleUDP(id stack.TransportEndpointID, packet *stack.PacketBu
 		if source.Addr().Is6() {
 			size = MTU - 48
 		}
-		reply, err := resolver.RelayDnsPacketWithService(ctx, payload, make([]byte, size), b.service)
+		reply, err := resolver.RelayDnsPacketWithService(ctx, payload, make([]byte, size), observedDNSService{b, "udp"})
 		if err == nil && ctx.Err() == nil {
 			_, _ = u.writeBack(source, target, nil, reply, nil)
 		}
@@ -128,7 +131,7 @@ func (b *dnsBook) handleTCP(conn net.Conn) {
 			<-closed
 		}
 	}()
-	_ = resolver.RelayDnsConnWithService(b.engine.root, owned, resolver.DefaultDnsReadTimeout, b.service)
+	_ = resolver.RelayDnsConnWithService(b.engine.root, owned, resolver.DefaultDnsReadTimeout, observedDNSService{b, "tcp"})
 }
 
 func (b *dnsBook) wait() {
