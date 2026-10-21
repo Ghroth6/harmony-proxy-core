@@ -210,17 +210,28 @@ architecture, SDK target, actual ELF machine and tool hashes. ARM64 retains
 Use `-BuildCache` for a task-specific compilation cache; module versions remain
 the root's locked inputs. `scripts/test-mobile-build.ps1` invokes that real
 build and independently checks the requested ELF64 shared-object machine and
-receipt identity. Neither compilation nor ELF validation proves target loading,
-TLS compatibility, packet forwarding or cleanup.
+receipt identity. Both targets use `-tlsmodegd`; `check-mobile-elf.ps1` requires
+the actual architecture's TLSDESC relocation and rejects STATIC_TLS or IE TLS.
+`test-mobile-elf.ps1` checks the real saved legacy AMD64 failure and existing
+ARM64 TLSDESC bytes without compiling. Neither compilation nor ELF validation
+proves target loading, TLS compatibility, packet forwarding or cleanup.
 
-The current x86_64 target is compile/package-only, not supported emulator
-execution. On 2026-10-21, the actual stripped core failed
+On 2026-10-21, the actual legacy stripped AMD64 core failed
 `dlopen(RTLD_NOW | RTLD_LOCAL)` on `OpenHarmony-7.0.0.105` with
 `initial-exec TLS resolves to dynamic definition`. Its AMD64 ELF carries
-`STATIC_TLS` and `R_X86_64_TPOFF64`; the existing OHOS Go fork's general-dynamic
-TLS option explicitly declares ARM64 support only. No AMD64 Go TLS repair has
-been implemented. App installation or a visible UI does not establish core
-loading, content preparation, VPN forwarding or target cleanup.
+`STATIC_TLS` and `R_X86_64_TPOFF64`; that old OHOS Go fork accepts the GD option
+but does not implement it for AMD64. The new build gate rejects those bytes.
+The independent Go repository owns the AMD64 toolchain repair; new core and
+package identities need their own target acceptance. App installation or a
+visible UI does not establish core loading, preparation, forwarding or cleanup.
+
+New x86_64 builds require `-ToolchainBuildReceipt` pointing to the Go repository's
+immutable make receipt; ARM64 can supply the same receipt. The driver verifies
+its `goSha256` and complete `toolSha256` against the actual executables before
+compiling and rechecks tools afterward. `toolchainBuildRevision` is the receipt's
+actual make source revision, alongside the receipt path/hash. The separately
+named `sourceTreeRevisionAtCoreBuild` is only the current GOROOT source state,
+not independent proof of how those compiler binaries were built.
 
 Private implementation is `mobile/runtime/manager.go` (immediate consumption,
 exact transfer records and finite observations), `descriptor_linux.go` (owned
