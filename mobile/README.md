@@ -203,7 +203,15 @@ gVisor SYN/handshake/cancellation and real Mihomo candidate/dialer/retirement
 behavior through an injected descriptor syscall boundary, plus the affected
 validation, protection, forwarding, tunnel, config, executor and statistics regressions.
 It does not use a race detector or execute real Linux/OHOS descriptor syscalls.
-Build actual ARM64 bytes with the existing `scripts/build-mobile.ps1` entry.
+Build actual OHOS bytes with `scripts/build-mobile.ps1`. Its optional
+`-Architecture arm64-v8a|x86_64` keeps ARM64 as the default and records the Go
+architecture, SDK target, actual ELF machine and tool hashes. ARM64 retains
+`-tlsmodegd`; AMD64 uses the current Go toolchain's ordinary c-shared TLS path.
+Use `-BuildCache` for a task-specific compilation cache; module versions remain
+the root's locked inputs. `scripts/test-mobile-build.ps1` invokes that real
+build and independently checks the requested ELF64 shared-object machine and
+receipt identity. Neither compilation nor ELF validation proves target loading,
+TLS compatibility, packet forwarding or cleanup.
 
 Private implementation is `mobile/runtime/manager.go` (immediate consumption,
 exact transfer records and finite observations), `descriptor_linux.go` (owned
