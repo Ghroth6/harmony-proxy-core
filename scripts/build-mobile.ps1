@@ -52,6 +52,12 @@ if (!$BuildCache) { $BuildCache=Join-Path $core ('local/cache/go-native/'+$Archi
 $buildCachePath=[IO.Path]::GetFullPath($BuildCache)
 $stage = Join-Path $core ('local/runs/mobile-' + (Get-Date -AsUTC -Format 'yyyyMMddTHHmmssfffffffZ'))
 New-Item -ItemType Directory -Path $stage,(Join-Path $stage 'tmp') | Out-Null
+$toolchainReceiptCopy=$null
+if ($toolchainReceiptPath) {
+  $toolchainReceiptCopy=Join-Path $stage 'toolchain-build-receipt.json'
+  Copy-Item -LiteralPath $toolchainReceiptPath -Destination $toolchainReceiptCopy
+  if ((Get-FileHash -LiteralPath $toolchainReceiptCopy -Algorithm SHA256).Hash -ine $toolchainReceiptHash) { throw 'Toolchain build receipt changed before core compilation' }
+}
 # The driver requests Go 1.24 without rewriting upstream go.mod. Replacements
 # in a replaced dependency are not inherited; preserve this authoritative root
 # replacement explicitly, rather than importing any old wrapper module graph.
@@ -86,7 +92,7 @@ $arguments=@('build','-buildvcs=false','-mod=mod')+$tlsArguments+@('-buildmode',
 [ordered]@{ sourceRevision=$revision; architecture=$Architecture; goOs='linux'; goArch=$goArch; compilerTarget=$compilerTarget;
   arguments=$arguments; cflags=$env:CGO_CFLAGS; ldflags=$env:CGO_LDFLAGS; goVersion=$goVersion; buildCache=$buildCachePath;
   sourceTreeRevisionAtCoreBuild=$goSourceTreeRevision; toolchainBuildRevision=$toolchainBuildRevision;
-  toolchainBuildReceipt=$toolchainReceiptPath; toolchainBuildReceiptSha256=$toolchainReceiptHash; goSha256=$goHash; goToolSha256=$goTools;
+  toolchainBuildReceipt=$toolchainReceiptPath; toolchainBuildReceiptSha256=$toolchainReceiptHash; toolchainBuildReceiptCopy=$toolchainReceiptCopy; goSha256=$goHash; goToolSha256=$goTools;
   scope='Requested real OHOS core compilation; no successful artifact established yet' } |
   ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'inputs.json') -Encoding utf8NoBOM
 & $go -C $stage @arguments *> (Join-Path $stage 'build.log')
@@ -103,7 +109,7 @@ $elfIdentity=& (Join-Path $PSScriptRoot 'check-mobile-elf.ps1') -Library $librar
   librarySha256=(Get-FileHash -LiteralPath $library -Algorithm SHA256).Hash.ToLowerInvariant()
   goVersion=$goVersion; goSha256=$goHash; goToolSha256=$goTools; goRoot=$goRoot; goToolDir=$goToolDir
   sourceTreeRevisionAtCoreBuild=$goSourceTreeRevision; toolchainBuildRevision=$toolchainBuildRevision;
-  toolchainBuildReceipt=$toolchainReceiptPath; toolchainBuildReceiptSha256=$toolchainReceiptHash; tls=$elfIdentity.tls
+  toolchainBuildReceipt=$toolchainReceiptPath; toolchainBuildReceiptSha256=$toolchainReceiptHash; toolchainBuildReceiptCopy=$toolchainReceiptCopy; tls=$elfIdentity.tls
   clangSha256=(Get-FileHash -LiteralPath $env:CC -Algorithm SHA256).Hash
   readelfSha256=$elfIdentity.readelfSha256
   buildCache=$buildCachePath; goFlags=$env:GOFLAGS; goMaxProcs=$env:GOMAXPROCS
