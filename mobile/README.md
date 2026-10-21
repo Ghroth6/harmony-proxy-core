@@ -205,8 +205,8 @@ validation, protection, forwarding, tunnel, config, executor and statistics regr
 It does not use a race detector or execute real Linux/OHOS descriptor syscalls.
 Build actual OHOS bytes with `scripts/build-mobile.ps1`. Its optional
 `-Architecture arm64-v8a|x86_64` keeps ARM64 as the default and records the Go
-architecture, SDK target, actual ELF machine and tool hashes. ARM64 retains
-`-tlsmodegd`; AMD64 uses the current Go toolchain's ordinary c-shared TLS path.
+architecture, SDK target, actual ELF machine and tool hashes. ARM64 retains its
+existing dynamic TLS model, and AMD64 requires the independently built GD toolchain.
 Use `-BuildCache` for a task-specific compilation cache; module versions remain
 the root's locked inputs. `scripts/test-mobile-build.ps1` invokes that real
 build and independently checks the requested ELF64 shared-object machine and
