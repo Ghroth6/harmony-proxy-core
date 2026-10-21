@@ -213,6 +213,15 @@ build and independently checks the requested ELF64 shared-object machine and
 receipt identity. Neither compilation nor ELF validation proves target loading,
 TLS compatibility, packet forwarding or cleanup.
 
+The current x86_64 target is compile/package-only, not supported emulator
+execution. On 2026-10-21, the actual stripped core failed
+`dlopen(RTLD_NOW | RTLD_LOCAL)` on `OpenHarmony-7.0.0.105` with
+`initial-exec TLS resolves to dynamic definition`. Its AMD64 ELF carries
+`STATIC_TLS` and `R_X86_64_TPOFF64`; the existing OHOS Go fork's general-dynamic
+TLS option explicitly declares ARM64 support only. No AMD64 Go TLS repair has
+been implemented. App installation or a visible UI does not establish core
+loading, content preparation, VPN forwarding or target cleanup.
+
 Private implementation is `mobile/runtime/manager.go` (immediate consumption,
 exact transfer records and finite observations), `descriptor_linux.go` (owned
 nonblocking TUN and CLOEXEC wake pipe syscalls), `engine_gvisor.go` (pumps,
