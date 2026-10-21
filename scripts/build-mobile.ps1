@@ -7,6 +7,7 @@ param(
   [string]$BuildCache
 )
 $ErrorActionPreference = 'Stop'
+$Architecture=$Architecture.ToLowerInvariant()
 $core = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $revision = git -C $core rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify core source' }
@@ -76,6 +77,7 @@ $elf | Set-Content -LiteralPath (Join-Path $stage 'libcb_validation.so.elf.txt')
   goVersion=$goVersion; goSha256=(Get-FileHash -LiteralPath $go -Algorithm SHA256).Hash
   clangSha256=(Get-FileHash -LiteralPath $env:CC -Algorithm SHA256).Hash
   readelfSha256=(Get-FileHash -LiteralPath $readelf -Algorithm SHA256).Hash
+  buildCache=$buildCachePath; goFlags=$env:GOFLAGS; goMaxProcs=$env:GOMAXPROCS
   sdk=(Get-Content -LiteralPath (Join-Path $sdk 'oh-uni-package.json') -Raw | ConvertFrom-Json)
   arguments=$arguments; cflags=$env:CGO_CFLAGS; ldflags=$env:CGO_LDFLAGS
   moduleSha256=(Get-FileHash -LiteralPath (Join-Path $stage 'go.mod') -Algorithm SHA256).Hash
