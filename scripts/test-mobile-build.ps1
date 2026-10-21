@@ -3,13 +3,14 @@ param(
   [Parameter(Mandatory)][string]$OHOSGo,
   [Parameter(Mandatory)][string]$NativeSdk,
   [Parameter(Mandatory)][string]$ModuleCache,
-  [ValidateSet('arm64-v8a','x86_64')][string]$Architecture='x86_64',
+  [ValidateSet('arm64-v8a','x86_64')][string]$Architecture='arm64-v8a',
   [string]$BuildCache
 )
 $ErrorActionPreference='Stop'
 # Exercise the production build entry with real tools. This is a compile contract,
 # not target loading or VPN acceptance. Numeric ELF values come from the ELF ABI.
-$parameters=@{ OHOSGo=$OHOSGo; NativeSdk=$NativeSdk; ModuleCache=$ModuleCache; Architecture=$Architecture }
+$parameters=@{ OHOSGo=$OHOSGo; NativeSdk=$NativeSdk; ModuleCache=$ModuleCache }
+if ($PSBoundParameters.ContainsKey('Architecture')) { $parameters.Architecture=$Architecture }
 if ($BuildCache) { $parameters.BuildCache=$BuildCache }
 $library=& (Join-Path $PSScriptRoot 'build-mobile.ps1') @parameters
 if (@($library).Count -ne 1 -or !(Test-Path -LiteralPath $library)) { throw 'Expected one completed core library' }
