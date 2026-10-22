@@ -289,7 +289,7 @@ func runPersistentDomainChild(t *testing.T, mode, root string) {
 	}
 	for index, connection := range observed.Connections {
 		expectedHost, expectedIP, sequence := host, address.String(), uint64(1)
-		if mode == "reopen" && index == 0 {
+		if mode == "reopen" && connection.SourcePort == 55101 {
 			expectedHost, expectedIP, sequence = persistentDomainSeedHost, seedIP.String(), 0
 		}
 		attribution := wire.Connections[index].Attribution

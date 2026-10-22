@@ -34,7 +34,8 @@ func originalUDPPolicyRun(t *testing.T, rule string, sourceRouting bool) (C.Tunn
 	if plan.Category != "planned" || !plan.ResourcesComplete {
 		t.Fatalf("actual original routing input failed its pure plan: %s/%s", plan.Category, plan.Code)
 	}
-	platform := contract.Platform{RuntimeOptions: contract.RuntimeOptions{Entry: "system-vpn", Transport: "tcp-udp", UDP: true}, PlatformPolicy: contract.PlatformPolicy{Revision: "routing-fixture-v1", AddressFamily: "ipv4", ApplicationIDs: []string{}}, TunPolicy: contract.TunPolicy{Address: "10.111.0.1", PrefixLength: 30, Route: "0.0.0.0", MTU: 1500}}
+	scope := "all"
+	platform := contract.Platform{RuntimeOptions: contract.RuntimeOptions{Entry: "system-vpn", Transport: "tcp-udp", UDP: true}, PlatformPolicy: contract.PlatformPolicy{Revision: "routing-fixture-v1", AddressFamily: "ipv4", ApplicationScope: &scope, ApplicationIDs: []string{}}, TunPolicy: contract.TunPolicy{Address: "10.111.0.1", PrefixLength: 30, Route: "0.0.0.0", MTU: 1500}}
 	prepared, err := contract.Seal(plan.InputDigest, nil, platform, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -54,8 +54,8 @@ publishes the actual snapshot, resets the SystemResolver and resumes online
 management admission. Invalid/stale data never gets echoed as an accepted path.
 No public DNS fallback is installed when platform DNS is unavailable.
 
-Runtime contract 3 retains the existing `_v1` C symbol names while explicitly
-rejecting contract-1/2 requests. Required top-level `networkGeneration` is separate
+Runtime contract 4 retains the existing `_v1` C symbol names while explicitly
+rejecting contract-1/2/3 requests. Required top-level `networkGeneration` is separate
 from persistent platform policy. New node scope requires the current online
 snapshot and available DNS for domain nodes; the receipt records only the
 actually accepted generation. Old fixed-IP scope may use zero. Protected physical
@@ -74,14 +74,14 @@ zero-download #26.
 ## Mobile runtime contract
 
 `mobile/include/cb_runtime.h` and `mobile/runtime/contract.go` are the versioned
-runtime value boundary. `cb_runtime_contract_version_v1` returns 3 for a build
+runtime value boundary. `cb_runtime_contract_version_v1` returns 4 for a build
 with the explicitly selected gVisor runtime, independently of the validation ABI;
 without `with_gvisor` it returns 0, so the adapter rejects capability before dup.
 The three operations own the TUN duplicate, packet stack and stop cleanup.
 Host syscall-boundary tests and ARM64 compilation do not establish target TUN
 acceptance. Resolve all runtime symbols and the contract version before dup.
 
-The start request contains exactly `contractVersion:3`, `operationId`, `generation`, `networkGeneration`,
+The start request contains exactly `contractVersion:4`, `operationId`, `generation`, `networkGeneration`,
 `transferId`, `inputRevision`, `inputDigest`, `runtimeOptions`, `platformPolicy`,
 and `tunPolicy`, with optional `preparedPolicy` for original-source policy.
 Generation is a JSON integer 1..INT32_MAX and matches the scalar
@@ -114,7 +114,7 @@ Receipt fields are always present: `contractVersion`, `coreInstance`, `operation
 `candidateDigest`, `inputDigest`, `resourceManifestDigest`, `platformPolicyDigest`,
 `groupPreferencesDigest`, `phase`, `outcome`, `cleanup`, `failureCode`,
 `stack:"gvisor-ipv4-tcp"`, `mtu:1500`, `forwardingActive`, `tun`, `resources`,
-`pendingOwners`, and `connections`. Phases are absent/validating/constructing/
+`pendingOwners`, `connections`, and `connectionSnapshot`. Phases are absent/validating/constructing/
 starting/running/stopping/stopped/failed; outcomes pending/running/stopped/
 rejected/failed; cleanup pending/complete/unknown. Transfer state is consumed,
 not-found, or fault. Operation identity and digest are empty before a request
@@ -149,20 +149,40 @@ packet-stack and tun, plus policy-services for original-source runs; an unexpect
 constructor panic retains construction/unknown.
 `pendingOwners` has bounded counts for `pumps`, `tcpCallbacks`,
 `constructions`, `forwarding`; original-source snapshots also observe bounded
-`udpFlows`, `udpPackets`, `udpWrites` and `dnsWaiters`. `connections` contains at most 16 safe observations
-with `sequence`, `targetIPv4`, `targetPort`, `rule`, `node`, `upload`, `download`;
-and optional original TUN `targetAddress`/`addressFamily` for IPv6;
-it contains neither physical proxy endpoints, credentials, payloads nor full parser errors.
+`udpFlows`, `udpPackets`, `udpWrites` and `dnsWaiters`. Each query obtains active
+connections directly from Mihomo `statistic.DefaultManager.Range`, filtered by
+both the actual forwarding context generation and metadata generation, and TUN
+ingress. INTERNAL/management and other-run entries are excluded. No independent
+active inventory, observed-active admission cap, activity ranking or slot policy
+selects this list. Active values are sorted by UUID only for presentation.
 
-The same 16-entry window reserves eight slots for active connections with payload
-and eight for recent ended/initial observations; unused slots backfill from either
-group. Selection uses the existing tracker's last real payload activity, then its
-stable run-local sequence as a tie-break; output is sorted by sequence. The run
-retains only accounting info for at most 64 observed active identities (the existing
-TCP-tuple plus UDP-flow bounds) and 16 ended identities, never a connection or lease.
-Exceeding observation capacity only loses observations, not forwarding. Sequence
-never repeats within a run; reaching the safe-integer limit stops new observations.
-Selection is bounded evidence, not a complete inventory of simultaneous traffic.
+`connections` copies tracker UUID `id`, `state:active|history`, `protocol:tcp|udp`,
+`sourceAddress`, `sourcePort`, `startedAt` (Unix milliseconds), `targetIPv4`,
+`targetAddress`, `addressFamily`, `originalDestination`, `destinationAddress`,
+`targetPort`, `rule`, `node`, `upload`, `download` and optional `attribution`.
+RawDstAddr supplies the original TUN target; destinationAddress is the resolved
+metadata destination. Without RawDstAddr, the metadata target is explicitly marked
+originalDestination=false. Empty addresses/zero source port mean unavailable.
+UUID plus coreInstance/generation distinguishes source-port reuse across runs.
+Counters are tracker-observed bytes, not exact encrypted application-message
+accounting. No Go pointer, process UID, credentials, payload or physical proxy
+endpoint crosses the bridge.
+
+The existing fork creation subscription supplies a 16-creation history window,
+retaining only accounting references and immutable DNS values. Entries still in
+the official registry are not repeated as history. This finite window is not a
+complete closed-connection log; old active connections remain queryable even
+after their history slot is evicted. Registry removal is not proof that I/O or
+platform cleanup joined; bounded accounting references settle at real cleanup.
+
+Required `connectionSnapshot` contains capturedAt (Unix milliseconds), active
+(matching source entries), activeOmitted, historyDropped (creation-window
+evictions), historyOmitted, dnsFactsDropped and dnsLinksOmitted. Zero capturedAt
+means no engine observation. The traversal is not atomic across concurrent
+creation/close/I/O, but returned UUIDs are unique. Active and history values share
+the existing 1 MiB receipt byte budget; overflow is explicitly counted without
+changing forwarding. The ordinary RPC also counts omissions when its surrounding
+resource/source facts consume that same wire budget. No pagination is added.
 
 Original-source connections additionally carry optional `attribution`; captured
 client TUN DNS carries optional `dns` with at most 16 completed service results,
@@ -172,8 +192,11 @@ finite errors; it does not measure upstream queries/cache hits or prove client
 delivery. A fake-IP indication requires the actual captured mapper's domain
 association for every retained address, not range membership; truncated addresses
 remain unobserved. The connection binds an unambiguous question/address only at
-connection creation, never a later lookup. Each observed connection may retain an
-exact private copy of that confirmed result. DNS output first includes copies for
+connection creation, never a later lookup. A value-only UUID-to-DNS supplement
+preserves exact positive associations beyond the history window, bounded by the
+existing 1 MiB budget for serialized UUID/query values; saturation increments
+dnsFactsDropped and never limits active inventory or forwarding. Query removes
+facts whose UUID is no longer registered in this run. DNS output first includes copies for
 selected connections, then the latest completion-ring results, deduplicated and
 sorted by original sequence. Expired/ambiguous results unavailable at creation stay
 unassociated; later equivalent questions never replace them. `dropped` continues
@@ -184,8 +207,13 @@ Hostnames are lowercased and one final dot removed before UTF-8 SHA256; actual
 rule payload and Chain[0] labels use exact UTF-8 bytes. These local identifiers
 are correlatable, not anonymized, global node identities or physical peer proof.
 The application repository's VPN runtime contract owns the exact fields and
-limits. Updated consumers accept old v2 output; old strict apps reject the new
-fields, so runtime libraries and apps must be paired by exact tested revisions.
+limits. A known creation link not contained in the returned 16 DNS records has
+dnsSequence=0, dnsLinkOmitted=true; connectionSnapshot.dnsLinksOmitted counts
+these returned connections. Missing/ambiguous/expired creation facts remain
+unassociated and are never reconstructed using current DNS mappings. Runtime-4
+apps and libraries reject earlier contracts before forwarding and must be paired
+by exact tested revisions. This does not resolve the observed browser fake-IP /
+actual-IP discrepancy or establish phone acceptance.
 
 Public real-gVisor tests cover the mapping/question/original-rule association,
 initial ambiguity and later-query/eviction boundaries, answer/history bounds,

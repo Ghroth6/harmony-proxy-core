@@ -8,8 +8,6 @@
 
 `NowTraffic(onlyProxy)` 返回上一秒的字节桶，读取不清零；`TotalTraffic(onlyProxy)` 保留初始化或 Reset 后的累计，包括已关闭连接。proxy 分类依据连接创建时固定的实际出口类型，不依赖名称或组的后续选择；Direct、Compatible、控制出口、组型和未知类型不算代理。内部 `pushToManager=false` 流量仍排除，计数、轮桶和 Reset 共享一个边界。字节上报保留官方 tracker 的缓冲 API 局限，不代表精确的线上传输字节。
 
-`Tracker.LastActivity()` 初值为连接建立时间，随后记录可确认的 payload I/O，保留单调时钟并发更新不回退。TCP 空操作和失败尝试不刷新，UDP 成功的零长度包刷新；缓冲写入报错或复制回调未上报的部分传输无法确认，非空缓冲读取仅在长度增长时确认活动。该查询不改变 JSON 结构，也不决定空闲关闭策略。
-
 URLTest、连接创建和 provider 初始化通过可注销订阅发布事件。回调同步执行且可能并发；cancel 不等待已经选中的回调，调用方须排除旧配置事件，不能等待 ApplyConfig 或它持有的应用锁。provider 初始化事件包括成功、失败和配置代际，不代表后续刷新或完整配置成功。
 
 `platformnetwork.Publish` 校验并原子发布完整的网络快照，包含代际、DNS、接口地址/前缀和路由；非法或过期快照不替换现状。OHOS 在首个快照到达前按离线处理，离线不回落到原生接口或隐式公共系统 DNS。接口索引只能使用实测值，未知为零，不能用 NetworkID 代替。

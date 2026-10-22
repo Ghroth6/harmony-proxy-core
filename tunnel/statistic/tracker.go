@@ -19,7 +19,6 @@ type Tracker interface {
 	ID() string
 	Close() error
 	Info() *TrackerInfo
-	LastActivity() time.Time
 	C.Connection
 }
 
@@ -33,25 +32,6 @@ type TrackerInfo struct {
 	ProviderChain C.Chain      `json:"providerChains"`
 	Rule          string       `json:"rule"`
 	RulePayload   string       `json:"rulePayload"`
-	lastActivity  atomic.Int64
-}
-
-// LastActivity returns the creation time until payload I/O is confirmed, then
-// the latest confirmed activity. Buffer operations and unwrapped copy callbacks
-// cannot report every partial failed transfer; see the I/O methods below.
-// It preserves Start's monotonic clock for idle checks. Start must not be changed
-// after the tracker is published.
-func (t *TrackerInfo) LastActivity() time.Time {
-	return t.Start.Add(time.Duration(t.lastActivity.Load()))
-}
-
-func (t *TrackerInfo) markActivity() {
-	next := int64(time.Since(t.Start))
-	for previous := t.lastActivity.Load(); next > previous; previous = t.lastActivity.Load() {
-		if t.lastActivity.CompareAndSwap(previous, next) {
-			return
-		}
-	}
 }
 
 type tcpTracker struct {
@@ -89,9 +69,6 @@ func (tt *tcpTracker) Info() *TrackerInfo {
 
 func (tt *tcpTracker) Read(b []byte) (int, error) {
 	n, err := tt.Conn.Read(b)
-	if n > 0 {
-		tt.markActivity()
-	}
 	download := int64(n)
 	if tt.pushToManager {
 		tt.manager.recordTraffic(0, download, tt.proxyTraffic)
@@ -101,13 +78,7 @@ func (tt *tcpTracker) Read(b []byte) (int, error) {
 }
 
 func (tt *tcpTracker) ReadBuffer(buffer *buf.Buffer) (err error) {
-	before := buffer.Len()
 	err = tt.Conn.ReadBuffer(buffer)
-	// Readers may append or replace contents. Empty buffers (the copy-loop
-	// contract) and growth prove a read; pre-existing bytes alone do not.
-	if buffer.Len() > before {
-		tt.markActivity()
-	}
 	download := int64(buffer.Len())
 	if tt.pushToManager {
 		tt.manager.recordTraffic(0, download, tt.proxyTraffic)
@@ -118,9 +89,6 @@ func (tt *tcpTracker) ReadBuffer(buffer *buf.Buffer) (err error) {
 
 func (tt *tcpTracker) UnwrapReader() (io.Reader, []N.CountFunc) {
 	return tt.Conn, []N.CountFunc{func(download int64) {
-		if download > 0 {
-			tt.markActivity()
-		}
 		if tt.pushToManager {
 			tt.manager.recordTraffic(0, download, tt.proxyTraffic)
 		}
@@ -130,9 +98,6 @@ func (tt *tcpTracker) UnwrapReader() (io.Reader, []N.CountFunc) {
 
 func (tt *tcpTracker) Write(b []byte) (int, error) {
 	n, err := tt.Conn.Write(b)
-	if n > 0 {
-		tt.markActivity()
-	}
 	upload := int64(n)
 	if tt.pushToManager {
 		tt.manager.recordTraffic(upload, 0, tt.proxyTraffic)
@@ -144,11 +109,6 @@ func (tt *tcpTracker) Write(b []byte) (int, error) {
 func (tt *tcpTracker) WriteBuffer(buffer *buf.Buffer) (err error) {
 	upload := int64(buffer.Len())
 	err = tt.Conn.WriteBuffer(buffer)
-	// This API reports no byte count on failure. A partial failed write cannot
-	// be confirmed here; do not treat an attempted write as activity.
-	if err == nil && upload > 0 {
-		tt.markActivity()
-	}
 	if tt.pushToManager {
 		tt.manager.recordTraffic(upload, 0, tt.proxyTraffic)
 	}
@@ -158,9 +118,6 @@ func (tt *tcpTracker) WriteBuffer(buffer *buf.Buffer) (err error) {
 
 func (tt *tcpTracker) UnwrapWriter() (io.Writer, []N.CountFunc) {
 	return tt.Conn, []N.CountFunc{func(upload int64) {
-		if upload > 0 {
-			tt.markActivity()
-		}
 		if tt.pushToManager {
 			tt.manager.recordTraffic(upload, 0, tt.proxyTraffic)
 		}
@@ -234,9 +191,6 @@ func (ut *udpTracker) Info() *TrackerInfo {
 
 func (ut *udpTracker) ReadFrom(b []byte) (int, net.Addr, error) {
 	n, addr, err := ut.PacketConn.ReadFrom(b)
-	if n > 0 || err == nil {
-		ut.markActivity()
-	}
 	download := int64(n)
 	if ut.pushToManager {
 		ut.manager.recordTraffic(0, download, ut.proxyTraffic)
@@ -247,9 +201,6 @@ func (ut *udpTracker) ReadFrom(b []byte) (int, net.Addr, error) {
 
 func (ut *udpTracker) WaitReadFrom() (data []byte, put func(), addr net.Addr, err error) {
 	data, put, addr, err = ut.PacketConn.WaitReadFrom()
-	if len(data) > 0 || err == nil {
-		ut.markActivity()
-	}
 	download := int64(len(data))
 	if ut.pushToManager {
 		ut.manager.recordTraffic(0, download, ut.proxyTraffic)
@@ -260,9 +211,6 @@ func (ut *udpTracker) WaitReadFrom() (data []byte, put func(), addr net.Addr, er
 
 func (ut *udpTracker) WriteTo(b []byte, addr net.Addr) (int, error) {
 	n, err := ut.PacketConn.WriteTo(b, addr)
-	if n > 0 || (len(b) == 0 && err == nil) {
-		ut.markActivity()
-	}
 	upload := int64(n)
 	if ut.pushToManager {
 		ut.manager.recordTraffic(upload, 0, ut.proxyTraffic)

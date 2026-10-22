@@ -280,13 +280,13 @@ rules:
 	} else {
 		t.Fatal(err)
 	}
-	for index, connection := range observed.Connections {
+	for _, connection := range observed.Connections {
 		host, rule, payload, node, leaf, sequence := proxyHost, "RuleSet", "D1Routes", "redacted", "节点夹具", uint64(1)
-		if index == 1 {
+		if connection.SourcePort == 54102 {
 			host, rule, payload, node, leaf, sequence = directHost, "DomainSuffix", "direct-fixture.test", "DIRECT", "DIRECT", 2
 		}
 		if ambiguousDNS {
-			if index == 0 {
+			if connection.SourcePort == 54101 {
 				sequence = 0
 			} else {
 				sequence = 3

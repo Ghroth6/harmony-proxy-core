@@ -2,6 +2,7 @@ package statistic
 
 import (
 	"io"
+	"net"
 	"sync"
 	"testing"
 
@@ -9,8 +10,42 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 )
 
+// Socket-boundary fixtures for the retained public accounting contract.
+type accountingConn struct {
+	C.Conn
+	n           int
+	err         error
+	bufferRead  func(*buf.Buffer) error
+	bufferWrite func(*buf.Buffer) error
+}
+
+func (*accountingConn) ProviderChains() C.Chain           { return nil }
+func (*accountingConn) RemoteDestination() string         { return "test:443" }
+func (*accountingConn) Close() error                      { return nil }
+func (c *accountingConn) Read([]byte) (int, error)        { return c.n, c.err }
+func (c *accountingConn) Write([]byte) (int, error)       { return c.n, c.err }
+func (c *accountingConn) ReadBuffer(b *buf.Buffer) error  { return c.bufferRead(b) }
+func (c *accountingConn) WriteBuffer(b *buf.Buffer) error { return c.bufferWrite(b) }
+
+type accountingPacketConn struct {
+	C.PacketConn
+	n   int
+	err error
+}
+
+func (*accountingPacketConn) ProviderChains() C.Chain   { return nil }
+func (*accountingPacketConn) RemoteDestination() string { return "test:53" }
+func (*accountingPacketConn) Close() error              { return nil }
+func (c *accountingPacketConn) ReadFrom([]byte) (int, net.Addr, error) {
+	return c.n, &net.UDPAddr{}, c.err
+}
+func (c *accountingPacketConn) WaitReadFrom() ([]byte, func(), net.Addr, error) {
+	return make([]byte, c.n), nil, &net.UDPAddr{}, c.err
+}
+func (c *accountingPacketConn) WriteTo([]byte, net.Addr) (int, error) { return c.n, c.err }
+
 type trafficConn struct {
-	activityConn
+	accountingConn
 	kind C.AdapterType
 	name string
 }
@@ -19,7 +54,7 @@ func (c *trafficConn) EgressType() C.AdapterType { return c.kind }
 func (c *trafficConn) Chains() C.Chain           { return C.Chain{c.name, "selected-group"} }
 
 type trafficPacketConn struct {
-	activityPacketConn
+	accountingPacketConn
 	kind C.AdapterType
 	name string
 }
@@ -88,7 +123,7 @@ func TestEveryKnownProxyProtocolCountsAsProxy(t *testing.T) {
 func TestTrafficCountsTCPPathsAndExcludesInternalTrackers(t *testing.T) {
 	for _, push := range []bool{true, false} {
 		m := &Manager{}
-		conn := &trafficConn{kind: C.Socks5, name: "DIRECT", activityConn: activityConn{n: 3, err: io.ErrUnexpectedEOF}}
+		conn := &trafficConn{kind: C.Socks5, name: "DIRECT", accountingConn: accountingConn{n: 3, err: io.ErrUnexpectedEOF}}
 		conn.bufferRead = func(b *buf.Buffer) error { b.Truncate(5); return nil }
 		conn.bufferWrite = func(b *buf.Buffer) error { b.Release(); return nil }
 		tracker := NewTCPTracker(conn, m, &C.Metadata{}, nil, 2, 4, push)
@@ -123,7 +158,7 @@ func TestTrafficCountsTCPPathsAndExcludesInternalTrackers(t *testing.T) {
 func TestTrafficCountsUDPPathsAndExcludesInternalTrackers(t *testing.T) {
 	for _, push := range []bool{true, false} {
 		m := &Manager{}
-		conn := &trafficPacketConn{kind: C.Trojan, activityPacketConn: activityPacketConn{n: 3, err: io.ErrUnexpectedEOF}}
+		conn := &trafficPacketConn{kind: C.Trojan, accountingPacketConn: accountingPacketConn{n: 3, err: io.ErrUnexpectedEOF}}
 		tracker := NewUDPTracker(conn, m, &C.Metadata{}, nil, 2, 4, push)
 		_, _, _ = tracker.ReadFrom(make([]byte, 8))
 		_, _, _, _ = tracker.WaitReadFrom()
@@ -168,7 +203,7 @@ func TestTrafficBucketsAreNonConsumingAndSeparateFromTotals(t *testing.T) {
 
 func TestTrafficResetKeepsLiveConnectionsAndTheirOwnTotals(t *testing.T) {
 	m := &Manager{}
-	tracker := NewTCPTracker(&trafficConn{kind: C.Socks5, activityConn: activityConn{n: 7}}, m, &C.Metadata{}, nil, 3, 5, true)
+	tracker := NewTCPTracker(&trafficConn{kind: C.Socks5, accountingConn: accountingConn{n: 7}}, m, &C.Metadata{}, nil, 3, 5, true)
 	m.rolloverTraffic()
 	m.ResetStatistic()
 	for _, proxy := range []bool{false, true} {
@@ -190,7 +225,7 @@ func TestTrafficResetKeepsLiveConnectionsAndTheirOwnTotals(t *testing.T) {
 
 func TestTrafficConcurrentAccountingAndRollover(t *testing.T) {
 	m := &Manager{}
-	tracker := NewTCPTracker(&trafficConn{kind: C.Socks5, activityConn: activityConn{n: 1}}, m, &C.Metadata{}, nil, 0, 0, true)
+	tracker := NewTCPTracker(&trafficConn{kind: C.Socks5, accountingConn: accountingConn{n: 1}}, m, &C.Metadata{}, nil, 0, 0, true)
 	var workers sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		workers.Add(1)

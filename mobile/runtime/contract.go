@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	ContractVersion    = 3
+	ContractVersion    = 4
 	MaxGeneration      = 0x7fffffff
 	MaxInputBytes      = 1024 * 1024
 	MaxRequestBytes    = 1024 * 1024
@@ -90,21 +90,42 @@ type PendingOwners struct {
 	DNSWaiters    int `json:"dnsWaiters,omitempty"`
 }
 type ConnectionObservation struct {
-	Sequence      uint64                 `json:"sequence"`
-	TargetIPv4    string                 `json:"targetIPv4"`
-	TargetAddress string                 `json:"targetAddress,omitempty"`
-	AddressFamily string                 `json:"addressFamily,omitempty"`
-	TargetPort    uint16                 `json:"targetPort"`
-	Rule          string                 `json:"rule"`
-	Node          string                 `json:"node"`
-	Upload        int64                  `json:"upload"`
-	Download      int64                  `json:"download"`
-	Attribution   *ConnectionAttribution `json:"attribution,omitempty"`
+	ID                  string                 `json:"id"`
+	State               string                 `json:"state"`
+	Protocol            string                 `json:"protocol"`
+	SourceAddress       string                 `json:"sourceAddress"`
+	SourcePort          uint16                 `json:"sourcePort"`
+	StartedAt           int64                  `json:"startedAt"`
+	TargetIPv4          string                 `json:"targetIPv4"`
+	TargetAddress       string                 `json:"targetAddress"`
+	AddressFamily       string                 `json:"addressFamily"`
+	OriginalDestination bool                   `json:"originalDestination"`
+	DestinationAddress  string                 `json:"destinationAddress"`
+	TargetPort          uint16                 `json:"targetPort"`
+	Rule                string                 `json:"rule"`
+	Node                string                 `json:"node"`
+	Upload              int64                  `json:"upload"`
+	Download            int64                  `json:"download"`
+	Attribution         *ConnectionAttribution `json:"attribution,omitempty"`
+}
+
+// Counts describe this query's filtered Mihomo registry traversal, not a
+// transaction across concurrent tracker creation, I/O and close. History is a
+// finite creation window; its evictions are not evidence of absent traffic.
+type ConnectionSnapshot struct {
+	CapturedAt      int64  `json:"capturedAt"`
+	Active          uint64 `json:"active"`
+	ActiveOmitted   uint64 `json:"activeOmitted"`
+	HistoryDropped  uint64 `json:"historyDropped"`
+	HistoryOmitted  uint64 `json:"historyOmitted"`
+	DNSFactsDropped uint64 `json:"dnsFactsDropped"`
+	DNSLinksOmitted uint64 `json:"dnsLinksOmitted"`
 }
 
 type ConnectionAttribution struct {
 	DomainDigest      string `json:"domainDigest"`
 	DNSSequence       uint64 `json:"dnsSequence"`
+	DNSLinkOmitted    bool   `json:"dnsLinkOmitted"`
 	RulePayloadDigest string `json:"rulePayloadDigest"`
 	NodeDigest        string `json:"nodeDigest"`
 }
@@ -154,6 +175,7 @@ type Receipt struct {
 	Resources              []ResourceReceipt       `json:"resources"`
 	PendingOwners          PendingOwners           `json:"pendingOwners"`
 	Connections            []ConnectionObservation `json:"connections"`
+	ConnectionSnapshot     ConnectionSnapshot      `json:"connectionSnapshot"`
 	DNS                    *DNSObservation         `json:"dns,omitempty"`
 }
 

@@ -54,8 +54,10 @@ type runEngine struct {
 	pumps               sync.WaitGroup
 	observationCancel   func()
 	observations        []observation
-	activeObservations  map[string]observation
-	observationSequence uint64
+	historyDropped      uint64
+	dnsFacts            map[string]DNSQueryObservation
+	dnsFactsBytes       int
+	dnsFactsDropped     uint64
 }
 
 func (t *Transfer) phase(phase string) {
@@ -594,80 +596,7 @@ func (e *runEngine) writePump() {
 		}
 	}
 }
-func (e *runEngine) observeConnection(tracker statistic.Tracker) {
-	info := tracker.Info()
-	if info.Metadata.ForwardingGeneration != e.transfer.receipt.Generation {
-		return
-	}
-	target := info.Metadata.DstIP
-	if e.sourcePolicy {
-		if destination, ok := info.Metadata.RawDstAddr.(interface{ AddrPort() netip.AddrPort }); ok {
-			target = destination.AddrPort().Addr()
-		}
-		if !target.IsValid() {
-			return
-		}
-	} else if !target.Is4() {
-		return
-	}
-	node := "redacted"
-	if len(info.Chain) > 0 && safeID.MatchString(info.Chain[0]) {
-		node = info.Chain[0]
-	}
-	rule := "redacted"
-	if safeID.MatchString(info.Rule) {
-		rule = info.Rule
-	}
-	e.transfer.mu.Lock()
-	defer e.transfer.mu.Unlock()
-	if e.transfer.ctx.Err() != nil {
-		return
-	}
-	e.retireClosedObservations()
-	id := tracker.ID()
-	if _, exists := e.activeObservations[id]; exists {
-		return
-	}
-	if len(e.activeObservations) >= MaxTCPTuples+MaxUDPFlows || e.observationSequence == MaxObservation {
-		return
-	}
-	e.observationSequence++
-	value := ConnectionObservation{Sequence: e.observationSequence, TargetPort: info.Metadata.DstPort, Node: node, Rule: rule}
-	var dnsQuery *DNSQueryObservation
-	if target.Is4() {
-		value.TargetIPv4 = target.String()
-	}
-	if e.sourcePolicy {
-		value.TargetAddress, value.AddressFamily = target.String(), "ipv4"
-		if target.Is6() {
-			value.AddressFamily = "ipv6"
-		}
-		value.Attribution = &ConnectionAttribution{RulePayloadDigest: observationDigest(info.RulePayload)}
-		if host := normalizedDomain(info.Metadata.RuleHost()); host != "" {
-			value.Attribution.DomainDigest = observationDigest(host)
-			if e.dns != nil {
-				dnsQuery = e.dns.queryFor(value.Attribution.DomainDigest, target)
-				if dnsQuery != nil {
-					value.Attribution.DNSSequence = dnsQuery.Sequence
-				}
-			}
-		}
-		if len(info.Chain) > 0 {
-			value.Attribution.NodeDigest = observationDigest(info.Chain[0])
-		}
-	}
-	if e.activeObservations == nil {
-		e.activeObservations = make(map[string]observation)
-	}
-	record := observation{value: value, info: info, dns: dnsQuery}
-	if current := statistic.DefaultManager.Get(id); current != nil && current.Info() == info {
-		e.activeObservations[id] = record
-	} else {
-		e.retainClosedObservation(record)
-	}
-}
 func (e *runEngine) fillReceipt(receipt *Receipt) {
-	records := e.selectedObservations()
 	if e.book != nil {
 		receipt.PendingOwners.TCPCallbacks, receipt.PendingOwners.Constructions, receipt.PendingOwners.Forwarding = e.book.counts()
 	}
@@ -676,36 +605,8 @@ func (e *runEngine) fillReceipt(receipt *Receipt) {
 	}
 	if e.dns != nil {
 		receipt.PendingOwners.DNSWaiters = e.dns.count()
-		references := []DNSQueryObservation{}
-		for _, record := range records {
-			if record.dns != nil {
-				references = append(references, *record.dns)
-			}
-		}
-		receipt.DNS = e.dns.observationForConnections(references)
 	}
-	receipt.Connections = []ConnectionObservation{}
-	for _, record := range records {
-		value := record.value
-		if value.Attribution != nil {
-			attribution := *value.Attribution
-			retained := false
-			if receipt.DNS != nil && attribution.DNSSequence != 0 {
-				for _, query := range receipt.DNS.Queries {
-					if query.Sequence == attribution.DNSSequence && query.QuestionDigest == attribution.DomainDigest && query.Outcome == "response" && query.Rcode == 0 {
-						for _, address := range query.AnswerAddresses {
-							retained = retained || address == value.TargetAddress
-						}
-					}
-				}
-			}
-			if !retained {
-				attribution.DNSSequence = 0
-			}
-			value.Attribution = &attribution
-		}
-		receipt.Connections = append(receipt.Connections, value)
-	}
+	e.fillConnections(receipt)
 }
 func address(address tcpip.Address) netip.Addr {
 	switch address.Len() {

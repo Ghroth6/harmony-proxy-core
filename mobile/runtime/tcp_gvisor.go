@@ -123,9 +123,7 @@ func (b *tcpBook) callback(request *tcp.ForwarderRequest) {
 		return
 	}
 	metadata := &C.Metadata{Type: C.TUN, NetWork: C.TCP, SrcIP: address(id.RemoteAddress), SrcPort: id.RemotePort, DstIP: address(id.LocalAddress), DstPort: id.LocalPort, RequestContext: b.engine.root}
-	if b.engine.sourcePolicy {
-		metadata.RawDstAddr = net.TCPAddrFromAddrPort(netip.AddrPortFrom(metadata.DstIP, metadata.DstPort))
-	}
+	metadata.RawDstAddr = net.TCPAddrFromAddrPort(netip.AddrPortFrom(metadata.DstIP, metadata.DstPort))
 	// root is the fixed marked context, never an arbitrary caller parent.
 	b.engine.bound.HandleTCPConn(conn, metadata)
 }

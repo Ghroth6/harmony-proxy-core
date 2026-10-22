@@ -30,7 +30,7 @@ func TestConnectionEventsObserveRegisteredShortLivedTrackers(t *testing.T) {
 		if m.Get(c.ID()) != c {
 			t.Error("event emitted before tracker was registered")
 		}
-		if c.Info().Start.IsZero() || c.LastActivity() != c.Info().Start || c.Info().Metadata.RemoteDst == "" {
+		if c.Info().Start.IsZero() || c.Info().Metadata.RemoteDst == "" {
 			t.Error("event emitted before tracker initialization completed")
 		}
 		ids = append(ids, c.ID())
