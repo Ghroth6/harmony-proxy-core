@@ -154,16 +154,31 @@ with `sequence`, `targetIPv4`, `targetPort`, `rule`, `node`, `upload`, `download
 and optional original TUN `targetAddress`/`addressFamily` for IPv6;
 it contains neither physical proxy endpoints, credentials, payloads nor full parser errors.
 
+The same 16-entry window reserves eight slots for active connections with payload
+and eight for recent ended/initial observations; unused slots backfill from either
+group. Selection uses the existing tracker's last real payload activity, then its
+stable run-local sequence as a tie-break; output is sorted by sequence. The run
+retains only accounting info for at most 64 observed active identities (the existing
+TCP-tuple plus UDP-flow bounds) and 16 ended identities, never a connection or lease.
+Exceeding observation capacity only loses observations, not forwarding. Sequence
+never repeats within a run; reaching the safe-integer limit stops new observations.
+Selection is bounded evidence, not a complete inventory of simultaneous traffic.
+
 Original-source connections additionally carry optional `attribution`; captured
-client TUN DNS carries optional `dns` with the last 16 completed service results,
+client TUN DNS carries optional `dns` with at most 16 completed service results,
 four retained A/AAAA addresses per result, dropped and saturation indicators.
 This observes actual service return values, including nonzero DNS rcodes and
 finite errors; it does not measure upstream queries/cache hits or prove client
 delivery. A fake-IP indication requires the actual captured mapper's domain
 association for every retained address, not range membership; truncated addresses
 remain unobserved. The connection binds an unambiguous question/address only at
-connection creation, never a later lookup. Snapshots clear an evicted link without
-substituting a later equivalent question. Stopped history belongs to that run;
+connection creation, never a later lookup. Each observed connection may retain an
+exact private copy of that confirmed result. DNS output first includes copies for
+selected connections, then the latest completion-ring results, deduplicated and
+sorted by original sequence. Expired/ambiguous results unavailable at creation stay
+unassociated; later equivalent questions never replace them. `dropped` continues
+to count original completion-ring evictions/saturation, even when a retained copy
+is returned; it is never reset by selection. Stopped history belongs to that run;
 new generations start empty. Absent observations are unavailable, not zero proof.
 Hostnames are lowercased and one final dot removed before UTF-8 SHA256; actual
 rule payload and Chain[0] labels use exact UTF-8 bytes. These local identifiers

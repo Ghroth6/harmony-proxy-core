@@ -72,14 +72,22 @@ func domainTCPExchange(t *testing.T, system *packetDescriptors, target net.IP, p
 }
 
 func TestClientTUNFullSourceDomainRulesBindProxyDirectResourcesAndSelectedPreference(t *testing.T) {
-	testFullSourceDomainRoutes(t, false)
+	testFullSourceDomainRoutes(t, false, false, false)
 }
 
 func TestClientTUNAllApplicationsPreserveOriginalProxyDirectDNSAndNormalStop(t *testing.T) {
-	testFullSourceDomainRoutes(t, true)
+	testFullSourceDomainRoutes(t, true, false, false)
 }
 
-func testFullSourceDomainRoutes(t *testing.T, allApplications bool) {
+func TestClientTUNActiveConnectionsKeepConfirmedDNSAfterUnrelatedQueryChurn(t *testing.T) {
+	testFullSourceDomainRoutes(t, true, true, false)
+}
+
+func TestClientTUNAmbiguousDNSIsNotInventedDuringWindowRetention(t *testing.T) {
+	testFullSourceDomainRoutes(t, true, true, true)
+}
+
+func testFullSourceDomainRoutes(t *testing.T, allApplications, dnsChurn, ambiguousDNS bool) {
 	proxy, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -235,6 +243,9 @@ rules:
 		t.Fatalf("actual full-source context did not activate unchanged: %+v", started)
 	}
 	proxyAnswer := clientDomainQuestion(t, system, proxyHost+".", D.TypeA, 54001)
+	if ambiguousDNS {
+		clientDomainQuestion(t, system, proxyHost+".", D.TypeA, 54003)
+	}
 	directAnswer := clientDomainQuestion(t, system, directHost+".", D.TypeA, 54002)
 	if len(proxyAnswer.Answer) != 1 || len(directAnswer.Answer) != 1 || physicalQuestions.Load() != 0 {
 		t.Fatal("client fake-IP questions escaped to physical DNS or did not return")
@@ -248,8 +259,20 @@ rules:
 			t.Fatal(err)
 		}
 	}
+	if dnsChurn {
+		for index := 0; index < 20; index++ {
+			clientDomainQuestion(t, system, fmt.Sprintf("unrelated-%d.observation.test.", index), D.TypeA, uint16(54500+index))
+		}
+	}
 	observed := manager.Query(generation, 1)
-	if len(observed.Connections) != 2 || observed.DNS == nil || observed.DNS.Sequence != 2 || physicalQuestions.Load() != 1 || protects.Load() < 3 || owner.ResourceAcquireCount() != "0" {
+	expectedDNS := uint64(2)
+	if dnsChurn {
+		expectedDNS = 22
+	}
+	if ambiguousDNS {
+		expectedDNS++
+	}
+	if len(observed.Connections) != 2 || observed.DNS == nil || observed.DNS.Sequence != expectedDNS || physicalQuestions.Load() != 1 || protects.Load() < 3 || owner.ResourceAcquireCount() != "0" {
 		t.Fatalf("full original policy did not preserve both real routes and independent acquisition boundaries: %+v", observed)
 	}
 	if receipt, err := json.Marshal(observed); err == nil {
@@ -262,10 +285,20 @@ rules:
 		if index == 1 {
 			host, rule, payload, node, leaf, sequence = directHost, "DomainSuffix", "direct-fixture.test", "DIRECT", "DIRECT", 2
 		}
+		if ambiguousDNS {
+			if index == 0 {
+				sequence = 0
+			} else {
+				sequence = 3
+			}
+		}
 		attribution := connection.Attribution
 		if connection.Rule != rule || connection.Node != node || connection.Upload == 0 || connection.Download == 0 || attribution == nil || attribution.DomainDigest != domainHash(host) || attribution.RulePayloadDigest != domainHash(payload) || attribution.NodeDigest != domainHash(leaf) || attribution.DNSSequence != sequence {
 			t.Fatalf("actual source resource/rule/leaf did not match its original selected route: %+v", connection)
 		}
+	}
+	if dnsChurn && (len(observed.DNS.Queries) != 16 || observed.DNS.Dropped != expectedDNS-16) {
+		t.Fatal("pinned true DNS results changed the existing bound or reset actual drop accounting")
 	}
 	stopped := manager.Stop(generation)
 	if stopped.Cleanup != "complete" || stopped.PendingOwners != (R.PendingOwners{}) {

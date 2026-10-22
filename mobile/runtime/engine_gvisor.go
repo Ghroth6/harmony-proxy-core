@@ -29,8 +29,9 @@ import (
 )
 
 type observation struct {
-	value   ConnectionObservation
-	tracker statistic.Tracker
+	value ConnectionObservation
+	info  *statistic.TrackerInfo
+	dns   *DNSQueryObservation
 }
 
 const EngineAvailable = true
@@ -53,6 +54,8 @@ type runEngine struct {
 	pumps               sync.WaitGroup
 	observationCancel   func()
 	observations        []observation
+	activeObservations  map[string]observation
+	observationSequence uint64
 }
 
 func (t *Transfer) phase(phase string) {
@@ -617,14 +620,20 @@ func (e *runEngine) observeConnection(tracker statistic.Tracker) {
 	}
 	e.transfer.mu.Lock()
 	defer e.transfer.mu.Unlock()
-	sequence := uint64(1)
-	if len(e.observations) > 0 {
-		sequence = e.observations[len(e.observations)-1].value.Sequence + 1
+	if e.transfer.ctx.Err() != nil {
+		return
 	}
-	if sequence > MaxGeneration {
-		sequence = MaxGeneration
+	e.retireClosedObservations()
+	id := tracker.ID()
+	if _, exists := e.activeObservations[id]; exists {
+		return
 	}
-	value := ConnectionObservation{Sequence: sequence, TargetPort: info.Metadata.DstPort, Node: node, Rule: rule}
+	if len(e.activeObservations) >= MaxTCPTuples+MaxUDPFlows || e.observationSequence == MaxObservation {
+		return
+	}
+	e.observationSequence++
+	value := ConnectionObservation{Sequence: e.observationSequence, TargetPort: info.Metadata.DstPort, Node: node, Rule: rule}
+	var dnsQuery *DNSQueryObservation
 	if target.Is4() {
 		value.TargetIPv4 = target.String()
 	}
@@ -637,19 +646,28 @@ func (e *runEngine) observeConnection(tracker statistic.Tracker) {
 		if host := normalizedDomain(info.Metadata.RuleHost()); host != "" {
 			value.Attribution.DomainDigest = observationDigest(host)
 			if e.dns != nil {
-				value.Attribution.DNSSequence = e.dns.sequenceFor(value.Attribution.DomainDigest, target)
+				dnsQuery = e.dns.queryFor(value.Attribution.DomainDigest, target)
+				if dnsQuery != nil {
+					value.Attribution.DNSSequence = dnsQuery.Sequence
+				}
 			}
 		}
 		if len(info.Chain) > 0 {
 			value.Attribution.NodeDigest = observationDigest(info.Chain[0])
 		}
 	}
-	if len(e.observations) == 16 {
-		e.observations = e.observations[1:]
+	if e.activeObservations == nil {
+		e.activeObservations = make(map[string]observation)
 	}
-	e.observations = append(e.observations, observation{value: value, tracker: tracker})
+	record := observation{value: value, info: info, dns: dnsQuery}
+	if current := statistic.DefaultManager.Get(id); current != nil && current.Info() == info {
+		e.activeObservations[id] = record
+	} else {
+		e.retainClosedObservation(record)
+	}
 }
 func (e *runEngine) fillReceipt(receipt *Receipt) {
+	records := e.selectedObservations()
 	if e.book != nil {
 		receipt.PendingOwners.TCPCallbacks, receipt.PendingOwners.Constructions, receipt.PendingOwners.Forwarding = e.book.counts()
 	}
@@ -658,10 +676,16 @@ func (e *runEngine) fillReceipt(receipt *Receipt) {
 	}
 	if e.dns != nil {
 		receipt.PendingOwners.DNSWaiters = e.dns.count()
-		receipt.DNS = e.dns.observation()
+		references := []DNSQueryObservation{}
+		for _, record := range records {
+			if record.dns != nil {
+				references = append(references, *record.dns)
+			}
+		}
+		receipt.DNS = e.dns.observationForConnections(references)
 	}
 	receipt.Connections = []ConnectionObservation{}
-	for _, record := range e.observations {
+	for _, record := range records {
 		value := record.value
 		if value.Attribution != nil {
 			attribution := *value.Attribution
@@ -680,8 +704,6 @@ func (e *runEngine) fillReceipt(receipt *Receipt) {
 			}
 			value.Attribution = &attribution
 		}
-		value.Upload = record.tracker.Info().UploadTotal.Load()
-		value.Download = record.tracker.Info().DownloadTotal.Load()
 		receipt.Connections = append(receipt.Connections, value)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/netip"
+	"sort"
 	"strings"
 
 	D "github.com/miekg/dns"
@@ -101,25 +102,53 @@ func (b *dnsBook) observation() *DNSObservation {
 	return &value
 }
 
-// A repeated retained question/address is ambiguous. Never recover the domain
-// from an address here; the caller supplies the actual connection rule host.
-func (b *dnsBook) sequenceFor(domainDigest string, address netip.Addr) uint64 {
+// Preserve an exact, unique result at connection creation. Never recover a
+// domain from an address or reconstruct an association after its window expired.
+func (b *dnsBook) queryFor(domainDigest string, address netip.Addr) *DNSQueryObservation {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	sequence := uint64(0)
+	var matched *DNSQueryObservation
 	for _, value := range b.observed.Queries {
 		if value.QuestionDigest != domainDigest || value.Outcome != "response" || value.Rcode != D.RcodeSuccess {
 			continue
 		}
 		for _, answer := range value.AnswerAddresses {
 			if answer == address.String() {
-				if sequence != 0 {
-					return 0
+				if matched != nil {
+					return nil
 				}
-				sequence = value.Sequence
+				copy := value
+				copy.AnswerAddresses = append([]string{}, value.AnswerAddresses...)
+				matched = &copy
 				break
 			}
 		}
 	}
-	return sequence
+	return matched
+}
+
+// Keep the same 16-result budget: confirmed links held by selected connections
+// first, then the latest ring results. Sequence and Dropped remain the original
+// completion/ring-eviction counters; restoring a linked value never resets them.
+func (b *dnsBook) observationForConnections(references []DNSQueryObservation) *DNSObservation {
+	value := b.observation()
+	queries := make([]DNSQueryObservation, 0, MaxDNSObservations)
+	seen := map[uint64]bool{}
+	add := func(query DNSQueryObservation) {
+		if len(queries) == MaxDNSObservations || seen[query.Sequence] || query.Sequence == 0 || query.Sequence > value.Sequence {
+			return
+		}
+		seen[query.Sequence] = true
+		query.AnswerAddresses = append([]string{}, query.AnswerAddresses...)
+		queries = append(queries, query)
+	}
+	for _, query := range references {
+		add(query)
+	}
+	for index := len(value.Queries) - 1; index >= 0; index-- {
+		add(value.Queries[index])
+	}
+	sort.Slice(queries, func(i, j int) bool { return queries[i].Sequence < queries[j].Sequence })
+	value.Queries = queries
+	return value
 }

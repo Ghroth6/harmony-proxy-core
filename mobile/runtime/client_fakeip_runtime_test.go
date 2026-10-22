@@ -5,6 +5,7 @@ package runtime_test
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -107,26 +108,38 @@ func clientSSStreamExchange(t *testing.T, conn net.Conn, password, host, request
 }
 
 func TestClientTUNFakeIPOriginalDomainRuleUsesActualTCPAndJoinsStop(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0", false, false)
+	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0", false, clientDNSUnique)
 }
 
 func TestClientTUNFakeIPAmbiguousClientQuestionsStayUnattributed(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0", false, true)
+	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0", false, clientDNSAmbiguous)
+}
+
+func TestClientTUNFakeIPExpiredBeforeConnectionStaysUnattributed(t *testing.T) {
+	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp4", "127.0.0.1:0", false, clientDNSExpired)
 }
 
 func TestClientTUNDefaultDualStackPolicyUsesIPv4NodeWithOriginalDNSIPv6Disabled(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "", true, "tcp4", "127.0.0.1:0", false, false)
+	testClientTUNFakeIPTCP(t, "", true, "tcp4", "127.0.0.1:0", false, clientDNSUnique)
 }
 
 func TestClientTUNDualStackPolicyUsesIPv6NodeWithOriginalDNSIPv6Disabled(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "ipv6: true\n", true, "tcp6", "[::1]:0", false, false)
+	testClientTUNFakeIPTCP(t, "ipv6: true\n", true, "tcp6", "[::1]:0", false, clientDNSUnique)
 }
 
 func TestClientTUNIPv4OnlyPolicyRejectsIPv6PhysicalNode(t *testing.T) {
-	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp6", "[::1]:0", true, false)
+	testClientTUNFakeIPTCP(t, "ipv6: false\n", false, "tcp6", "[::1]:0", true, clientDNSUnique)
 }
 
-func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork, peerAddress string, rejectNode, ambiguous bool) {
+type clientDNSLinkMode uint8
+
+const (
+	clientDNSUnique clientDNSLinkMode = iota
+	clientDNSAmbiguous
+	clientDNSExpired
+)
+
+func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork, peerAddress string, rejectNode bool, dnsLink clientDNSLinkMode) {
 	t.Helper()
 	peer, err := net.Listen(peerNetwork, peerAddress)
 	if err != nil {
@@ -273,9 +286,16 @@ func testClientTUNFakeIPTCP(t *testing.T, general string, ipv6 bool, peerNetwork
 		t.Fatalf("actual fake-IP service mapping was not tied to its normalized question and delivered address: %+v", query)
 	}
 	expectedQueries, expectedSequence := uint64(2), query.Sequence
-	if ambiguous {
+	if dnsLink == clientDNSAmbiguous {
 		clientDomainQuestion(t, system, host+".", D.TypeA, 51237)
 		expectedQueries++
+		expectedSequence = 0
+	}
+	if dnsLink == clientDNSExpired {
+		for index := 0; index < 16; index++ {
+			clientDomainQuestion(t, system, fmt.Sprintf("before-connect-%d.original-policy.test.", index), D.TypeA, uint16(52100+index))
+			expectedQueries++
+		}
 		expectedSequence = 0
 	}
 	system.inject(clientTCP4Packet(fakeIP, 443, 51300, 1, 0, 2, nil))
@@ -363,8 +383,15 @@ responseLoop:
 		clientDomainQuestion(t, system, host+".", D.TypeA, 52016)
 		expectedQueries++
 		evicted := domainWire(t, manager.Query(generation, 1))
-		if evicted.DNS.Sequence != expectedQueries || evicted.DNS.Dropped != expectedQueries-16 || evicted.DNS.Saturated || len(evicted.DNS.Queries) != 16 || evicted.Connections[0].Attribution.DNSSequence != 0 {
-			t.Fatal("evicted original DNS attribution must stay unavailable even when a later equivalent question remains")
+		if evicted.DNS.Sequence != expectedQueries || evicted.DNS.Dropped != expectedQueries-16 || evicted.DNS.Saturated || len(evicted.DNS.Queries) != 16 || evicted.Connections[0].Attribution.DNSSequence != expectedSequence {
+			t.Fatal("ring churn must preserve only the original confirmed link, without inventing or substituting a later equivalent question")
+		}
+		if expectedSequence != 0 {
+			initial, _ := json.Marshal(query)
+			retained, _ := json.Marshal(evicted.DNS.Queries[0])
+			if string(initial) != string(retained) {
+				t.Fatal("retained DNS result changed fields from the real connection-time service result")
+			}
 		}
 	}
 	stopped := manager.Stop(generation)
