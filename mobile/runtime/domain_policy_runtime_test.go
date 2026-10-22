@@ -72,6 +72,14 @@ func domainTCPExchange(t *testing.T, system *packetDescriptors, target net.IP, p
 }
 
 func TestClientTUNFullSourceDomainRulesBindProxyDirectResourcesAndSelectedPreference(t *testing.T) {
+	testFullSourceDomainRoutes(t, false)
+}
+
+func TestClientTUNAllApplicationsPreserveOriginalProxyDirectDNSAndNormalStop(t *testing.T) {
+	testFullSourceDomainRoutes(t, true)
+}
+
+func testFullSourceDomainRoutes(t *testing.T, allApplications bool) {
 	proxy, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -206,12 +214,24 @@ rules:
 	writeDomainRuleProvider(t, root, resource)
 	prefs := []contract.Preference{{GroupRef: plan.Groups[0].GroupRef, MemberRef: plan.Groups[0].Members[1].MemberRef}}
 	request, prepared := sealDomainPolicyRequest(t, clientPolicyRequest(t, input, generation, networkGeneration, true, false), plan.InputDigest, resource, prefs)
+	if allApplications {
+		scope := "all"
+		platform := prepared.Platform
+		platform.PlatformPolicy.ApplicationScope = &scope
+		platform.PlatformPolicy.ApplicationIDs = []string{}
+		prepared, err = contract.Seal(plan.InputDigest, []contract.Resource{resource}, platform, prefs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.PlatformPolicy = prepared.Platform.PlatformPolicy
+		request.PreparedPolicy = &prepared
+	}
 	encoded, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	started := manager.Start(manager.Consume(generation, 1, 9), input, encoded)
-	if started.Outcome != "running" || started.InputDigest != contract.Digest(input) || started.ResourceManifestDigest != prepared.ResourceManifestDigest || started.GroupPreferencesDigest != prepared.GroupPreferencesDigest {
+	if started.Outcome != "running" || started.InputDigest != contract.Digest(input) || started.PlatformPolicyDigest != prepared.PlatformPolicyDigest || started.CandidateDigest != prepared.CandidateDigest || started.ResourceManifestDigest != prepared.ResourceManifestDigest || started.GroupPreferencesDigest != prepared.GroupPreferencesDigest {
 		t.Fatalf("actual full-source context did not activate unchanged: %+v", started)
 	}
 	proxyAnswer := clientDomainQuestion(t, system, proxyHost+".", D.TypeA, 54001)

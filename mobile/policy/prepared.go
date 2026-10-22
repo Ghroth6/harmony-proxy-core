@@ -164,7 +164,7 @@ func policyPlatform(raw *config.RawConfig, plan PlanReceipt, platform contract.P
 		}
 	}
 	expected := contract.RuntimeOptions{Entry: "system-vpn", Transport: "tcp-udp", DNS: raw.DNS.Enable, IPv6: raw.IPv6, UDP: true, ResourceDownloads: periodic}
-	if platform.RuntimeOptions != expected || !safeOperation(platform.PlatformPolicy.Revision) || len(platform.PlatformPolicy.ApplicationIDs) > 4096 {
+	if platform.RuntimeOptions != expected || !safeOperation(platform.PlatformPolicy.Revision) || !platform.PlatformPolicy.ValidApplicationScope() {
 		return false
 	}
 	family := "ipv4"

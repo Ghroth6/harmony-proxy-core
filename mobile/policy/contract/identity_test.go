@@ -1,10 +1,31 @@
 package contract_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 )
+
+func TestApplicationScopeUsesFrozenLegacyAndExplicitAllPlatformDigests(t *testing.T) {
+	for _, fixture := range []struct{ canonical, digest string }{
+		{`{"platformPolicy":{"addressFamily":"ipv4","applicationIds":["org.example.public"],"revision":"public-policy-v1"},"runtimeOptions":{"dns":false,"entry":"system-vpn","explicitListeners":false,"ipv6":false,"resourceDownloads":false,"transport":"tcp-udp","udp":true},"tunPolicy":{"address":"10.111.0.1","mtu":1500,"prefixLength":30,"route":"0.0.0.0","routePrefixLength":0}}`, "sha256:b53e553eb6d38b8d302c9069734edb62afbf3bb969922d2cbcdd41f3cf121c44"},
+		{`{"platformPolicy":{"addressFamily":"ipv4","applicationIds":[],"applicationScope":"all","revision":"public-policy-v1"},"runtimeOptions":{"dns":false,"entry":"system-vpn","explicitListeners":false,"ipv6":false,"resourceDownloads":false,"transport":"tcp-udp","udp":true},"tunPolicy":{"address":"10.111.0.1","mtu":1500,"prefixLength":30,"route":"0.0.0.0","routePrefixLength":0}}`, "sha256:2fad48002b4ad4c17668239813df40bf9c43610e5b495afdc3f1f58ac81ff2f3"},
+	} {
+		var platform contract.Platform
+		if err := json.Unmarshal([]byte(fixture.canonical), &platform); err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := contract.Seal(contract.Digest([]byte("public original policy")), nil, platform, nil)
+		if err != nil || prepared.PlatformPolicyDigest != fixture.digest {
+			t.Fatalf("scope identity differs from independently frozen SHA256 fixture: %v", err)
+		}
+		canonical, err := contract.CanonicalJSON(prepared.Platform)
+		if err != nil || string(canonical) != fixture.canonical {
+			t.Fatal("legacy absence or explicit all bytes changed")
+		}
+	}
+}
 
 func TestPreparedIdentityUsesCrossLanguageSortedPlatformBytes(t *testing.T) {
 	platform := contract.Platform{

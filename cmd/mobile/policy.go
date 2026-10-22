@@ -25,7 +25,7 @@ var mobilePolicyOwner struct {
 }
 
 //export cb_policy_contract_version_v1
-func cb_policy_contract_version_v1() C.int32_t { return contract.Version }
+func cb_policy_contract_version_v1() C.int32_t { return contract.ABIVersion }
 
 //export cb_policy_storage_root_v1
 func cb_policy_storage_root_v1(root *C.uint8_t, rootSize C.uint32_t) (status C.int32_t) {

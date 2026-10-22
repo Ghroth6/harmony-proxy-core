@@ -54,8 +54,8 @@ publishes the actual snapshot, resets the SystemResolver and resumes online
 management admission. Invalid/stale data never gets echoed as an accepted path.
 No public DNS fallback is installed when platform DNS is unavailable.
 
-Runtime contract 2 retains the existing `_v1` C symbol names while explicitly
-rejecting contract-1 requests. Required top-level `networkGeneration` is separate
+Runtime contract 3 retains the existing `_v1` C symbol names while explicitly
+rejecting contract-1/2 requests. Required top-level `networkGeneration` is separate
 from persistent platform policy. New node scope requires the current online
 snapshot and available DNS for domain nodes; the receipt records only the
 actually accepted generation. Old fixed-IP scope may use zero. Protected physical
@@ -74,14 +74,14 @@ zero-download #26.
 ## Mobile runtime contract
 
 `mobile/include/cb_runtime.h` and `mobile/runtime/contract.go` are the versioned
-runtime value boundary. `cb_runtime_contract_version_v1` returns 2 for a build
+runtime value boundary. `cb_runtime_contract_version_v1` returns 3 for a build
 with the explicitly selected gVisor runtime, independently of the validation ABI;
 without `with_gvisor` it returns 0, so the adapter rejects capability before dup.
 The three operations own the TUN duplicate, packet stack and stop cleanup.
 Host syscall-boundary tests and ARM64 compilation do not establish target TUN
 acceptance. Resolve all runtime symbols and the contract version before dup.
 
-The start request contains exactly `contractVersion:2`, `operationId`, `generation`, `networkGeneration`,
+The start request contains exactly `contractVersion:3`, `operationId`, `generation`, `networkGeneration`,
 `transferId`, `inputRevision`, `inputDigest`, `runtimeOptions`, `platformPolicy`,
 and `tunPolicy`, with optional `preparedPolicy` for original-source policy.
 Generation is a JSON integer 1..INT32_MAX and matches the scalar
@@ -93,8 +93,9 @@ Duplicate, unknown, missing, null or trailing JSON fields are rejected.
 
 Node-base `runtimeOptions` has exactly `entry:"system-vpn"`, `transport:"tcp"`, and false
 `dns`, `ipv6`, `udp`, `explicitListeners`, `resourceDownloads`. `platformPolicy`
-has `revision`, `addressFamily:"ipv4"`, and `applicationIds` (1..16 distinct valid
-bundle IDs, each <=128 bytes). The independent immutable `tunPolicy` is exactly
+has `revision`, `addressFamily:"ipv4"`, and `applicationIds`, plus the optional
+`applicationScope` defined below. Legacy/include lists have 1..16 distinct valid
+bundle IDs, each <=128 bytes; explicit all has an empty list. The independent immutable `tunPolicy` is exactly
 `{address:"10.111.0.1",prefixLength:30,route:"0.0.0.0",routePrefixLength:0,mtu:1500}`.
 Original-source policy keeps its independently sealed resources, platform and
 group preferences in `preparedPolicy`. Its transport is `tcp-udp`; DNS and IPv6
@@ -573,7 +574,19 @@ preserves original group positions and resource declarations, including raw
 general IPv6 defaults independently of DNS IPv6. Discovery reads rule and DNS
 fields, never arbitrary credentials or display names.
 
-`mobile/include/cb_policy.h` declares the original-policy value ABI (contract 1).
+`mobile/include/cb_policy.h` declares original-policy ABI 2; context schema and
+planner remain 1. `PlatformPolicy.applicationScope` is optional only for legacy
+include values. Explicit `all` requires `applicationIds:[]`; explicit `include`
+and legacy absence require 1..16 distinct valid bundle IDs. Unknown/null/empty
+scope, missing/null list, empty legacy/include and conflicting all reject.
+`Engine` preparation and runtime admission independently enforce this. Sealing
+alone computes identities and is not policy admission. Canonical encoding omits
+the absent legacy scope; the explicit field sorts after `applicationIds` and
+before `revision`, changing platform/candidate identities while retaining raw,
+resource and preference identities. Frozen valid legacy/all digest fixtures
+and actual application-produced contexts cover both languages. Existing TUN
+routes, DNS, physical socket protection and resource cleanup are unchanged;
+host tests do not establish the target OS application capture behavior.
 Native Context binds the trusted resource root once through
 `cb_policy_storage_root_v1`, before any runtime request. `cb_policy_plan_v1`
 receives raw bytes plus a strict available-resource array;

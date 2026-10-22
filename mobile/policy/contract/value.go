@@ -2,7 +2,10 @@
 // file or network objects, so config and mobile operations share one schema.
 package contract
 
+import "regexp"
+
 const Version = 1
+const ABIVersion = 2
 const PlannerVersion = "mobile-policy-1"
 const MaxControlBytes = 1024 * 1024
 const MaxResultBytes = 8 * 1024 * 1024
@@ -69,10 +72,42 @@ type RuntimeOptions struct {
 	ResourceDownloads bool   `json:"resourceDownloads"`
 }
 type PlatformPolicy struct {
-	Revision       string   `json:"revision"`
-	AddressFamily  string   `json:"addressFamily"`
-	ApplicationIDs []string `json:"applicationIds"`
+	Revision         string   `json:"revision"`
+	AddressFamily    string   `json:"addressFamily"`
+	ApplicationIDs   []string `json:"applicationIds"`
+	ApplicationScope *string  `json:"applicationScope,omitempty"`
 }
+
+var applicationID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*){1,15}$`)
+
+// A missing scope is the legacy include mode, never all applications. A pointer
+// retains explicitly supplied empty strings so they cannot become legacy values.
+func (value PlatformPolicy) ValidApplicationScope() bool {
+	if value.ApplicationIDs == nil {
+		return false
+	}
+	if value.ApplicationScope != nil {
+		switch *value.ApplicationScope {
+		case "all":
+			return len(value.ApplicationIDs) == 0
+		case "include":
+		default:
+			return false
+		}
+	}
+	if len(value.ApplicationIDs) < 1 || len(value.ApplicationIDs) > 16 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, id := range value.ApplicationIDs {
+		if len(id) > 128 || !applicationID.MatchString(id) || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
+}
+
 type IPv6Policy struct {
 	Address           string `json:"address"`
 	PrefixLength      int    `json:"prefixLength"`

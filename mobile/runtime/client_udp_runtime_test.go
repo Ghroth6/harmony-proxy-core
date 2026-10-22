@@ -73,7 +73,7 @@ func clientPolicyRequest(t *testing.T, input []byte, generation, networkGenerati
 	prepared.PlatformPolicyDigest = canonicalClientDigest(t, platform)
 	prepared.GroupPreferencesDigest = canonicalClientDigest(t, map[string]any{"inputDigest": inputDigest, "groupPreferences": prepared.GroupPreferences})
 	prepared.CandidateDigest = canonicalClientDigest(t, map[string]any{"inputDigest": inputDigest, "resourceManifestDigest": prepared.ResourceManifestDigest, "platformPolicyDigest": prepared.PlatformPolicyDigest, "groupPreferencesDigest": prepared.GroupPreferencesDigest})
-	request := R.StartRequest{ContractVersion: 2, OperationID: "client-policy-start", Generation: generation, NetworkGeneration: networkGeneration, TransferID: "1", InputRevision: "source-policy", InputDigest: inputDigest, RuntimeOptions: platform.RuntimeOptions, PlatformPolicy: platform.PlatformPolicy, TunPolicy: platform.TunPolicy, PreparedPolicy: prepared}
+	request := R.StartRequest{ContractVersion: 3, OperationID: "client-policy-start", Generation: generation, NetworkGeneration: networkGeneration, TransferID: "1", InputRevision: "source-policy", InputDigest: inputDigest, RuntimeOptions: platform.RuntimeOptions, PlatformPolicy: platform.PlatformPolicy, TunPolicy: platform.TunPolicy, PreparedPolicy: prepared}
 	encoded, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)

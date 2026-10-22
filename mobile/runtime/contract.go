@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	ContractVersion    = 2
+	ContractVersion    = 3
 	MaxGeneration      = 0x7fffffff
 	MaxInputBytes      = 1024 * 1024
 	MaxRequestBytes    = 1024 * 1024
@@ -168,7 +168,6 @@ var processCoreInstance = func() string {
 }()
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9:_-]{1,128}$`)
-var bundleID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*){1,15}$`)
 var digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // DecodeStart validates only immutable values. Resource admission and the real
@@ -189,12 +188,15 @@ func DecodeStart(generation, transferID uint64, input, request []byte) (StartReq
 	}
 	for name, keys := range map[string][]string{
 		"runtimeOptions": {"entry", "transport", "dns", "ipv6", "udp", "explicitListeners", "resourceDownloads"},
-		"platformPolicy": {"revision", "addressFamily", "applicationIds"},
 	} {
 		var object map[string]json.RawMessage
 		if json.Unmarshal(fields[name], &object) != nil || !exactFields(object, keys...) {
 			return fail("REQUEST_FIELDS")
 		}
+	}
+	var applicationFields map[string]json.RawMessage
+	if json.Unmarshal(fields["platformPolicy"], &applicationFields) != nil || !fieldsWithOptional(applicationFields, []string{"revision", "addressFamily", "applicationIds"}, "applicationScope") {
+		return fail("REQUEST_FIELDS")
 	}
 	var tunFields map[string]json.RawMessage
 	if json.Unmarshal(fields["tunPolicy"], &tunFields) != nil || !fieldsWithOptional(tunFields, []string{"address", "prefixLength", "route", "routePrefixLength", "mtu"}, "ipv6", "dnsServers") {
@@ -242,15 +244,8 @@ func DecodeStart(generation, transferID uint64, input, request []byte) (StartReq
 	if options.IPv6 {
 		family = "dual"
 	}
-	if policy.AddressFamily != family || len(policy.ApplicationIDs) < 1 || len(policy.ApplicationIDs) > 16 {
+	if policy.AddressFamily != family || !policy.ValidApplicationScope() {
 		return fail("PLATFORM_POLICY")
-	}
-	seen := map[string]bool{}
-	for _, id := range policy.ApplicationIDs {
-		if len(id) > 128 || !bundleID.MatchString(id) || seen[id] {
-			return fail("PLATFORM_POLICY")
-		}
-		seen[id] = true
 	}
 	tun := target.TunPolicy
 	if tun.Address != "10.111.0.1" || tun.PrefixLength != 30 || tun.Route != "0.0.0.0" || tun.RoutePrefixLength != 0 || tun.MTU != MTU || (tun.IPv6 != nil) != options.IPv6 {
@@ -294,12 +289,15 @@ func preparedFields(encoded []byte) bool {
 	}
 	for name, keys := range map[string][]string{
 		"runtimeOptions": {"entry", "transport", "dns", "ipv6", "udp", "explicitListeners", "resourceDownloads"},
-		"platformPolicy": {"revision", "addressFamily", "applicationIds"},
 	} {
 		var object map[string]json.RawMessage
 		if json.Unmarshal(platform[name], &object) != nil || !exactFields(object, keys...) {
 			return false
 		}
+	}
+	var applicationFields map[string]json.RawMessage
+	if json.Unmarshal(platform["platformPolicy"], &applicationFields) != nil || !fieldsWithOptional(applicationFields, []string{"revision", "addressFamily", "applicationIds"}, "applicationScope") {
+		return false
 	}
 	var tun map[string]json.RawMessage
 	if json.Unmarshal(platform["tunPolicy"], &tun) != nil || !fieldsWithOptional(tun, []string{"address", "prefixLength", "route", "routePrefixLength", "mtu"}, "ipv6", "dnsServers") {

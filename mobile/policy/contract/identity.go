@@ -129,6 +129,10 @@ func Seal(inputDigest string, resources []Resource, platform Platform, preferenc
 }
 
 func ClonePlatform(value Platform) Platform {
+	if value.PlatformPolicy.ApplicationScope != nil {
+		scope := *value.PlatformPolicy.ApplicationScope
+		value.PlatformPolicy.ApplicationScope = &scope
+	}
 	value.PlatformPolicy.ApplicationIDs = append([]string{}, value.PlatformPolicy.ApplicationIDs...)
 	value.TunPolicy.DNSServers = append([]string(nil), value.TunPolicy.DNSServers...)
 	if value.TunPolicy.IPv6 != nil {

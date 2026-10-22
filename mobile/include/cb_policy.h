@@ -4,7 +4,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Original policy value contract 1. Raw/control <=1048576, result<=8388608;
+/* Original policy ABI 2, prepared context schema/planner remain 1.
+ * Explicit applicationScope all/include; absent means valid legacy include.
+ * Raw/control <=1048576, result<=8388608;
  * resources<=128, groups<=512, members<=4096 each/32768 total.
  * storage_root is a trusted native Context path (<=4096 UTF-8), never an RPC
  * root. It binds once and is idempotent only for that same canonical path.

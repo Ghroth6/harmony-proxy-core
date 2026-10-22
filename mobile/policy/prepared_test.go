@@ -2,6 +2,8 @@ package policy_test
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +24,106 @@ profile: {store-selected: true}
 `
 
 func publicPlatform() contract.Platform {
-	return contract.Platform{RuntimeOptions: contract.RuntimeOptions{Entry: "system-vpn", Transport: "tcp-udp", UDP: true}, PlatformPolicy: contract.PlatformPolicy{Revision: "public-policy-v1", AddressFamily: "ipv4", ApplicationIDs: []string{}}, TunPolicy: contract.TunPolicy{Address: "10.111.0.1", PrefixLength: 30, Route: "0.0.0.0", MTU: 1500}}
+	return contract.Platform{RuntimeOptions: contract.RuntimeOptions{Entry: "system-vpn", Transport: "tcp-udp", UDP: true}, PlatformPolicy: contract.PlatformPolicy{Revision: "public-policy-v1", AddressFamily: "ipv4", ApplicationIDs: []string{"org.example.public"}}, TunPolicy: contract.TunPolicy{Address: "10.111.0.1", PrefixLength: 30, Route: "0.0.0.0", MTU: 1500}}
+}
+
+func TestOriginalPolicyRejectsEmptyLegacyApplicationScope(t *testing.T) {
+	engine, err := policy.NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	platform := publicPlatform()
+	platform.PlatformPolicy.ApplicationIDs = []string{}
+	prepared, err := contract.Seal(contract.Digest([]byte(noResourcePolicy)), nil, platform, nil)
+	if err != nil {
+		return
+	}
+	receipt := engine.Validate("empty-legacy-scope", []byte(noResourcePolicy), prepared)
+	if receipt.Category == "pass" || receipt.CandidateDigest != "" {
+		t.Fatal("an empty legacy application list must never authorize an original-policy candidate")
+	}
+}
+
+func TestOriginalPolicyAcceptsExplicitAllApplicationsWithIndependentIdentity(t *testing.T) {
+	engine, err := policy.NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	platform := publicPlatform()
+	if err = json.Unmarshal([]byte(`{"revision":"public-policy-v1","addressFamily":"ipv4","applicationScope":"all","applicationIds":[]}`), &platform.PlatformPolicy); err != nil {
+		t.Fatal(err)
+	}
+	input := []byte(noResourcePolicy)
+	prepared, err := contract.Seal(contract.Digest(input), nil, platform, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := engine.ValidateJSON("all-application-policy", input, encoded)
+	if err != nil || receipt.Category != "pass" || receipt.CandidateDigest != prepared.CandidateDigest {
+		t.Fatalf("explicit all-application policy must construct and close a real candidate: %v %s/%s", err, receipt.Category, receipt.Code)
+	}
+}
+
+func TestOriginalPolicyApplicationScopeCannotBroadenAmbiguousOrInvalidValues(t *testing.T) {
+	engine, err := policy.NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	input := []byte(noResourcePolicy)
+	for name, text := range map[string]string{
+		"legacy":          `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationIds":["org.example.public"]}`,
+		"include":         `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationScope":"include","applicationIds":["org.example.public"]}`,
+		"all":             `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationScope":"all","applicationIds":[]}`,
+		"empty legacy":    `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationIds":[]}`,
+		"empty include":   `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationScope":"include","applicationIds":[]}`,
+		"conflicting all": `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationScope":"all","applicationIds":["org.example.public"]}`,
+		"unknown":         `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationScope":"exclude","applicationIds":["org.example.public"]}`,
+		"empty scope":     `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationScope":"","applicationIds":["org.example.public"]}`,
+		"invalid id":      `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationIds":["bad"]}`,
+		"duplicate":       `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationIds":["org.example.public","org.example.public"]}`,
+		"over capacity":   `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationIds":[` + strings.TrimSuffix(strings.Repeat(`"org.example.public",`, 17), ",") + `]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			platform := publicPlatform()
+			if err := json.Unmarshal([]byte(text), &platform.PlatformPolicy); err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := contract.Seal(contract.Digest(input), nil, platform, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(prepared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := engine.ValidateJSON("scope-acceptance", input, encoded)
+			accepted := name == "legacy" || name == "include" || name == "all"
+			if err != nil || (receipt.Category == "pass") != accepted {
+				t.Fatalf("scope acceptance %s: %v %s/%s", name, err, receipt.Category, receipt.Code)
+			}
+			if !accepted && (receipt.CandidateDigest != "" || receipt.PlatformPolicyDigest != "") {
+				t.Fatal("invalid scope echoed caller identities")
+			}
+			if name == "all" {
+				for _, invalid := range []string{
+					strings.Replace(string(encoded), `"applicationScope":"all"`, `"applicationScope":null`, 1),
+					strings.Replace(string(encoded), `"applicationIds":[],`, ``, 1),
+					strings.Replace(string(encoded), `"applicationIds":[]`, `"applicationIds":null`, 1),
+				} {
+					if _, err := engine.ValidateJSON("scope-wire-rejection", input, []byte(invalid)); err == nil {
+						t.Fatal("missing/null scope authority accepted by strict wire")
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestOriginalPolicyCandidateIdentityDoesNotAliasCallerOrReturnedSlices(t *testing.T) {

@@ -11,15 +11,27 @@ import (
 
 var sample = []byte("proxies: []\n")
 
-func envelope() string {
-	return fmt.Sprintf(`{"contractVersion":2,"operationId":"start:1","generation":2,"networkGeneration":0,"transferId":"7","inputRevision":"fixed-v1","inputDigest":"sha256:%x","runtimeOptions":{"entry":"system-vpn","transport":"tcp","dns":false,"ipv6":false,"udp":false,"explicitListeners":false,"resourceDownloads":false},"platformPolicy":{"revision":"browser-v1","addressFamily":"ipv4","applicationIds":["com.huawei.hmos.browser"]},"tunPolicy":{"address":"10.111.0.1","prefixLength":30,"route":"0.0.0.0","routePrefixLength":0,"mtu":1500}}`, sha256.Sum256(sample))
+func TestRuntimeV3AcceptsExplicitAllApplicationsAndRejectsPreviousABI(t *testing.T) {
+	encoded := strings.Replace(envelope(), `"applicationIds":["com.huawei.hmos.browser"]`, `"applicationScope":"all","applicationIds":[]`, 1)
+	request, err := R.DecodeStart(2, 7, sample, []byte(encoded))
+	if err != nil || len(request.PlatformPolicy.ApplicationIDs) != 0 {
+		t.Fatalf("explicit all must be accepted by runtime v3: %v", err)
+	}
+	previous := strings.Replace(encoded, `"contractVersion":3`, `"contractVersion":2`, 1)
+	if _, err = R.DecodeStart(2, 7, sample, []byte(previous)); err == nil {
+		t.Fatal("previous ABI must not be admitted")
+	}
 }
 
-func TestRuntimeV2CarriesNetworkEpochAndOneMiBInputBudget(t *testing.T) {
+func envelope() string {
+	return fmt.Sprintf(`{"contractVersion":3,"operationId":"start:1","generation":2,"networkGeneration":0,"transferId":"7","inputRevision":"fixed-v1","inputDigest":"sha256:%x","runtimeOptions":{"entry":"system-vpn","transport":"tcp","dns":false,"ipv6":false,"udp":false,"explicitListeners":false,"resourceDownloads":false},"platformPolicy":{"revision":"browser-v1","addressFamily":"ipv4","applicationIds":["com.huawei.hmos.browser"]},"tunPolicy":{"address":"10.111.0.1","prefixLength":30,"route":"0.0.0.0","routePrefixLength":0,"mtu":1500}}`, sha256.Sum256(sample))
+}
+
+func TestRuntimeV3CarriesNetworkEpochAndOneMiBInputBudget(t *testing.T) {
 	request := strings.Replace(envelope(), `"networkGeneration":0`, `"networkGeneration":21`, 1)
 	decoded, err := R.DecodeStart(2, 7, sample, []byte(request))
 	if err != nil || decoded.NetworkGeneration != 21 || R.MaxInputBytes != 1024*1024 {
-		t.Fatal("runtime v2 must preserve the actual submitted path identity and new input budget")
+		t.Fatal("runtime v3 must preserve the actual submitted path identity and input budget")
 	}
 }
 
@@ -38,10 +50,10 @@ func TestDecodeStartFreezesExactTargetAndScalarTransfer(t *testing.T) {
 
 func TestDecodeStartRejectsAmbiguousOrUnsupportedJSON(t *testing.T) {
 	cases := map[string]string{
-		"duplicate":           strings.Replace(envelope(), `"contractVersion":2`, `"contractVersion":2,"contractVersion":2`, 1),
+		"duplicate":           strings.Replace(envelope(), `"contractVersion":3`, `"contractVersion":3,"contractVersion":3`, 1),
 		"nested duplicate":    strings.Replace(envelope(), `"dns":false`, `"dns":false,"dns":false`, 1),
-		"unknown":             strings.Replace(envelope(), `"contractVersion":2`, `"extra":0,"contractVersion":2`, 1),
-		"old version":         strings.Replace(envelope(), `"contractVersion":2`, `"contractVersion":1`, 1),
+		"unknown":             strings.Replace(envelope(), `"contractVersion":3`, `"extra":0,"contractVersion":3`, 1),
+		"old version":         strings.Replace(envelope(), `"contractVersion":3`, `"contractVersion":1`, 1),
 		"missing network":     strings.Replace(envelope(), `"networkGeneration":0,`, ``, 1),
 		"unsafe network":      strings.Replace(envelope(), `"networkGeneration":0`, `"networkGeneration":9007199254740992`, 1),
 		"missing false":       strings.Replace(envelope(), `"dns":false,`, "", 1),

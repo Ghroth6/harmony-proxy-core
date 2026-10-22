@@ -7,7 +7,7 @@ extern "C" {
 
 /* Independent from cb_abi_version_v1. Resolve this and all three operations
  * before duplicating a TUN descriptor. The retained v1 symbols return contract
- * version 2 and reject version-1 request shapes. Version 2 has the schema in
+ * version 3 and reject version-1/2 request shapes. Version 3 has the schema in
  * mobile/runtime/contract.go and mobile/README.md. */
 int32_t cb_runtime_contract_version_v1(void);
 
