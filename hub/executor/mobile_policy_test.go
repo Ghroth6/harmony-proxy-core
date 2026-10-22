@@ -21,7 +21,8 @@ func TestOriginalPolicyPublicationPreservesSourceModeAndOwnedCandidate(t *testin
 	defer engine.Close()
 	input := []byte("ipv6: false\nmode: direct\ndns: {enable: false}\nproxy-groups:\n - {name: PublicSelect, type: select, proxies: [DIRECT, REJECT]}\nrules:\n - DOMAIN,documentation.example,REJECT\n - MATCH,PublicSelect\n")
 	plan := engine.Plan("publication-plan", input, nil)
-	platform := contract.Platform{RuntimeOptions: contract.RuntimeOptions{Entry: "system-vpn", Transport: "tcp-udp", UDP: true}, PlatformPolicy: contract.PlatformPolicy{Revision: "public-policy-v1", AddressFamily: "ipv4", ApplicationIDs: []string{}}, TunPolicy: contract.TunPolicy{Address: "10.111.0.1", PrefixLength: 30, Route: "0.0.0.0", MTU: 1500}}
+	scope := "all"
+	platform := contract.Platform{RuntimeOptions: contract.RuntimeOptions{Entry: "system-vpn", Transport: "tcp-udp", UDP: true}, PlatformPolicy: contract.PlatformPolicy{Revision: "public-policy-v1", AddressFamily: "ipv4", ApplicationScope: &scope, ApplicationIDs: []string{}}, TunPolicy: contract.TunPolicy{Address: "10.111.0.1", PrefixLength: 30, Route: "0.0.0.0", MTU: 1500}}
 	prepared, err := contract.Seal(plan.InputDigest, nil, platform, nil)
 	if err != nil {
 		t.Fatal(err)
