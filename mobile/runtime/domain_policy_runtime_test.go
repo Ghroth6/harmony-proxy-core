@@ -293,6 +293,27 @@ rules:
 			}
 		}
 		attribution := connection.Attribution
+		wire, _ := json.Marshal(connection)
+		var display struct {
+			Readable struct {
+				SchemaVersion int      `json:"schemaVersion"`
+				State         string   `json:"state"`
+				Host          string   `json:"host"`
+				RulePayload   string   `json:"rulePayload"`
+				Chain         []string `json:"chain"`
+				OutboundType  string   `json:"outboundType"`
+			} `json:"readable"`
+		}
+		if err := json.Unmarshal(wire, &display); err != nil {
+			t.Fatal(err)
+		}
+		outbound := "shadowsocks"
+		if connection.SourcePort == 54102 {
+			outbound = "direct"
+		}
+		if display.Readable.SchemaVersion != 1 || display.Readable.State != "available" || display.Readable.Host != host || display.Readable.RulePayload != payload || len(display.Readable.Chain) < 1 || display.Readable.Chain[0] != leaf || display.Readable.OutboundType != outbound {
+			t.Fatalf("public query did not preserve readable actual host/rule/Unicode leaf/egress: %+v", display.Readable)
+		}
 		if connection.Rule != rule || connection.Node != node || connection.Upload == 0 || connection.Download == 0 || attribution == nil || attribution.DomainDigest != domainHash(host) || attribution.RulePayloadDigest != domainHash(payload) || attribution.NodeDigest != domainHash(leaf) || attribution.DNSSequence != sequence {
 			t.Fatalf("actual source resource/rule/leaf did not match its original selected route: %+v", connection)
 		}

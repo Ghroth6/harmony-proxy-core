@@ -54,8 +54,8 @@ publishes the actual snapshot, resets the SystemResolver and resumes online
 management admission. Invalid/stale data never gets echoed as an accepted path.
 No public DNS fallback is installed when platform DNS is unavailable.
 
-Runtime contract 4 retains the existing `_v1` C symbol names while explicitly
-rejecting contract-1/2/3 requests. Required top-level `networkGeneration` is separate
+Runtime contract 5 retains the existing `_v1` C symbol names while explicitly
+rejecting contract-1/2/3/4 requests. Required top-level `networkGeneration` is separate
 from persistent platform policy. New node scope requires the current online
 snapshot and available DNS for domain nodes; the receipt records only the
 actually accepted generation. Old fixed-IP scope may use zero. Protected physical
@@ -74,14 +74,14 @@ zero-download #26.
 ## Mobile runtime contract
 
 `mobile/include/cb_runtime.h` and `mobile/runtime/contract.go` are the versioned
-runtime value boundary. `cb_runtime_contract_version_v1` returns 4 for a build
+runtime value boundary. `cb_runtime_contract_version_v1` returns 5 for a build
 with the explicitly selected gVisor runtime, independently of the validation ABI;
 without `with_gvisor` it returns 0, so the adapter rejects capability before dup.
 The three operations own the TUN duplicate, packet stack and stop cleanup.
 Host syscall-boundary tests and ARM64 compilation do not establish target TUN
 acceptance. Resolve all runtime symbols and the contract version before dup.
 
-The start request contains exactly `contractVersion:4`, `operationId`, `generation`, `networkGeneration`,
+The start request contains exactly `contractVersion:5`, `operationId`, `generation`, `networkGeneration`,
 `transferId`, `inputRevision`, `inputDigest`, `runtimeOptions`, `platformPolicy`,
 and `tunPolicy`, with optional `preparedPolicy` for original-source policy.
 Generation is a JSON integer 1..INT32_MAX and matches the scalar
@@ -168,6 +168,22 @@ Counters are tracker-observed bytes, not exact encrypted application-message
 accounting. No Go pointer, process UID, credentials, payload or physical proxy
 endpoint crosses the bridge.
 
+Runtime 5 adds a separately versioned `readable` local display projection from
+TrackerInfo/Metadata and the connection's frozen EgressType. It copies RuleHost,
+actual rule payload and ordered chain labels; its first label is the actual leaf
+label, not a physical peer. Unknown/control/group egress stays unknown. Invalid
+Unicode or projection limits produce an empty `limited` value; no label is
+partially truncated or promoted within the chain. Existing technical fields,
+original/resolved targets and attribution digests remain independent. The exact
+shared schema and pairing rules live only in the application repository's
+`docs/design/contracts/vpn-runtime.md`; no configuration or payload is exported.
+
+Output also respects the native 65536-value JSON parser budget. Each connection
+costs 24 JSON values plus labels and 6 optional attribution values. 1024 values
+are reserved for the bounded root, descriptor/resource/pending-owner values and
+at most 16 DNS observations with four addresses each (together below 512).
+Byte/node exclusions increment the same activeOmitted/historyOmitted counters;
+all registered connections remain admitted and forwarded independently.
 The existing fork creation subscription supplies a 16-creation history window,
 retaining only accounting references and immutable DNS values. Entries still in
 the official registry are not repeated as history. This finite window is not a
@@ -210,7 +226,7 @@ The application repository's VPN runtime contract owns the exact fields and
 limits. A known creation link not contained in the returned 16 DNS records has
 dnsSequence=0, dnsLinkOmitted=true; connectionSnapshot.dnsLinksOmitted counts
 these returned connections. Missing/ambiguous/expired creation facts remain
-unassociated and are never reconstructed using current DNS mappings. Runtime-4
+unassociated and are never reconstructed using current DNS mappings. Runtime-5
 apps and libraries reject earlier contracts before forwarding and must be paired
 by exact tested revisions. This does not resolve the observed browser fake-IP /
 actual-IP discrepancy or establish phone acceptance.

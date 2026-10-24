@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
@@ -24,7 +25,29 @@ func (e *runEngine) runtimeConnection(info *statistic.TrackerInfo) bool {
 		forwarding.Generation(info.Metadata.RequestContext) == e.transfer.receipt.Generation
 }
 
-func (e *runEngine) connectionValue(info *statistic.TrackerInfo, state string) ConnectionObservation {
+func readableConnection(info *statistic.TrackerInfo, kind C.AdapterType) ConnectionReadable {
+	value := ConnectionReadable{SchemaVersion: 1, State: "available", Host: info.Metadata.RuleHost(), RulePayload: info.RulePayload, Chain: append([]string{}, info.Chain...), OutboundType: "unknown"}
+	switch kind {
+	case C.Direct:
+		value.OutboundType = "direct"
+	case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http,
+		C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard,
+		C.Tuic, C.Ssh, C.Mieru, C.AnyTLS, C.Sudoku, C.Masque,
+		C.TrustTunnel, C.ShadowQuic, C.OpenVPN, C.Tailscale, C.ZeroTier,
+		C.EasyTier, C.GostRelay:
+		value.OutboundType = strings.ToLower(kind.String())
+	}
+	valid := utf8.ValidString(value.Host) && len(value.Host) <= 1024 && utf8.ValidString(value.RulePayload) && len(value.RulePayload) <= 1024 && len(value.Chain) <= 8
+	for _, label := range value.Chain {
+		valid = valid && utf8.ValidString(label) && len(label) <= 256
+	}
+	if !valid {
+		return ConnectionReadable{SchemaVersion: 1, State: "limited", Chain: []string{}, OutboundType: "unknown"}
+	}
+	return value
+}
+
+func (e *runEngine) connectionValue(info *statistic.TrackerInfo, state string, kind C.AdapterType) ConnectionObservation {
 	m := info.Metadata
 	target := m.DstIP
 	port := m.DstPort
@@ -34,7 +57,7 @@ func (e *runEngine) connectionValue(info *statistic.TrackerInfo, state string) C
 	}
 	value := ConnectionObservation{ID: info.UUID.String(), State: state, Protocol: strings.ToLower(m.NetWork.String()),
 		SourcePort: m.SrcPort, StartedAt: info.Start.UnixMilli(), TargetPort: port, Rule: "redacted", Node: "redacted",
-		OriginalDestination: original, Upload: info.UploadTotal.Load(), Download: info.DownloadTotal.Load()}
+		OriginalDestination: original, Upload: info.UploadTotal.Load(), Download: info.DownloadTotal.Load(), Readable: readableConnection(info, kind)}
 	if m.SrcIP.IsValid() {
 		value.SourceAddress = m.SrcIP.String()
 	}
@@ -90,7 +113,7 @@ func (e *runEngine) observeConnection(tracker statistic.Tracker) {
 	if e.transfer.ctx.Err() != nil {
 		return
 	}
-	value := e.connectionValue(info, "history")
+	value := e.connectionValue(info, "history", tracker.EgressType())
 	var query *DNSQueryObservation
 	if e.dns != nil && value.Attribution != nil && value.Attribution.DomainDigest != "" && value.OriginalDestination {
 		target, err := netip.ParseAddr(value.TargetAddress)
@@ -130,13 +153,22 @@ func (e *runEngine) fillConnections(receipt *Receipt) {
 	receipt.ConnectionSnapshot = ConnectionSnapshot{CapturedAt: time.Now().UnixMilli(), HistoryDropped: e.historyDropped, DNSFactsDropped: e.dnsFactsDropped}
 	records := []observation{}
 	returned := map[string]bool{}
-	bytes := 0
+	bytes, nodes := 0, 0
 	add := func(record observation) bool {
 		encoded, _ := json.Marshal(record.value)
-		if bytes+len(encoded)+1 > MaxOutputBytes {
+		// 17 base values + the readable object/fields/array (7), its
+		// labels, and optional attribution object/fields (6). Reserve 1024
+		// values for the bounded receipt/resources/DNS envelope. This is a
+		// serialization budget, never an activity or admission limit.
+		cost := 24 + len(record.value.Readable.Chain)
+		if record.value.Attribution != nil {
+			cost += 6
+		}
+		if bytes+len(encoded)+1 > MaxOutputBytes || nodes+cost > MaxOutputNodes-1024 {
 			return false
 		}
 		bytes += len(encoded) + 1
+		nodes += cost
 		records = append(records, record)
 		returned[record.value.ID] = true
 		return true
@@ -149,7 +181,7 @@ func (e *runEngine) fillConnections(receipt *Receipt) {
 			return true
 		}
 		receipt.ConnectionSnapshot.Active++
-		value := e.connectionValue(info, "active")
+		value := e.connectionValue(info, "active", tracker.EgressType())
 		var query *DNSQueryObservation
 		if retained, ok := e.dnsFacts[value.ID]; ok {
 			query = &retained

@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	ContractVersion    = 4
+	ContractVersion    = 5
 	MaxGeneration      = 0x7fffffff
 	MaxInputBytes      = 1024 * 1024
 	MaxRequestBytes    = 1024 * 1024
 	MaxOutputBytes     = 1024 * 1024
+	MaxOutputNodes     = 65536
 	PacketQueue        = 128
 	MTU                = 1500
 	MaxTCPTuples       = 32
@@ -107,6 +108,19 @@ type ConnectionObservation struct {
 	Upload              int64                  `json:"upload"`
 	Download            int64                  `json:"download"`
 	Attribution         *ConnectionAttribution `json:"attribution,omitempty"`
+	Readable            ConnectionReadable     `json:"readable"`
+}
+
+// Local display values only. Labels are not physical peer identities or actions.
+// A limited projection contains no partial label chain that could move a group
+// into the leaf position. Existing technical values/digests remain independent.
+type ConnectionReadable struct {
+	SchemaVersion int      `json:"schemaVersion"`
+	State         string   `json:"state"`
+	Host          string   `json:"host"`
+	RulePayload   string   `json:"rulePayload"`
+	Chain         []string `json:"chain"`
+	OutboundType  string   `json:"outboundType"`
 }
 
 // Counts describe this query's filtered Mihomo registry traversal, not a
