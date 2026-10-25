@@ -44,7 +44,7 @@ func (b *dnsBook) activate()      { b.mu.Lock(); b.accepting = true; b.mu.Unlock
 func (b *dnsBook) stopAdmission() { b.mu.Lock(); b.accepting = false; b.mu.Unlock() }
 
 func (b *dnsBook) admit() bool {
-	if !b.accepting || b.engine.transfer.ctx.Err() != nil || b.pending >= MaxDNSWaiters {
+	if !b.accepting || b.engine.transfer.ctx.Err() != nil {
 		return false
 	}
 	b.pending++

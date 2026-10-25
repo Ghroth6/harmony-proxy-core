@@ -367,12 +367,12 @@ func TestClientTUNDualDNSPreservesOriginalAAAASuppression(t *testing.T) {
 	}
 }
 
-func TestClientTUNDNSCapacityStillAllowsStopAndJoinsEveryRealPeer(t *testing.T) {
+func TestClientTUNDNSBeyondOldWaiterCapacityPreservesPacketBackpressureAndJoinsStop(t *testing.T) {
 	peer, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen, closed := make(chan error, 64), make(chan error, 64)
+	seen, closed := make(chan error, R.PacketQueue+1), make(chan error, R.PacketQueue+1)
 	acceptDone := make(chan struct{})
 	var workers sync.WaitGroup
 	var peerMu sync.Mutex
@@ -436,7 +436,7 @@ func TestClientTUNDNSCapacityStillAllowsStopAndJoinsEveryRealPeer(t *testing.T) 
 	if started.Outcome != "running" {
 		t.Fatalf("actual DNS capacity candidate did not activate: %+v", started)
 	}
-	for index := 0; index < R.MaxDNSWaiters; index++ {
+	for index := 0; index < R.PacketQueue; index++ {
 		question := new(D.Msg).SetQuestion(fmt.Sprintf("capacity-%d.original-policy.test.", index), D.TypeA)
 		payload, err := question.Pack()
 		if err != nil {
@@ -445,14 +445,14 @@ func TestClientTUNDNSCapacityStillAllowsStopAndJoinsEveryRealPeer(t *testing.T) 
 		system.inject(clientUDP4Packet(&net.UDPAddr{IP: net.IPv4(10, 111, 0, 2), Port: 53}, uint16(51500+index), payload))
 	}
 	deadline := time.After(2 * time.Second)
-	for index := 0; index < R.MaxDNSWaiters; index++ {
+	for index := 0; index < R.PacketQueue; index++ {
 		select {
 		case err = <-seen:
 			if err != nil {
 				t.Fatal(err)
 			}
 		case <-deadline:
-			t.Fatal("actual physical DNS peers did not reach the bounded waiter capacity")
+			t.Fatalf("actual physical DNS requests stopped before the shared packet queue filled: accepted=%d", accepted.Load())
 		}
 	}
 	question := new(D.Msg).SetQuestion("over-capacity.original-policy.test.", D.TypeA)
@@ -460,17 +460,17 @@ func TestClientTUNDNSCapacityStillAllowsStopAndJoinsEveryRealPeer(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	system.inject(clientUDP4Packet(&net.UDPAddr{IP: net.IPv4(10, 111, 0, 2), Port: 53}, 51600, payload))
+	system.inject(clientUDP4Packet(&net.UDPAddr{IP: net.IPv4(10, 111, 0, 2), Port: 53}, 51800, payload))
 	time.Sleep(20 * time.Millisecond)
 	observed := manager.Query(generation, 1)
-	if observed.PendingOwners.DNSWaiters != R.MaxDNSWaiters || observed.PendingOwners.UDPPackets != R.MaxDNSWaiters || accepted.Load() != R.MaxDNSWaiters {
-		t.Fatalf("DNS capacity admitted another real socket or lost a live worker: accepted=%d owners=%+v", accepted.Load(), observed.PendingOwners)
+	if observed.PendingOwners.DNSWaiters != R.PacketQueue || observed.PendingOwners.UDPPackets != R.PacketQueue || accepted.Load() != R.PacketQueue {
+		t.Fatalf("shared packet backpressure admitted another DNS socket or lost a live worker: accepted=%d owners=%+v", accepted.Load(), observed.PendingOwners)
 	}
 	stopped := manager.Stop(generation)
 	if stopped.Cleanup != "complete" || stopped.PendingOwners != (R.PendingOwners{}) || owner.ResourceAcquireCount() != "0" {
 		t.Fatalf("full DNS capacity prevented actual normal stop: %+v", stopped)
 	}
-	for index := 0; index < R.MaxDNSWaiters; index++ {
+	for index := 0; index < R.PacketQueue; index++ {
 		select {
 		case err = <-closed:
 			if !errors.Is(err, io.EOF) {
@@ -480,4 +480,5 @@ func TestClientTUNDNSCapacityStillAllowsStopAndJoinsEveryRealPeer(t *testing.T) 
 			t.Fatal("an actual DNS socket survived capacity stop")
 		}
 	}
+	t.Logf("real TUN DNS pending requests=%d; shared packet backpressure retained; normal stop joined every physical DNS peer", accepted.Load())
 }

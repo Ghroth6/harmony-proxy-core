@@ -27,10 +27,6 @@ const (
 	MaxOutputNodes     = 65536
 	PacketQueue        = 128
 	MTU                = 1500
-	MaxTCPTuples       = 32
-	MaxUDPFlows        = 32
-	MaxUDPWrites       = 64
-	MaxDNSWaiters      = 32
 	MaxDNSObservations = 16
 	MaxDNSAnswers      = 4
 	MaxObservation     = uint64(1<<53 - 1)

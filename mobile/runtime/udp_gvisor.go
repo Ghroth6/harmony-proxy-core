@@ -63,10 +63,6 @@ func (b *udpBook) handlePacket(id stack.TransportEndpointID, packet *stack.Packe
 	}
 	slot := b.slots[key]
 	if slot == nil {
-		if len(b.slots) >= MaxUDPFlows {
-			b.mu.Unlock()
-			return true
-		}
 		slot = &udpSlot{}
 		b.slots[key] = slot
 	}
@@ -191,13 +187,16 @@ func (b *udpBook) writeBack(client, target netip.AddrPort, slot *udpSlot, data [
 		return 0, errors.New("UDP reply address family mismatch")
 	}
 	b.mu.Lock()
-	if !b.accepting || b.engine.transfer.ctx.Err() != nil || b.writes >= MaxUDPWrites || (slot != nil && (slot.closing || slot.unknown || b.slots[client] != slot)) {
+	if !b.accepting || b.engine.transfer.ctx.Err() != nil || (slot != nil && (slot.closing || slot.unknown || b.slots[client] != slot)) {
 		b.mu.Unlock()
 		return 0, context.Canceled
 	}
 	b.writes++
 	b.mu.Unlock()
 	defer func() { b.mu.Lock(); b.writes--; b.changed.Broadcast(); b.mu.Unlock() }()
+	// This synchronous write retains its caller's owner. The real gVisor link
+	// queue bounds buffered replies and returns a transport error when full;
+	// counting writers is a stop barrier, not a second packet-admission ceiling.
 	route, routeErr := b.engine.stack.FindRoute(1, stackAddress(source.Addr()), stackAddress(client.Addr()), proto, false)
 	if routeErr != nil {
 		return 0, gonet.TranslateNetstackError(routeErr)
