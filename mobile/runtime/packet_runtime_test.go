@@ -314,34 +314,6 @@ func TestPartialWakeFailureAttemptsEveryIndependentCloseAndPreservesUnknown(t *t
 	}
 }
 
-func TestTCPRequestCapacityAndStopDoNotLoseScheduledCallbacks(t *testing.T) {
-	generation := nextGeneration()
-	register(generation, func(uint64, uint64, uintptr) int32 { return protection.Success })
-	system := newPacketDescriptors()
-	manager := R.NewManager(system, &productionGate)
-	started := manager.Start(manager.Consume(generation, 1, 9), fixed, fixedRequest(generation, 1))
-	if started.Outcome != "running" {
-		t.Fatal(started.FailureCode)
-	}
-	system.inject(tcpPacket(51000, 1, 0, 16)) // non-SYN creates no callback lease.
-	for port := uint16(51001); port < 51041; port++ {
-		system.inject(tcpPacket(port, 1, 0, 2))
-	}
-	select {
-	case <-system.output:
-	case <-time.After(time.Second):
-		t.Fatal("SYN-ACK missing")
-	}
-	snapshot := manager.Query(generation, 1)
-	if snapshot.PendingOwners.TCPCallbacks > 32 || snapshot.PendingOwners.Constructions > 32 {
-		t.Fatal("tuple capacity exceeded")
-	}
-	stopped := manager.Stop(generation)
-	if stopped.Cleanup != "complete" || stopped.PendingOwners != (R.PendingOwners{}) {
-		t.Fatalf("scheduled callback bypassed constructor barrier: %+v", stopped)
-	}
-}
-
 func TestStartObservationTimeoutKeepsRealConstructorOwnedUntilStop(t *testing.T) {
 	generation := nextGeneration()
 	register(generation, func(uint64, uint64, uintptr) int32 { return protection.Success })

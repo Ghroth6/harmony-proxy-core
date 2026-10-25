@@ -17,13 +17,18 @@ import (
 )
 
 type tcpSlot struct {
-	claimed    bool
-	forwarding bool
+	claimed     bool
+	handshaking bool
+	forwarding  bool
 }
 
+// Match the pinned sing-tun v0.4.27 gVisor forwarder's in-flight handshake
+// backlog. Established connections do not consume this transient work budget.
+const tcpHandshakeBacklog = 1024
+
 // Only this wrapper has access to inner. It reserves before inner may schedule
-// a callback, rejects outer duplicates/capacity itself, and retains a slot until
-// the complete callback and forwarding handler have actually returned.
+// a callback and mirrors its handshake backlog separately from lifetime slots.
+// A slot stays owned until the callback and forwarding handler actually return.
 type tcpBook struct {
 	mu           sync.Mutex
 	changed      *sync.Cond
@@ -31,6 +36,7 @@ type tcpBook struct {
 	inner        *tcp.Forwarder
 	slots        map[stack.TransportEndpointID]*tcpSlot
 	accepting    bool
+	handshakes   int
 	constructors int
 	fault        bool
 }
@@ -38,7 +44,7 @@ type tcpBook struct {
 func newTCPBook(engine *runEngine) *tcpBook {
 	book := &tcpBook{engine: engine, slots: map[stack.TransportEndpointID]*tcpSlot{}}
 	book.changed = sync.NewCond(&book.mu)
-	book.inner = tcp.NewForwarder(engine.stack, 0, MaxTCPTuples, book.callback)
+	book.inner = tcp.NewForwarder(engine.stack, 0, tcpHandshakeBacklog, book.callback)
 	return book
 }
 func (b *tcpBook) activate() { b.mu.Lock(); b.accepting = true; b.mu.Unlock() }
@@ -51,14 +57,16 @@ func (b *tcpBook) handlePacket(id stack.TransportEndpointID, packet *stack.Packe
 	if _, found := b.slots[id]; found {
 		return true
 	}
-	if len(b.slots) >= MaxTCPTuples {
+	if b.handshakes >= tcpHandshakeBacklog {
 		return true
 	}
-	b.slots[id] = &tcpSlot{}
-	// All inner inflight tuples originated here, and inner capacity equals outer
-	// capacity. Thus true for a fresh tuple means one callback was scheduled.
+	b.slots[id] = &tcpSlot{handshaking: true}
+	b.handshakes++
+	// The outer handshake reservation outlives inner Complete, so inner can never
+	// silently hit its backlog after outer admission and strand a callback lease.
 	if !b.inner.HandlePacket(id, packet) {
 		delete(b.slots, id)
+		b.handshakes--
 		b.changed.Broadcast()
 		return false
 	}
@@ -112,6 +120,8 @@ func (b *tcpBook) callback(request *tcp.ForwarderRequest) {
 	conn := gonet.NewTCPConn(queue, endpoint)
 	request.Complete(false)
 	b.mu.Lock()
+	slot.handshaking = false
+	b.handshakes--
 	b.constructors--
 	isDNS := b.engine.dns != nil && b.engine.dns.matches(address(id.LocalAddress), id.LocalPort)
 	slot.forwarding = !isDNS
@@ -155,6 +165,9 @@ func cancellationWatcher(ctx context.Context, queue *waiter.Queue, callDone <-ch
 }
 func (b *tcpBook) release(id stack.TransportEndpointID) {
 	b.mu.Lock()
+	if slot := b.slots[id]; slot != nil && slot.handshaking {
+		b.handshakes--
+	}
 	delete(b.slots, id)
 	b.changed.Broadcast()
 	b.mu.Unlock()

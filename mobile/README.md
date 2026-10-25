@@ -140,9 +140,18 @@ and sets address family `dual`. Enabled DNS uses `10.111.0.2`, plus
 `resourceDownloads` follows the declared runnable provider intervals and never
 authorizes initial resource acquisition during preparation or Start.
 Input and request UTF-8 JSON are each <=1 MiB; receipt <=1 MiB.
-Queue size is 128, MTU 1500, TCP tuple capacity 32, transfer record capacity 64;
-start observes up to 5 seconds and stop up to 10 seconds. Actual cleanup retains
-ownership beyond those observation limits.
+Packet queue size is 128, MTU 1500 and transfer record capacity 64. The transient
+TCP handshake backlog is 1024, matching pinned sing-tun v0.4.27's gVisor
+forwarder. A completed handshake releases its backlog reservation while the
+callback retains lifetime ownership until real forwarding returns. Established
+TCP connections, retained UDP/NAT flows and DNS waiters have no separate milestone
+admission ceiling. Ordinary UDP and UDP DNS share the 128 owned-packet budget;
+TCP DNS processes one query at a time per connection. Reply writes are synchronous
+and use the real bounded gVisor packet queue, which returns a transport error
+when full. Writer counts remain cleanup barriers, independently
+of the packet queue and observation/history budgets. Start observes up to 5
+seconds and stop up to 10 seconds. Actual cleanup retains ownership beyond those
+observation limits.
 
 Receipt fields are always present: `contractVersion`, `coreInstance`, `operationId`, `generation`, `networkGeneration`,
 `transferId`, `transferConsumed`, `transferState`, `ownershipFault`,
@@ -182,8 +191,8 @@ Each resource has `kind`, `state` (unacquired/acquired/closing/closed/unknown),
 and `closeResult`. Resource kinds are candidate, forwarding, wake-read, wake-write,
 packet-stack and tun, plus policy-services for original-source runs; an unexpected
 constructor panic retains construction/unknown.
-`pendingOwners` has bounded counts for `pumps`, `tcpCallbacks`,
-`constructions`, `forwarding`; original-source snapshots also observe bounded
+`pendingOwners` reports actual owned work for `pumps`, `tcpCallbacks`,
+`constructions`, `forwarding`; original-source snapshots also observe
 `udpFlows`, `udpPackets`, `udpWrites` and `dnsWaiters`. Each query obtains active
 connections directly from Mihomo `statistic.DefaultManager.Range`, filtered by
 both the actual forwarding context generation and metadata generation, and TUN
