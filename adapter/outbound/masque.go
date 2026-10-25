@@ -115,6 +115,16 @@ func NewMasque(option MasqueOption) (*Masque, error) {
 	if err := option.IPStack.validate(); err != nil {
 		return nil, err
 	}
+	// Parse fallible node DNS input before creating the protocol stack. Until
+	// construction returns, the caller cannot own or retire that stack for us.
+	var nameServers []dns.NameServer
+	if option.RemoteDnsResolve && len(option.Dns) > 0 {
+		var err error
+		nameServers, err = dns.ParseNameServer(option.Dns)
+		if err != nil {
+			return nil, err
+		}
+	}
 	outbound := &Masque{
 		Base: NewBase(BaseOption{
 			Name:         option.Name,
@@ -252,16 +262,12 @@ func NewMasque(option MasqueOption) (*Masque, error) {
 		}
 	}
 
-	if option.RemoteDnsResolve && len(option.Dns) > 0 {
-		nss, err := dns.ParseNameServer(option.Dns)
-		if err != nil {
-			return nil, err
-		}
-		for i := range nss {
-			nss[i].ProxyAdapter = outbound
+	if len(nameServers) > 0 {
+		for i := range nameServers {
+			nameServers[i].ProxyAdapter = outbound
 		}
 		outbound.resolver = dns.NewResolver(dns.Config{
-			Main: nss,
+			Main: nameServers,
 			IPv6: has6,
 		})
 	}

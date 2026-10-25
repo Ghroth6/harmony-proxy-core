@@ -49,6 +49,9 @@ Selected-node select/MATCH composition remains an explicit local policy, separat
 from full original policy. Current selected candidates always use the real
 constructor. Historical static validation only determines older coverage labels;
 its narrower protocol/field checks never reject a current selected candidate.
+Coverage classification reads the original values without constructing another
+candidate. Policy validation also reuses its verified plan's adaptations, so a
+second construction or cleanup cannot be hidden after a successful result.
 
 Original policy Plan and Build share the upstream proxy/group graph constructor.
 Load-balance, include-all and include-all-proxies use actual upstream members,
@@ -57,6 +60,12 @@ graph; construction dependencies do not rewrite original group positions.
 Negative/overflowed group timer durations fail the shared upstream parser before
 a timer starts. Plan/Validate/Build perform no provider initialization or network
 acquisition.
+
+`type: dns` associations capture the candidate's actual DNS service. TCP relays
+and UDP query workers borrow that service's existing owner, close on cancellation
+and join before the owner finishes; they never consult a later global service.
+MASQUE parses fallible node DNS settings before allocating its protocol stack,
+so failed preparation leaves no stack workers behind.
 
 Concrete remaining integration gaps are explicit at the operation that needs
 ownership: global node DNS registration (`PROXY_DNS_REGISTRY_NOT_IMPLEMENTED`),

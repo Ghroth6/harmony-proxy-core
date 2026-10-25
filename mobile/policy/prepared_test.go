@@ -3,6 +3,7 @@ package policy_test
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,25 @@ import (
 	"github.com/metacubex/mihomo/mobile/policy"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 )
+
+func TestOriginalPolicyValidationRetainsVerifiedProcessAdaptationAndClosesOwners(t *testing.T) {
+	engine, err := policy.NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("ipv6: false\ndns: {enable: false}\nrules: ['PROCESS-NAME,org.example.public,DIRECT', 'MATCH,DIRECT']\n")
+	prepared, err := contract.Seal(contract.Digest(input), nil, publicPlatform(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := engine.Validate("verified-process-adaptation", input, prepared)
+	if receipt.Category != "pass" || !slices.Contains(receipt.Uncovered, "ohos-process-owner-lookup") || !slices.Contains(receipt.Covered, "candidate-resources-closed") {
+		t.Fatalf("validated plan adaptation was lost: %s/%s", receipt.Category, receipt.Code)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal("validation retained an actual candidate or resource owner")
+	}
+}
 
 const noResourcePolicy = `ipv6: false
 dns: {enable: false}

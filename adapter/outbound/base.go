@@ -204,6 +204,7 @@ type BasicOption struct {
 	PhysicalDialerForAPI func([]dialer.Option) C.Dialer `proxy:"-"`
 	ProxyLookupForAPI    proxydialer.ProxyLookup        `proxy:"-"`
 	ResourcePolicyForAPI func(string) error             `proxy:"-"`
+	DNSServiceForAPI     func() resolver.Service        `proxy:"-"`
 	TunnelForAPI         C.Tunnel                       `proxy:"-"`
 	ProviderName         string                         `proxy:"-"`
 }

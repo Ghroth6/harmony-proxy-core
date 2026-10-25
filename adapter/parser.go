@@ -11,6 +11,7 @@ import (
 	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/proxydialer"
+	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 )
 
@@ -29,6 +30,7 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (_ C.Proxy, retE
 		PhysicalDialerForAPI: opt.PhysicalDialerForAPI,
 		ProxyLookupForAPI:    opt.ProxyLookupForAPI,
 		ResourcePolicyForAPI: opt.ResourcePolicyForAPI,
+		DNSServiceForAPI:     opt.DNSServiceForAPI,
 		TunnelForAPI:         opt.TunnelForAPI,
 		ProviderName:         opt.ProviderName,
 	}
@@ -283,6 +285,7 @@ type proxyOption struct {
 	PhysicalDialerForAPI func([]dialer.Option) C.Dialer
 	ProxyLookupForAPI    proxydialer.ProxyLookup
 	ResourcePolicyForAPI func(string) error
+	DNSServiceForAPI     func() resolver.Service
 	WrapAdapter          func(outbound.ProxyAdapter) outbound.ProxyAdapter
 }
 
@@ -314,6 +317,10 @@ func WithProxyLookupForAPI(lookup proxydialer.ProxyLookup) ProxyOption {
 
 func WithResourcePolicyForAPI(policy func(string) error) ProxyOption {
 	return func(opt *proxyOption) { opt.ResourcePolicyForAPI = policy }
+}
+
+func WithDNSServiceForAPI(service func() resolver.Service) ProxyOption {
+	return func(opt *proxyOption) { opt.DNSServiceForAPI = service }
 }
 
 // WithAdapterWrapper binds embedded API ownership before a parsed adapter is

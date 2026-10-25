@@ -105,7 +105,7 @@ func BuildMobileProxyCandidate(raw *RawConfig) (cfg *Config, err error) {
 	}
 	wrap := func(a C.ProxyAdapter) C.ProxyAdapter { return &mobilePolicyBuiltin{ProxyAdapter: a, fence: fence} }
 	lookup := &mobilePolicyProxyLookup{candidate: cfg}
-	cfg.Proxies, cfg.Providers, err = parseProxiesWithBuiltins(raw, owned, wrap, adapter.WithPhysicalDialerForAPI(fence.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
+	cfg.Proxies, cfg.Providers, err = parseProxiesWithBuiltins(raw, owned, wrap, adapter.WithPhysicalDialerForAPI(fence.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithDNSServiceForAPI(cfg.mobileAdapterDNSService), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
 		return &mobilePolicyBuiltin{ProxyAdapter: a, fence: fence}
 	}))
 	if err != nil {

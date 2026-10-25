@@ -14,6 +14,18 @@ type Service struct {
 	owner   *ResolverOwner
 }
 
+// AcquireWorker borrows the same candidate owner for a captured adapter relay,
+// including idle TCP reads and UDP associations before an individual query.
+func (s *Service) AcquireWorker(ctx context.Context) (context.Context, func(), error) {
+	if s.owner != nil {
+		return s.owner.AcquireWorker(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return ctx, func() {}, nil
+}
+
 // ServeMsg implement [resolver.Service] ResolveMsg
 func (s *Service) ServeMsg(ctx context.Context, msg *D.Msg) (*D.Msg, error) {
 	if len(msg.Question) == 0 {

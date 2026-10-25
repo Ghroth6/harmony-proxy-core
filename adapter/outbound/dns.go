@@ -2,8 +2,10 @@ package outbound
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
@@ -15,6 +17,7 @@ import (
 
 type Dns struct {
 	*Base
+	service func() resolver.Service
 }
 
 type DnsOption struct {
@@ -24,9 +27,65 @@ type DnsOption struct {
 
 // DialContext implements C.ProxyAdapter
 func (d *Dns) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
+	ctx, cancel, finish, service, err := d.relayContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	left, right := N.Pipe()
-	go resolver.RelayDnsConn(context.Background(), right, 0)
-	return NewConn(left, d), nil
+	conn := &dnsRelayConn{Conn: left, peer: right, cancel: cancel, done: make(chan struct{})}
+	callbackDone := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { defer close(callbackDone); _ = right.Close() })
+	go func() {
+		_ = resolver.RelayDnsConnWithService(ctx, right, 0, service)
+		cancel()
+		if !stop() {
+			<-callbackDone
+		}
+		finish()
+		close(conn.done)
+	}()
+	return NewConn(conn, d), nil
+}
+
+// A DNS proxy borrows one service and its owner for the whole association. A
+// configured mobile getter never consults a later globally published service.
+func (d *Dns) relayContext(ctx context.Context) (context.Context, context.CancelFunc, func(), resolver.Service, error) {
+	var service resolver.Service
+	if d.service != nil {
+		service = d.service()
+	} else {
+		service = resolver.DefaultService
+	}
+	finish := func() {}
+	if owner, ok := service.(interface {
+		AcquireWorker(context.Context) (context.Context, func(), error)
+	}); ok {
+		var err error
+		ctx, finish, err = owner.AcquireWorker(ctx)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	return ctx, cancel, finish, service, nil
+}
+
+type dnsRelayConn struct {
+	net.Conn
+	peer   net.Conn
+	cancel context.CancelFunc
+	done   chan struct{}
+	once   sync.Once
+	err    error
+}
+
+func (c *dnsRelayConn) Close() error {
+	c.once.Do(func() {
+		c.cancel()
+		c.err = errors.Join(c.Conn.Close(), c.peer.Close())
+		<-c.done
+	})
+	return c.err
 }
 
 // ListenPacketContext implements C.ProxyAdapter
@@ -36,13 +95,35 @@ func (d *Dns) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.
 		return nil, err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	return NewPacketConn(&dnsPacketConn{
+	ctx, cancel, finish, service, err := d.relayContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	conn := &dnsPacketConn{
 		response: make(chan dnsPacket, 1),
 		ctx:      ctx,
 		cancel:   cancel,
-	}, d), nil
+		service:  service,
+		done:     make(chan struct{}),
+	}
+	go func() {
+		<-ctx.Done()
+		conn.mu.Lock()
+		conn.closed = true
+		conn.mu.Unlock()
+		conn.workers.Wait()
+		for {
+			select {
+			case packet := <-conn.response:
+				packet.put()
+			default:
+				finish()
+				close(conn.done)
+				return
+			}
+		}
+	}()
+	return NewPacketConn(conn, d), nil
 }
 
 func (d *Dns) ResolveUDP(ctx context.Context, metadata *C.Metadata) error {
@@ -63,11 +144,20 @@ type dnsPacketConn struct {
 	response chan dnsPacket
 	ctx      context.Context
 	cancel   context.CancelFunc
+	service  resolver.Service
+	mu       sync.Mutex
+	closed   bool
+	workers  sync.WaitGroup
+	done     chan struct{}
 }
 
 func (d *dnsPacketConn) WaitReadFrom() (data []byte, put func(), addr net.Addr, err error) {
 	select {
 	case packet := <-d.response:
+		if d.ctx.Err() != nil {
+			packet.put()
+			return nil, nil, nil, net.ErrClosed
+		}
 		return packet.data, packet.put, packet.addr, nil
 	case <-d.ctx.Done():
 		return nil, nil, nil, net.ErrClosed
@@ -77,6 +167,10 @@ func (d *dnsPacketConn) WaitReadFrom() (data []byte, put func(), addr net.Addr, 
 func (d *dnsPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	select {
 	case packet := <-d.response:
+		if d.ctx.Err() != nil {
+			packet.put()
+			return 0, nil, net.ErrClosed
+		}
 		n = copy(p, packet.data)
 		if packet.put != nil {
 			packet.put()
@@ -88,14 +182,17 @@ func (d *dnsPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 }
 
 func (d *dnsPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	select {
-	case <-d.ctx.Done():
+	d.mu.Lock()
+	if d.closed || d.ctx.Err() != nil {
+		d.mu.Unlock()
 		return 0, net.ErrClosed
-	default:
 	}
+	d.workers.Add(1)
+	d.mu.Unlock()
 
 	if len(p) > resolver.SafeDnsPacketSize {
 		// wtf???
+		d.workers.Done()
 		return len(p), nil
 	}
 
@@ -104,10 +201,11 @@ func (d *dnsPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	copy(buf, p) // avoid p be changed after WriteTo returned
 
 	go func() { // don't block the WriteTo function
+		defer d.workers.Done()
 		ctx, cancel := context.WithTimeout(d.ctx, resolver.DefaultDnsRelayTimeout)
 		defer cancel()
 
-		buf, err := resolver.RelayDnsPacket(ctx, buf[:len(p)], buf)
+		buf, err := resolver.RelayDnsPacketWithService(ctx, buf[:len(p)], buf, d.service)
 		if err != nil {
 			put()
 			return
@@ -130,6 +228,7 @@ func (d *dnsPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 
 func (d *dnsPacketConn) Close() error {
 	d.cancel()
+	<-d.done
 	return nil
 }
 
@@ -155,6 +254,7 @@ func (*dnsPacketConn) SetWriteDeadline(t time.Time) error {
 
 func NewDnsWithOption(option DnsOption) *Dns {
 	return &Dns{
+		service: option.DNSServiceForAPI,
 		Base: NewBase(BaseOption{
 			Name:         option.Name,
 			Type:         C.Dns,

@@ -36,8 +36,45 @@ func (e *MobileValidationError) Unwrap() error { return e.cause }
 // (which temporarily applies general globals), initializes providers, or applies
 // a candidate. Every constructed object is discarded before returning.
 func ValidateMobileStatic(raw *RawConfig) (err error) {
-	// Defense in depth for direct callers: the mobile driver gates every original
-	// YAML field, and this boundary independently rejects unsafe constructors.
+	if err := validateLegacyMobileScope(raw); err != nil {
+		return err
+	}
+	owned := &configresources.Set{}
+	defer func() {
+		// This subset creates no external task. Still wait for every real Close;
+		// a failed cleanup can never be reported as a semantic pass.
+		if cleanupErr := owned.Close(context.Background()); cleanupErr != nil {
+			err = &MobileValidationError{Code: "CANDIDATE_CLEANUP_FAILED", cause: errors.Join(err, cleanupErr)}
+		} else if !errors.Is(owned.CheckTransfer(), configresources.ErrCleanupStarted) {
+			// A usable/publishable candidate must never escape validation, even
+			// when it currently happens to own adapters whose Close is a no-op.
+			err = &MobileValidationError{Code: "CANDIDATE_CLEANUP_FAILED", cause: err}
+		}
+	}()
+	proxies, _, parseErr := parseProxiesInto(raw, owned)
+	if parseErr != nil {
+		var detail *semanticParseError
+		if errors.As(parseErr, &detail) {
+			return &MobileValidationError{Code: detail.code, Field: detail.field, cause: parseErr}
+		}
+		return &MobileValidationError{Code: "PROXY_OR_GROUP_INVALID", cause: parseErr}
+	}
+	if _, parseErr = parseRules(raw.Rule, proxies, nil, nil, "rules"); parseErr != nil {
+		var detail *semanticParseError
+		if errors.As(parseErr, &detail) {
+			return &MobileValidationError{Code: detail.code, Field: detail.field, cause: parseErr}
+		}
+		return &MobileValidationError{Code: "RULE_INVALID", Field: "rules", cause: parseErr}
+	}
+	return nil
+}
+
+// validateLegacyMobileScope is the historical input-only coverage predicate.
+// Current selected construction already supplies semantic/cleanup evidence; a
+// coverage-label decision must not acquire another candidate or hide its errors.
+func validateLegacyMobileScope(raw *RawConfig) error {
+	// Preserve the original fixed validation contract for its direct callers and
+	// labels. Ordinary selected/source admission uses the current constructors.
 	if len(raw.ProxyProvider) != 0 || len(raw.RuleProvider) != 0 || len(raw.SubRules) != 0 {
 		return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED"}
 	}
@@ -112,33 +149,6 @@ func ValidateMobileStatic(raw *RawConfig) (err error) {
 		if kind != "DOMAIN" && kind != "MATCH" {
 			return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED", Field: "rules"}
 		}
-	}
-	owned := &configresources.Set{}
-	defer func() {
-		// This subset creates no external task. Still wait for every real Close;
-		// a failed cleanup can never be reported as a semantic pass.
-		if cleanupErr := owned.Close(context.Background()); cleanupErr != nil {
-			err = &MobileValidationError{Code: "CANDIDATE_CLEANUP_FAILED", cause: errors.Join(err, cleanupErr)}
-		} else if !errors.Is(owned.CheckTransfer(), configresources.ErrCleanupStarted) {
-			// A usable/publishable candidate must never escape validation, even
-			// when it currently happens to own adapters whose Close is a no-op.
-			err = &MobileValidationError{Code: "CANDIDATE_CLEANUP_FAILED", cause: err}
-		}
-	}()
-	proxies, _, parseErr := parseProxiesInto(raw, owned)
-	if parseErr != nil {
-		var detail *semanticParseError
-		if errors.As(parseErr, &detail) {
-			return &MobileValidationError{Code: detail.code, Field: detail.field, cause: parseErr}
-		}
-		return &MobileValidationError{Code: "PROXY_OR_GROUP_INVALID", cause: parseErr}
-	}
-	if _, parseErr = parseRules(raw.Rule, proxies, nil, nil, "rules"); parseErr != nil {
-		var detail *semanticParseError
-		if errors.As(parseErr, &detail) {
-			return &MobileValidationError{Code: detail.code, Field: detail.field, cause: parseErr}
-		}
-		return &MobileValidationError{Code: "RULE_INVALID", Field: "rules", cause: parseErr}
 	}
 	return nil
 }

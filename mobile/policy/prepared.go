@@ -42,7 +42,7 @@ func (e *Engine) Validate(operationID string, input []byte, prepared contract.Pr
 		receipt.Code = "POLICY_REQUEST_BOUNDS"
 		return
 	}
-	candidate, err := e.BuildCandidate(input, prepared)
+	candidate, plan, err := e.buildCandidate(input, prepared)
 	if candidate != nil {
 		if cleanup := candidate.Discard(context.Background()); cleanup != nil {
 			e.retainCandidate(candidate, cleanup)
@@ -60,6 +60,9 @@ func (e *Engine) Validate(operationID string, input []byte, prepared contract.Pr
 		if strings.HasSuffix(receipt.Code, "NOT_IMPLEMENTED") || receipt.Code == "PROXY_TYPE_UNSUPPORTED" {
 			receipt.Category = "incomplete"
 		}
+		if receipt.Code == "POLICY_CLEANUP_FAILED" || receipt.Code == "POLICY_CONSTRUCTION_FAILED" || receipt.Code == "CORE_FAILURE" || receipt.Code == "CANDIDATE_CLEANUP_FAILED" {
+			receipt.Category = "failure"
+		}
 		return
 	}
 	receipt.Category = "pass"
@@ -73,7 +76,6 @@ func (e *Engine) Validate(operationID string, input []byte, prepared contract.Pr
 		receipt.Covered[0] = "original-source-policy-dual-v1"
 	}
 	receipt.Uncovered = []string{"runtime-connectivity"}
-	plan := e.Plan(operationID, input, prepared.Resources)
 	for _, adaptation := range plan.Adaptations {
 		if adaptation.Code == "PROCESS_LOOKUP_UNVERIFIED" {
 			receipt.Uncovered = append(receipt.Uncovered, "ohos-process-owner-lookup")
@@ -84,18 +86,26 @@ func (e *Engine) Validate(operationID string, input []byte, prepared contract.Pr
 }
 
 func (e *Engine) BuildCandidate(input []byte, prepared contract.PreparedContext) (*config.Config, error) {
+	candidate, _, err := e.buildCandidate(input, prepared)
+	return candidate, err
+}
+
+// Validation consumes the already verified plan. Reconstructing another graph
+// only for its adaptations could introduce a new cleanup failure after success.
+func (e *Engine) buildCandidate(input []byte, prepared contract.PreparedContext) (*config.Config, PlanReceipt, error) {
 	verified, code := e.verify(input, prepared)
 	if code != "" {
-		return nil, errors.New(code)
+		return nil, PlanReceipt{}, errors.New(code)
 	}
 	inputs, err := e.prepareProviders(verified.raw, verified.context, verified.plan.Requirements, verified.fixed)
 	if err != nil {
 		if cleanup := discardPreparedProviders(inputs); cleanup != nil {
-			return nil, errors.New("POLICY_CLEANUP_FAILED")
+			return nil, verified.plan, errors.New("POLICY_CLEANUP_FAILED")
 		}
-		return nil, err
+		return nil, verified.plan, err
 	}
-	return config.BuildMobilePolicyCandidate(verified.raw, verified.context, verified.preferences, inputs)
+	candidate, err := config.BuildMobilePolicyCandidate(verified.raw, verified.context, verified.preferences, inputs)
+	return candidate, verified.plan, err
 }
 
 type preparedVerification struct {

@@ -107,7 +107,7 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		receipt.Category = "invalid"
 		var diagnostic *config.MobileValidationError
 		if errors.As(err, &diagnostic) {
-			if diagnostic.Code == "CANDIDATE_CLEANUP_FAILED" {
+			if diagnostic.Code == "CANDIDATE_CLEANUP_FAILED" || diagnostic.Code == "CORE_FAILURE" {
 				receipt.Category = "failure"
 			} else if diagnostic.Code == "CAPABILITY_NOT_COVERED" || diagnostic.Code == "PROXY_TYPE_UNSUPPORTED" || strings.HasSuffix(diagnostic.Code, "NOT_IMPLEMENTED") {
 				receipt.Category = "incomplete"
@@ -135,7 +135,7 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 	receipt.Category = "pass"
 	// Historical validation only determines which old coverage labels remain
 	// truthful. Its narrower checks never reject a current selected candidate.
-	extendedSelected := selected && (!config.MobileLegacySelectedShape(raw) || config.ValidateMobileStatic(raw) != nil)
+	extendedSelected := selected && !config.MobileLegacySelectedShape(raw)
 	if extendedSelected {
 		receipt.Covered = append(receipt.Covered, "mobile-proxy-ipv4-tcp-v2", "static-mobile-proxy-node", "explicit-select-references", "MATCH-rule-references", "candidate-resources-closed")
 		receipt.Uncovered = []string{"runtime-connectivity", "application-udp-dns-ipv6", "original-source-policy-and-resources"}

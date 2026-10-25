@@ -33,8 +33,8 @@ func MobileLegacySelectedShape(raw *RawConfig) bool {
 	n := raw.Proxy[0]
 	server, ok := n["server"].(string)
 	if !ok {
-		return true
-	} // Existing scalar diagnostics remain authoritative.
+		return false
+	}
 	address, err := netip.ParseAddr(server)
 	if err != nil || !address.Is4() || address.IsUnspecified() || address.IsMulticast() || n["udp"] == true {
 		return false
@@ -56,7 +56,7 @@ func MobileLegacySelectedShape(raw *RawConfig) bool {
 			return false
 		}
 	}
-	return true
+	return validateLegacyMobileScope(raw) == nil
 }
 
 type mobileCandidateDialer struct {
@@ -136,7 +136,7 @@ func BuildMobileSelectedCandidate(raw *RawConfig) (cfg *Config, err error) {
 		return cfg, &MobileValidationError{Code: "CAPABILITY_NOT_COVERED"}
 	}
 	lookup := &mobilePolicyProxyLookup{candidate: cfg}
-	cfg.Proxies, cfg.Providers, err = parseProxiesInto(raw, owned, adapter.WithPhysicalDialerForAPI(gate.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
+	cfg.Proxies, cfg.Providers, err = parseProxiesInto(raw, owned, adapter.WithPhysicalDialerForAPI(gate.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithDNSServiceForAPI(cfg.mobileAdapterDNSService), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
 		return &mobilePolicyBuiltin{ProxyAdapter: a, fence: gate}
 	}))
 	if err != nil {

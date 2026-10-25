@@ -93,6 +93,13 @@ func (c *Config) MobileDNSService() *dns.Service {
 	}
 	return c.mobileDNS.service
 }
+
+func (c *Config) mobileAdapterDNSService() resolver.Service {
+	if service := c.MobileDNSService(); service != nil {
+		return service
+	}
+	return nil
+}
 func (c *Config) MobileDNSResolvers() (dns.Resolvers, *dns.ResolverEnhancer, bool) {
 	if c == nil || c.mobileDNS == nil || c.mobileDNS.service == nil {
 		return dns.Resolvers{}, nil, false
