@@ -353,6 +353,7 @@ func NewShadowSocks(option ShadowSocksOption) (*ShadowSocks, error) {
 			v2rayOption.SkipCertVerify = opts.SkipCertVerify
 			v2rayOption.NameCertVerify = opts.NameCertVerify
 			v2rayOption.Fingerprint = opts.Fingerprint
+			v2rayOption.ResourcePolicy = option.ResourcePolicyForAPI
 			v2rayOption.Certificate = opts.Certificate
 			v2rayOption.PrivateKey = opts.PrivateKey
 
@@ -384,6 +385,7 @@ func NewShadowSocks(option ShadowSocksOption) (*ShadowSocks, error) {
 			gostOption.SkipCertVerify = opts.SkipCertVerify
 			gostOption.NameCertVerify = opts.NameCertVerify
 			gostOption.Fingerprint = opts.Fingerprint
+			gostOption.ResourcePolicy = option.ResourcePolicyForAPI
 			gostOption.Certificate = opts.Certificate
 			gostOption.PrivateKey = opts.PrivateKey
 
@@ -401,11 +403,11 @@ func NewShadowSocks(option ShadowSocksOption) (*ShadowSocks, error) {
 		if err := decoder.Decode(option.PluginOpts, opt); err != nil {
 			return nil, fmt.Errorf("ss %s initialize shadow-tls-plugin error: %w", addr, err)
 		}
-
 		shadowTLSOpt = &shadowtls.ShadowTLSOption{
 			Password:          opt.Password,
 			Host:              opt.Host,
 			Fingerprint:       opt.Fingerprint,
+			ResourcePolicy:    option.ResourcePolicyForAPI,
 			Certificate:       opt.Certificate,
 			PrivateKey:        opt.PrivateKey,
 			ClientFingerprint: option.ClientFingerprint,

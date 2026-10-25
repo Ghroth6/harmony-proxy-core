@@ -145,6 +145,9 @@ func NewEasyTier(option EasyTierOption) (*EasyTier, error) {
 	if addr == "" {
 		addr = "easytier"
 	}
+	if err := option.CheckResource("PROXY_DNS_REGISTRY_NOT_IMPLEMENTED"); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	outbound := &EasyTier{
 		Base: NewBase(BaseOption{

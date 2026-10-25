@@ -156,6 +156,7 @@ func NewAnyTLS(option AnyTLSOption) (*AnyTLS, error) {
 		NameCertVerify:    option.NameCertVerify,
 		NextProtos:        option.ALPN,
 		FingerPrint:       option.Fingerprint,
+		ResourcePolicy:    option.ResourcePolicyForAPI,
 		Certificate:       option.Certificate,
 		PrivateKey:        option.PrivateKey,
 		ClientFingerprint: option.ClientFingerprint,

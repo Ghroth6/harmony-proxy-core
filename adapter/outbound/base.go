@@ -199,15 +199,39 @@ type BasicOption struct {
 	// The following parameters are used internally, assign value by the structure decoder are disallowed
 	//
 	DialerForAPI C.Dialer `proxy:"-"` // the dialer used for API usage has higher priority than all the above configurations.
-	TunnelForAPI C.Tunnel `proxy:"-"`
-	ProviderName string   `proxy:"-"`
+	// PhysicalDialerForAPI replaces only the physical default dialer. A declared
+	// dialer-proxy still uses the upstream proxy dialer and its original tunnel.
+	PhysicalDialerForAPI func([]dialer.Option) C.Dialer `proxy:"-"`
+	ProxyLookupForAPI    proxydialer.ProxyLookup        `proxy:"-"`
+	ResourcePolicyForAPI func(string) error             `proxy:"-"`
+	TunnelForAPI         C.Tunnel                       `proxy:"-"`
+	ProviderName         string                         `proxy:"-"`
+}
+
+// APIIntegrationError identifies a concrete operation whose owner has not been
+// supplied by an embedded runtime. It is not a protocol admission list.
+type APIIntegrationError struct{ Code string }
+
+func (e *APIIntegrationError) Error() string { return e.Code }
+
+func (b *BasicOption) CheckResource(operation string) error {
+	if b.ResourcePolicyForAPI != nil {
+		return b.ResourcePolicyForAPI(operation)
+	}
+	return nil
 }
 
 func (b *BasicOption) NewDialer(opts []dialer.Option) C.Dialer {
 	cDialer := b.DialerForAPI
 	if cDialer == nil {
 		if b.DialerProxy != "" {
-			cDialer = proxydialer.NewByName(b.DialerProxy, b.NewTunnel())
+			if b.ProxyLookupForAPI != nil {
+				cDialer = proxydialer.NewByNameWithLookup(b.DialerProxy, b.ProxyLookupForAPI)
+			} else {
+				cDialer = proxydialer.NewByName(b.DialerProxy, b.NewTunnel())
+			}
+		} else if b.PhysicalDialerForAPI != nil {
+			cDialer = b.PhysicalDialerForAPI(opts)
 		} else {
 			cDialer = dialer.NewDialer(opts...)
 		}

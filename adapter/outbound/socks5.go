@@ -181,6 +181,7 @@ func NewSocks5(option Socks5Option) (*Socks5, error) {
 			},
 			Fingerprint:    option.Fingerprint,
 			NameCertVerify: option.NameCertVerify,
+			ResourcePolicy: option.ResourcePolicyForAPI,
 			Certificate:    option.Certificate,
 			PrivateKey:     option.PrivateKey,
 		})

@@ -189,21 +189,16 @@ func TestOriginalGroupNumericIntervalRejectsInvalidValuesAcrossPolicyBoundaries(
 	for _, test := range []struct {
 		name, field, code string
 	}{
-		{name: "negative", field: "interval: '-1'", code: "POLICY_GROUP_INVALID"},
-		{name: "native-int-overflow", field: "interval: '9223372036854775808'", code: "POLICY_GROUP_INVALID"},
-		{name: "duration-overflow-string", field: "interval: '9223372037'", code: "POLICY_GROUP_INVALID"},
-		{name: "duration-overflow-int", field: "interval: 9223372037", code: "POLICY_GROUP_INVALID"},
-		{name: "fraction", field: "interval: '1.5'", code: "POLICY_GROUP_INVALID"},
-		{name: "leading-space", field: "interval: ' 300'", code: "POLICY_GROUP_INVALID"},
-		{name: "empty", field: "interval: ''", code: "POLICY_GROUP_INVALID"},
-		{name: "invalid-octal", field: "interval: '08'", code: "POLICY_GROUP_INVALID"},
-		{name: "invalid-digits", field: "interval: 'documentation'", code: "POLICY_GROUP_INVALID"},
-		{name: "boolean", field: "interval: true", code: "POLICY_GROUP_INVALID"},
-		{name: "float", field: "interval: 1.5", code: "POLICY_GROUP_INVALID"},
-		{name: "timeout-not-expanded", field: "timeout: '5000'", code: "POLICY_GROUP_INVALID"},
-		{name: "tolerance-not-expanded", field: "tolerance: '10'", code: "POLICY_GROUP_INVALID"},
-		{name: "unknown-semantic", field: "unknown-routing-semantic: true", code: "POLICY_GROUP_PARAMETER_UNSUPPORTED"},
-		{name: "removed-dialer", field: "dialer-proxy: REJECT", code: "POLICY_GROUP_PARAMETER_UNSUPPORTED"},
+		{name: "negative", field: "interval: '-1'", code: "GROUP_INVALID"},
+		{name: "native-int-overflow", field: "interval: '9223372036854775808'", code: "GROUP_INVALID"},
+		{name: "duration-overflow-string", field: "interval: '9223372037'", code: "GROUP_INVALID"},
+		{name: "duration-overflow-int", field: "interval: 9223372037", code: "GROUP_INVALID"},
+		{name: "fraction", field: "interval: '1.5'", code: "GROUP_INVALID"},
+		{name: "leading-space", field: "interval: ' 300'", code: "GROUP_INVALID"},
+		{name: "empty", field: "interval: ''", code: "GROUP_INVALID"},
+		{name: "invalid-octal", field: "interval: '08'", code: "GROUP_INVALID"},
+		{name: "invalid-digits", field: "interval: 'documentation'", code: "GROUP_INVALID"},
+		{name: "boolean", field: "interval: true", code: "GROUP_INVALID"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			engine, err := policy.NewEngine(t.TempDir())

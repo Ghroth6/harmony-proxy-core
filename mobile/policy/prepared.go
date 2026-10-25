@@ -8,6 +8,7 @@ import (
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/mobile/validation"
 	"reflect"
+	"strings"
 )
 
 type PreparedReceipt struct {
@@ -55,6 +56,9 @@ func (e *Engine) Validate(operationID string, input []byte, prepared contract.Pr
 		var diagnostic *config.MobileValidationError
 		if errors.As(err, &diagnostic) {
 			receipt.Code = diagnostic.Code
+		}
+		if strings.HasSuffix(receipt.Code, "NOT_IMPLEMENTED") || receipt.Code == "PROXY_TYPE_UNSUPPORTED" {
+			receipt.Category = "incomplete"
 		}
 		return
 	}
@@ -115,7 +119,8 @@ func (e *Engine) verify(input []byte, prepared contract.PreparedContext) (*prepa
 		return nil, "POLICY_IDENTITY_INVALID"
 	}
 	var fixed map[string]fixedResource
-	plan := e.plan("policy-independent-build", input, prepared.Resources, &fixed)
+	resolvedMembers := map[string][]string{}
+	plan := e.plan("policy-independent-build", input, prepared.Resources, &fixed, resolvedMembers)
 	if plan.Category != "planned" {
 		return nil, plan.Code
 	}
@@ -144,8 +149,7 @@ func (e *Engine) verify(input []byte, prepared contract.PreparedContext) (*prepa
 					continue
 				}
 				name, _ := raw.ProxyGroup[group.Position-1]["name"].(string)
-				members := raw.ProxyGroup[group.Position-1]["proxies"].([]any)
-				preferences[name] = members[member.Position-1].(string)
+				preferences[name] = resolvedMembers[group.GroupRef][member.Position-1]
 				matched = true
 			}
 		}

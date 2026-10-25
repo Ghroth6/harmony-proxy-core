@@ -81,6 +81,7 @@ type Option struct {
 	Fingerprint    string
 	NameCertVerify string
 	ZeroTrust      bool
+	ResourcePolicy func(string) error
 	Certificate    string
 	PrivateKey     string
 }
@@ -123,7 +124,7 @@ func GetTLSConfig(opt Option) (tlsConfig *tls.Config, err error) {
 	}
 
 	if len(opt.Certificate) > 0 || len(opt.PrivateKey) > 0 {
-		certLoader, err := NewTLSKeyPairLoader(opt.Certificate, opt.PrivateKey)
+		certLoader, err := NewTLSKeyPairLoader(opt.Certificate, opt.PrivateKey, opt.ResourcePolicy)
 		if err != nil {
 			return nil, err
 		}

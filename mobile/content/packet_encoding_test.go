@@ -11,7 +11,7 @@ import (
 	"github.com/metacubex/mihomo/mobile/content"
 )
 
-func TestVMessPacketEncodingPreservesImplementedValuesAndRejectsFallback(t *testing.T) {
+func TestVMessPacketEncodingPreservesOriginalValuesWithPinnedUpstreamSemantics(t *testing.T) {
 	for _, test := range []struct {
 		name, field, status, code string
 	}{
@@ -20,7 +20,7 @@ func TestVMessPacketEncodingPreservesImplementedValuesAndRejectsFallback(t *test
 		{name: "packetaddr", field: "packet-encoding: packetaddr", status: "supported"},
 		{name: "packet-alias", field: "packet-encoding: packet", status: "supported"},
 		{name: "xudp", field: "packet-encoding: xudp", status: "supported"},
-		{name: "unknown", field: "packet-encoding: documentation-unknown", status: "unsupported", code: "ENTRY_CAPABILITY_UNSUPPORTED"},
+		{name: "unknown", field: "packet-encoding: documentation-unknown", status: "supported"},
 		{name: "wrong-type", field: "packet-encoding: true", status: "invalid", code: "ENTRY_CONSTRUCTION_INVALID"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -36,7 +36,7 @@ func TestVMessPacketEncodingPreservesImplementedValuesAndRejectsFallback(t *test
 			}
 			entry := receipt.Entries[0]
 			if entry.Status != test.status || entry.Code != test.code {
-				t.Errorf("packet encoding must not fall back silently: got %s/%s, want %s/%s", entry.Status, entry.Code, test.status, test.code)
+				t.Errorf("packet encoding must follow the pinned upstream constructor: got %s/%s, want %s/%s", entry.Status, entry.Code, test.status, test.code)
 			}
 			if test.status == "supported" {
 				var canonical map[string]any
@@ -49,7 +49,7 @@ func TestVMessPacketEncodingPreservesImplementedValuesAndRejectsFallback(t *test
 						t.Error("absent original encoding must remain absent")
 					}
 				} else {
-					expected := map[string]string{"empty": "", "packetaddr": "packetaddr", "packet-alias": "packet", "xudp": "xudp"}[test.name]
+					expected := map[string]string{"empty": "", "packetaddr": "packetaddr", "packet-alias": "packet", "xudp": "xudp", "unknown": "documentation-unknown"}[test.name]
 					if !present || value != expected {
 						t.Error("implemented original packet value must survive unchanged")
 					}

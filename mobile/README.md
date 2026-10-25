@@ -11,39 +11,74 @@ the original record, independent of the exact canonical `nodeJson` digest; input
 identity is a digest of the complete original bytes. Canonical nodes use the
 explicit `selected-node` alias. Original YAML policy remains separate.
 
-The mapped node families are SS, Trojan, VMess, VLESS, AnyTLS and Hysteria2.
-Known transport/TLS/Reality parameters pass original-field gates and real Mihomo
-adapter construction and owned cleanup. Unknown query/JSON/YAML fields,
-duplicates, unsupported values and malformed encoding stay explicit negatives;
-the converter never logs raw links, substitutes random headers, drops a row or
-reports constructor success as reachability. Original plaintext URI credentials
-are percent-decoded once; both SS Base64 credential forms retain decoded literal
-percent signs and `@`. Invalid UTF-8 and lone JSON UTF-16 surrogates are rejected.
-Bounds are 1 MiB raw/decoded/node/candidate, 4096 entries and 8 MiB receipt.
-An excess rejects the whole result rather than truncating entries or parameters.
+URI conversion currently maps SS, Trojan, VMess, VLESS, AnyTLS and Hysteria2.
+Unmapped URI query/JSON parameters remain explicit converter gaps; this is not
+the engine's protocol admission policy. YAML nodes retain all original fields
+and use the pinned `adapter.ParseProxy` decoder, constructors and errors, including
+SOCKS5/HTTP, all implemented ciphers, IPv6 literals and upstream transport options.
+Unknown YAML fields and weak scalar decoding follow that engine's semantics;
+canonical node bytes keep original values rather than rewriting defaults.
+The protocol label is a bounded opaque identifier, not a six-family enum. ABI 1
+and `mobile-content-1` identities remain unchanged. Constructor success is static
+acceptance, never reachability or complete protocol lifecycle acceptance.
+
+Original plaintext URI credentials are percent-decoded once; both SS Base64
+credential forms retain decoded literal percent signs and `@`. Duplicate fields,
+invalid UTF-8, lone JSON UTF-16 surrogates and malformed encoding stay explicit
+negatives. Bounds remain 1 MiB raw/decoded/node/candidate, 4096 entries and 8 MiB
+receipt. Excess rejects the whole result without truncating entries or parameters.
 Private canonical nodes and original bytes are not display/log values.
 
-The follow-up preserves explicit empty TLS names (adapter server fallback), IP
-certificate names, HTTP/2's original TLS flag, ECH query overrides and Hysteria2
-port-hopping authorities. HTTP/2 keeps the upstream transport's forced TLS
-semantics without changing the raw flag. Plain TCP generator host/path values
-remain inactive real `http-opts`; the strictly limited `mobile-uri-opts` only
-retains VLESS `quicSecurity` empty/`none`, never enabling QUIC or admitting other
-unknown query keys. Explicit Trojan `security=tls` remains canonical `tls:true`;
-contradictory plaintext is rejected. Fingerprint validation uses the actual
-engine ID set without logging private values or silently falling back to
-standard TLS. Unavailable IDs stay explicitly unsupported.
+The converter preserves explicit empty TLS names, IP certificate names, HTTP/2's
+original TLS flag, ECH query overrides and Hysteria2 port-list spelling. HTTP/2
+keeps upstream forced TLS semantics without changing the raw flag. Plain TCP
+generator host/path values remain inactive `http-opts`; `mobile-uri-opts` retains
+mapped VLESS `quicSecurity` empty/none values. Unmapped URI parameters still
+require a converter implementation. YAML fingerprints, packet encodings and
+other values follow the pinned adapter, including its fallback behavior, while
+the unchanged original input remains authoritative.
 
-Preparation injects a deny-only physical dialer before constructing real adapter
-resources, including AnyTLS pools and lazy Hysteria2 clients. It closes and joins
-those resources before returning; any attempted DNS/TCP/datagram operation fails
-the preparation. `config.BuildMobileSelectedCandidate` independently gates the
-selected-node select/MATCH shape and original fields, returns partial owned
-resources on failure and keeps its runtime dialer closed until activation.
-Validation emits the distinct `mobile-proxy-ipv4-tcp-v2` scope; older narrow inputs
-retain their original coverage label. New scope does not reuse the old fixed-IP
-claim. Current client ingress remains IPv4/TCP even when a node's physical
-transport uses DNS, UDP or QUIC and its declared UDP field is preserved.
+Preparation supplies a deny-only physical dialer and candidate-local proxy lookup.
+`WithPhysicalDialerForAPI` replaces only the final physical transport: upstream
+`dialer-proxy` keeps its actual route and each node retains its IP/interface/mark/
+TFO/MPTCP options. Runtime physical dials borrow the accepted generation and
+candidate bootstrap resolver; no global tunnel is borrowed for chain lookup.
+Standalone node inspection cannot traverse an already published chain. Adapter
+resources are discarded and joined; preparation network attempts are rejected.
+Selected-node select/MATCH composition remains an explicit local policy, separate
+from full original policy. Current selected candidates always use the real
+constructor. Historical static validation only determines older coverage labels;
+its narrower protocol/field checks never reject a current selected candidate.
+
+Original policy Plan and Build share the upstream proxy/group graph constructor.
+Load-balance, include-all and include-all-proxies use actual upstream members,
+filtering and order. Group preferences bind effective member positions of that
+graph; construction dependencies do not rewrite original group positions.
+Negative/overflowed group timer durations fail the shared upstream parser before
+a timer starts. Plan/Validate/Build perform no provider initialization or network
+acquisition.
+
+Concrete remaining integration gaps are explicit at the operation that needs
+ownership: global node DNS registration (`PROXY_DNS_REGISTRY_NOT_IMPLEMENTED`),
+ZeroTier persistent state (`PROXY_STATE_STORE_NOT_IMPLEMENTED`), unprotected
+Hysteria fake-TCP raw sockets (`PROXY_RAW_SOCKET_NOT_IMPLEMENTED`) and a valid
+file-backed TLS pair's filesystem watcher (`PROXY_TLS_WATCHER_NOT_IMPLEMENTED`).
+The TLS loader first performs real file reads and key parsing; invalid paths
+retain upstream errors, and inline pairs need no watcher. SSH key and ZeroTier
+planet reads retain normal safe-path/read validation. These describe missing
+mobile ownership, not permanent protocol bans. Proxy-provider acquisition and
+refresh are not integrated with the immutable resource owner
+(`POLICY_PROXY_PROVIDER_NOT_IMPLEMENTED`); MRS rule-provider decoding and geodata
+refresh/swap also require their concrete mobile integrations. The current rule
+resource schema implements yaml/text, inline/file/HTTP and the options actually
+consumed by its owner; it does not claim full upstream resource compatibility.
+
+Public host regressions cover authenticated two-hop SOCKS5 bytes/destinations,
+one protected physical socket, closed preparation admission, upstream group
+expansion/selection identity, real file errors and refusal before unowned side
+effects. Private replay preserves full inputs and source selections. These do
+not establish phone protection, external reachability, every protocol's internal
+tasks or complete Mihomo configuration compatibility.
 
 `mobile/network.Controller.Submit` and `cb_network_submit_v1` (contract 1) accept
 a complete, strict non-VPN snapshot with a monotonic JS-safe generation,

@@ -1,11 +1,35 @@
 package validation_test
 
 import (
+	"context"
+	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/component/configresources"
+	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/mobile/validation"
 	"slices"
 	"strings"
 	"testing"
 )
+
+// This is the pinned daemon constructor without mobile admission policy. Its
+// success is deliberately only static construction: it does not prove that a
+// port can be dialed, that credentials work, or that a TLS peer authenticates.
+func pinnedTrojanConstructorAccepts(t *testing.T, input string) bool {
+	t.Helper()
+	raw, err := config.UnmarshalRawConfig([]byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := adapter.ParseProxy(raw.Proxy[0])
+	if proxy != nil {
+		owned := &configresources.Set{}
+		owned.AddProxy(proxy)
+		if closeErr := owned.Close(context.Background()); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+	}
+	return err == nil
+}
 
 const runtimeInput = `proxies:
   - name: m1b-node
@@ -59,8 +83,8 @@ func TestTrojanCertificatePolicyReceiptIsExplicitAndTyped(t *testing.T) {
 	for _, value := range []string{"'true'", "'false'", "1", "null", "[true]"} {
 		input := strings.Replace(trojanInput, "    type: trojan", "    skip-cert-verify: "+value+"\n    type: trojan", 1)
 		result := validation.Validate("trojan-policy-type", []byte(input))
-		if result.Category != "invalid" || len(result.Diagnostics) != 1 || result.Diagnostics[0].Field != "proxies[0].skip-cert-verify" || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") {
-			t.Fatalf("non-bool certificate policy accepted: %#v", result)
+		if (result.Category == "pass") != pinnedTrojanConstructorAccepts(t, input) || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") || slices.Contains(result.Covered, "trojan-tls-cert-policy-explicit-skip") || slices.Contains(result.Covered, "trojan-tls-cert-policy-normal") {
+			t.Fatalf("static upstream decoding must not acquire legacy typed TLS-policy coverage: %#v", result)
 		}
 	}
 }
@@ -110,9 +134,9 @@ func TestTrojanFieldsKeepLegacyLabelSeparateFromNewCoverage(t *testing.T) {
 			result := validation.Validate("trojan-scope", []byte(strings.Replace(trojanInput, mutation.before, mutation.after, 1)))
 			expected := "incomplete"
 			switch mutation.name {
-			case "alpn", "client fingerprint", "non TCP", "UDP", "DNS endpoint":
+			case "cipher", "chain", "interface", "mark", "alpn", "fingerprint", "client fingerprint", "name certificate", "client certificate", "client key", "ECH", "ShadowTLS", "Restls", "WS", "gRPC", "SS wrapper", "non TCP", "UDP", "DNS endpoint", "IPv6 endpoint", "unspecified endpoint", "multicast endpoint":
 				expected = "pass"
-			case "fingerprint":
+			case "Reality", "JLS":
 				expected = "invalid"
 			}
 			if result.Category != expected || (expected == "pass" && !slices.Contains(result.Covered, "mobile-proxy-ipv4-tcp-v2")) || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") || slices.Contains(result.Covered, "static-trojan-tcp-tls-sni") {
@@ -122,13 +146,13 @@ func TestTrojanFieldsKeepLegacyLabelSeparateFromNewCoverage(t *testing.T) {
 	}
 	for _, field := range []string{"sni: node.example.invalid", "network: tcp", "skip-cert-verify: false"} {
 		input := strings.Replace(runtimeInput, "    cipher:", "    "+field+"\n    cipher:", 1)
-		if result := validation.Validate("ss-fields", []byte(input)); result.Category != "incomplete" {
-			t.Fatalf("Trojan whitelist expanded SS fields: %#v", result)
+		if result := validation.Validate("ss-fields", []byte(input)); result.Category != "pass" || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") {
+			t.Fatalf("pinned upstream extra fields must keep legacy coverage separate: %#v", result)
 		}
 	}
 }
 
-func TestTrojanRequiresTypedScalarsAndExplicitValidTLSHostname(t *testing.T) {
+func TestTrojanStaticScalarsMatchPinnedConstructorWithoutClaimingRuntimeValidity(t *testing.T) {
 	for _, mutation := range []struct{ before, after, field string }{
 		{"    sni: node.example.invalid\n", "", "sni"},
 		{"sni: node.example.invalid", "sni: ''", "sni"},
@@ -150,9 +174,10 @@ func TestTrojanRequiresTypedScalarsAndExplicitValidTLSHostname(t *testing.T) {
 		{"sni: node.example.invalid", "sni: node.example.invalid\n    network: false", "network"},
 		{"sni: node.example.invalid", "sni: node.example.invalid\n    udp: 'false'", "udp"},
 	} {
-		result := validation.Validate("trojan-scalar", []byte(strings.Replace(trojanInput, mutation.before, mutation.after, 1)))
-		if result.Category != "invalid" || len(result.Diagnostics) != 1 || result.Diagnostics[0].Code != "PROXY_INVALID" || result.Diagnostics[0].Field != "proxies[0]."+mutation.field {
-			t.Fatalf("invalid Trojan scalar classification: %#v", result)
+		input := strings.Replace(trojanInput, mutation.before, mutation.after, 1)
+		result := validation.Validate("trojan-scalar", []byte(input))
+		if (result.Category == "pass") != pinnedTrojanConstructorAccepts(t, input) || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") {
+			t.Fatalf("static construction must follow the pinned engine without old endpoint/handshake coverage: %#v", result)
 		}
 	}
 }
@@ -186,8 +211,11 @@ func TestSelectedChaChaScopeDoesNotCoverOtherCiphersOrConfigurationShapes(t *tes
 		t.Run(mutation.name, func(t *testing.T) {
 			result := validation.Validate("selected-chacha-scope", []byte(strings.Replace(input, mutation.before, mutation.after, 1)))
 			expected := "incomplete"
-			if mutation.name == "UDP" || mutation.name == "DNS endpoint" {
+			if mutation.name == "UDP" || mutation.name == "DNS endpoint" || mutation.name == "other cipher" {
 				expected = "pass"
+			}
+			if mutation.name == "plugin" {
+				expected = "invalid"
 			}
 			if result.Category != expected || (expected == "pass" && !slices.Contains(result.Covered, "mobile-proxy-ipv4-tcp-v2")) || slices.Contains(result.Covered, "m1b-fixed-ipv4-tcp") || slices.Contains(result.Covered, "static-ss-chacha20-ietf-poly1305") {
 				t.Fatalf("selected cipher widened the fixed configuration contract: %#v", result)

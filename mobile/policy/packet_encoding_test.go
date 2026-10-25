@@ -18,7 +18,7 @@ func TestOriginalPolicyVMessPacketEncodingChecksPlanValidateAndIndependentBuild(
 		{name: "packetaddr", field: "packet-encoding: packetaddr", category: "planned"},
 		{name: "packet-alias", field: "packet-encoding: packet", category: "planned"},
 		{name: "xudp", field: "packet-encoding: xudp", category: "planned"},
-		{name: "unknown", field: "packet-encoding: documentation-unknown", category: "unsupported", code: "CAPABILITY_NOT_COVERED"},
+		{name: "unknown", field: "packet-encoding: documentation-unknown", category: "planned"},
 		{name: "wrong-type", field: "packet-encoding: true", category: "invalid", code: "PROXY_INVALID"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -39,7 +39,7 @@ func TestOriginalPolicyVMessPacketEncodingChecksPlanValidateAndIndependentBuild(
 			raw := []byte("ipv6: false\ndns: {enable: false}\nproxies:\n - {name: Documentation, type: vmess, server: 192.0.2.1, port: 443, uuid: 00000000-0000-4000-8000-000000000001, alterId: 0, cipher: auto, udp: true" + field + "}\nproxy-groups:\n - {name: PublicSelect, type: select, proxies: [Documentation]}\nrules: ['MATCH,PublicSelect']\n")
 			plan := engine.Plan("vmess-packet-plan", raw, nil)
 			if plan.Category != test.category || plan.Code != test.code {
-				t.Errorf("plan must reject unknown original connection values: got %s/%s, want %s/%s", plan.Category, plan.Code, test.category, test.code)
+				t.Errorf("plan must follow pinned upstream decoding: got %s/%s, want %s/%s", plan.Category, plan.Code, test.category, test.code)
 			}
 			prepared, err := contract.Seal(contract.Digest(raw), nil, publicPlatform(), nil)
 			if err != nil {

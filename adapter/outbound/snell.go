@@ -187,11 +187,11 @@ func NewSnell(option SnellOption) (*Snell, error) {
 		if err := decoder.Decode(option.ObfsOpts, opt); err != nil {
 			return nil, fmt.Errorf("snell %s initialize shadow-tls-plugin error: %w", addr, err)
 		}
-
 		shadowTLSOpt = &shadowtls.ShadowTLSOption{
 			Password:          opt.Password,
 			Host:              opt.Host,
 			Fingerprint:       opt.Fingerprint,
+			ResourcePolicy:    option.ResourcePolicyForAPI,
 			Certificate:       opt.Certificate,
 			PrivateKey:        opt.PrivateKey,
 			ClientFingerprint: option.ClientFingerprint,

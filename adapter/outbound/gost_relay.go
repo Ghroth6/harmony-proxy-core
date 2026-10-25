@@ -103,6 +103,7 @@ func NewGostRelay(option GostRelayOption) (*GostRelay, error) {
 		SkipCertVerify:    option.SkipCertVerify,
 		NameCertVerify:    option.NameCertVerify,
 		Fingerprint:       option.Fingerprint,
+		ResourcePolicy:    option.ResourcePolicyForAPI,
 		Certificate:       option.Certificate,
 		PrivateKey:        option.PrivateKey,
 		ClientFingerprint: option.ClientFingerprint,

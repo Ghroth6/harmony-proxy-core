@@ -176,6 +176,7 @@ func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 		},
 		Fingerprint:    option.Fingerprint,
 		NameCertVerify: option.NameCertVerify,
+		ResourcePolicy: option.ResourcePolicyForAPI,
 		Certificate:    option.Certificate,
 		PrivateKey:     option.PrivateKey,
 	})
@@ -277,6 +278,7 @@ func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 			},
 			Fingerprint:    option.RealmOpts.Fingerprint,
 			NameCertVerify: option.RealmOpts.NameCertVerify,
+			ResourcePolicy: option.ResourcePolicyForAPI,
 			Certificate:    option.RealmOpts.Certificate,
 			PrivateKey:     option.RealmOpts.PrivateKey,
 		})

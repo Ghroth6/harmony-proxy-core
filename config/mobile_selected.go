@@ -2,12 +2,14 @@ package config
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"strings"
 	"sync/atomic"
 
 	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/process"
@@ -60,7 +62,38 @@ func MobileLegacySelectedShape(raw *RawConfig) bool {
 type mobileCandidateDialer struct {
 	generation atomic.Uint64
 	attempts   atomic.Int32
-	physical   C.Dialer
+	options    []dialer.Option
+}
+
+type mobilePhysicalDialer struct {
+	fence   *mobileCandidateDialer
+	options []dialer.Option
+}
+
+func (d *mobileCandidateDialer) newPhysical(options []dialer.Option) C.Dialer {
+	return &mobilePhysicalDialer{fence: d, options: append([]dialer.Option(nil), options...)}
+}
+func (d *mobilePhysicalDialer) current(ctx context.Context) (context.Context, C.Dialer, error) {
+	ctx, err := d.fence.context(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	options := append(append([]dialer.Option(nil), d.fence.options...), d.options...)
+	return ctx, dialer.NewDialer(options...), nil
+}
+func (d *mobilePhysicalDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	ctx, physical, err := d.current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return physical.DialContext(ctx, network, address)
+}
+func (d *mobilePhysicalDialer) ListenPacket(ctx context.Context, network, address string, remote netip.AddrPort) (net.PacketConn, error) {
+	ctx, physical, err := d.current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return physical.ListenPacket(ctx, network, address, remote)
 }
 
 func (d *mobileCandidateDialer) context(ctx context.Context) (context.Context, error) {
@@ -69,20 +102,6 @@ func (d *mobileCandidateDialer) context(ctx context.Context) (context.Context, e
 	}
 	d.attempts.Add(1)
 	return nil, errPreparationNetwork
-}
-func (d *mobileCandidateDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	ctx, err := d.context(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return d.physical.DialContext(ctx, network, address)
-}
-func (d *mobileCandidateDialer) ListenPacket(ctx context.Context, network, address string, remote netip.AddrPort) (net.PacketConn, error) {
-	ctx, err := d.context(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return d.physical.ListenPacket(ctx, network, address, remote)
 }
 
 // ActivateMobileNetwork is the explicit runtime-only transition after a real
@@ -98,12 +117,12 @@ func (c *Config) ActivateMobileNetwork(generation uint64) error {
 	return nil
 }
 
-// BuildMobileSelectedCandidate independently gates every original node field,
-// constructs fresh owned adapters and keeps all network paths fenced until
+// BuildMobileSelectedCandidate constructs fresh upstream adapters for the
+// explicit selected-node shape and keeps all network paths fenced until
 // runtime activation. It never initializes providers or installs global DNS.
 func BuildMobileSelectedCandidate(raw *RawConfig) (cfg *Config, err error) {
 	owned := &configresources.Set{}
-	gate := &mobileCandidateDialer{physical: dialer.NewDialer(dialer.WithOnlySingleStack(true), dialer.WithResolver(resolver.SystemResolver))}
+	gate := &mobileCandidateDialer{options: []dialer.Option{dialer.WithOnlySingleStack(true), dialer.WithResolver(resolver.SystemResolver)}}
 	cfg = &Config{candidateResources: owned, mobileNetwork: gate, General: &General{Mode: tunnel.Rule, FindProcessMode: process.FindProcessOff, IPv6: false}, Providers: map[string]P.ProxyProvider{}, RuleProviders: map[string]P.RuleProvider{}, SubRules: map[string][]C.Rule{}}
 	defer func() {
 		if recover() != nil {
@@ -116,11 +135,18 @@ func BuildMobileSelectedCandidate(raw *RawConfig) (cfg *Config, err error) {
 	if !MobileSelectedShape(raw) {
 		return cfg, &MobileValidationError{Code: "CAPABILITY_NOT_COVERED"}
 	}
-	if err = MobileNodeFields(raw.Proxy[0]); err != nil {
-		return cfg, err
-	}
-	cfg.Proxies, cfg.Providers, err = parseProxiesInto(raw, owned, adapter.WithDialerForAPI(gate))
+	lookup := &mobilePolicyProxyLookup{candidate: cfg}
+	cfg.Proxies, cfg.Providers, err = parseProxiesInto(raw, owned, adapter.WithPhysicalDialerForAPI(gate.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
+		return &mobilePolicyBuiltin{ProxyAdapter: a, fence: gate}
+	}))
 	if err != nil {
+		if errors.Is(err, adapter.ErrUnsupportedProxyType) {
+			return cfg, &MobileValidationError{Code: "PROXY_TYPE_UNSUPPORTED", cause: err}
+		}
+		var gap *outbound.APIIntegrationError
+		if errors.As(err, &gap) {
+			return cfg, &MobileValidationError{Code: gap.Code, cause: err}
+		}
 		return cfg, &MobileValidationError{Code: "PROXY_OR_GROUP_INVALID", cause: err}
 	}
 	cfg.Rules, err = parseRules(raw.Rule, cfg.Proxies, nil, nil, "rules")

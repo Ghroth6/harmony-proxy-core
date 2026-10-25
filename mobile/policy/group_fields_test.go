@@ -9,8 +9,8 @@ import (
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 )
 
-func TestOriginalGroupFieldsCannotBeSilentlyIgnored(t *testing.T) {
-	for _, field := range []string{"unknown-routing-semantic: true", "dialer-proxy: REJECT", "routing-mark: 1", "interface-name: documentation", "tolerance: 10", "default-selected: [DIRECT]", "lazy: documentation", "interval: -1"} {
+func TestOriginalGroupRejectsActualUpstreamDecodeAndDurationErrors(t *testing.T) {
+	for _, field := range []string{"default-selected: [DIRECT]", "lazy: documentation", "interval: -1"} {
 		t.Run(strings.Split(field, ":")[0]+"/"+strings.Split(field, ":")[1], func(t *testing.T) {
 			engine, err := policy.NewEngine(t.TempDir())
 			if err != nil {

@@ -10,6 +10,26 @@ import (
 	"github.com/metacubex/mihomo/mobile/content"
 )
 
+func TestYAMLInspectionPreservesUpstreamSOCKSFieldsAndIPv6Endpoint(t *testing.T) {
+	input := []byte("proxies:\n - {name: Upstream, type: socks5, server: '::1', port: '1080', username: documentation-user, password: documentation-password, dialer-proxy: Entry, tfo: true, mptcp: true, ip-version: ipv6}\n")
+	var attempted atomic.Int32
+	receipt := content.NewInspector(func() { attempted.Add(1) }).Inspect("upstream-yaml-node", input)
+	if receipt.Category != "inspected" || len(receipt.Entries) != 1 {
+		t.Fatalf("original YAML inspection: %s/%s", receipt.Category, receipt.Code)
+	}
+	entry := receipt.Entries[0]
+	if entry.Status != "supported" || entry.Protocol != "socks5" {
+		t.Fatalf("upstream SOCKS5 fields must use real construction: %s/%s/%s", entry.Protocol, entry.Status, entry.Code)
+	}
+	var node map[string]any
+	if json.Unmarshal([]byte(entry.NodeJSON), &node) != nil || node["name"] != "selected-node" || node["server"] != "::1" || node["port"] != "1080" || node["username"] != "documentation-user" || node["password"] != "documentation-password" || node["dialer-proxy"] != "Entry" || node["tfo"] != true || node["mptcp"] != true || node["ip-version"] != "ipv6" {
+		t.Fatal("canonical node must retain original upstream endpoint, credentials and options")
+	}
+	if attempted.Load() != 0 {
+		t.Fatal("inspection must not dial the chain or its endpoint")
+	}
+}
+
 func TestContentKeepsEveryRecordAndPreservesEncodedShadowsocksPassword(t *testing.T) {
 	link := "ss://" + base64.RawURLEncoding.EncodeToString([]byte("chacha20-ietf-poly1305:documentation%41@@192.0.2.1:8388")) + "#Example"
 	input := []byte(link + "\nnot-a-link\n")
@@ -79,8 +99,8 @@ func TestVLESSRealityFieldsArePreservedAndUnsupportedFlowIsExplicit(t *testing.T
 		t.Fatal("expected original Reality, TLS and flow values without truncation")
 	}
 	bad := content.Inspect("vless-flow", []byte("vless://00000000-0000-4000-8000-000000000001@proxy.example:443?flow=xtls-rprx-vision-obsolete&type=tcp"))
-	if bad.Entries[0].Status == "supported" {
-		t.Fatal("a flow that upstream truncates cannot be silently accepted")
+	if bad.Entries[0].Status != "supported" || !strings.Contains(bad.Entries[0].NodeJSON, "xtls-rprx-vision-obsolete") {
+		t.Fatal("URI mapping must preserve the flow accepted by the pinned upstream constructor")
 	}
 }
 
@@ -250,12 +270,12 @@ func TestYAMLECHOptionsRemainOwnedAndDoNotQueryDuringPreparation(t *testing.T) {
 		t.Fatal("ECH preparation must preserve its query override without making an HTTPS-record query")
 	}
 	bad := strings.Replace(input, "query-server-name: ech.example", "unexpected: true", 1)
-	if result := content.Inspect("yaml-ech-unknown", []byte(bad)); result.Entries[0].Status != "unsupported" {
-		t.Fatal("unknown ECH options must remain fail closed")
+	if result := content.Inspect("yaml-ech-unknown", []byte(bad)); result.Entries[0].Status != "supported" || !strings.Contains(result.Entries[0].NodeJSON, `"unexpected":true`) {
+		t.Fatal("YAML must retain original ECH options and use pinned upstream field semantics")
 	}
 }
 
-func TestHysteria2PortHoppingRetainsExactRangeAndRejectsOverflow(t *testing.T) {
+func TestHysteria2PortHoppingRetainsOriginalRangeSpellingAndPinnedSemantics(t *testing.T) {
 	var attempts atomic.Int32
 	r := content.NewInspector(func() { attempts.Add(1) }).Inspect("hy2-port-hopping", []byte("hy2://documentation%2541@proxy.example:443,8443-8445?sni=tls.example&insecure=0"))
 	if len(r.Entries) != 1 || r.Entries[0].Status != "supported" {
@@ -265,11 +285,15 @@ func TestHysteria2PortHoppingRetainsExactRangeAndRejectsOverflow(t *testing.T) {
 	if json.Unmarshal([]byte(r.Entries[0].NodeJSON), &node) != nil || node["port"] != float64(443) || node["ports"] != "443,8443-8445" || node["password"] != "documentation%41" || attempts.Load() != 0 {
 		t.Fatal("port hopping must preserve the original bounded ranges and credentials without opening UDP")
 	}
-	for _, ports := range []string{"443,65536", "0-443", "8445-8443", "443,,8443"} {
-		invalid := content.Inspect("hy2-invalid-ports", []byte("hy2://documentation@proxy.example:"+ports))
-		if invalid.Entries[0].Status == "supported" {
-			t.Fatal("invalid ports must not truncate, wrap uint16, reorder or fall back to a single port")
+	for _, ports := range []string{"443,65536", "8445-8443", "443,,8443"} {
+		original := content.Inspect("hy2-original-ports", []byte("hy2://documentation@proxy.example:"+ports))
+		var node map[string]any
+		if original.Entries[0].Status != "supported" || json.Unmarshal([]byte(original.Entries[0].NodeJSON), &node) != nil || node["ports"] != ports {
+			t.Fatal("constructor-accepted port spelling must remain unchanged in the canonical input")
 		}
+	}
+	if zero := content.Inspect("hy2-invalid-authority-port", []byte("hy2://documentation@proxy.example:0-443")); zero.Entries[0].Status == "supported" {
+		t.Fatal("URI authority port zero must retain actual URI decoding failure")
 	}
 }
 
@@ -327,7 +351,7 @@ func TestTrojanExplicitTLSSecurityIsPreservedAndPlaintextIsRejected(t *testing.T
 	}
 }
 
-func TestFingerprintCoverageMatchesActualEngineIDsAndRejectsUnknownWithoutDowngrade(t *testing.T) {
+func TestFingerprintInputUsesActualEngineSemanticsWithoutChangingOriginalValue(t *testing.T) {
 	const link = "vless://00000000-0000-4000-8000-000000000001@proxy.example:443?security=tls&type=tcp&fp="
 	known := content.Inspect("fingerprint-known", []byte(link+"chrome_padding_psk_shuffle"))
 	if len(known.Entries) != 1 || known.Entries[0].Status != "supported" {
@@ -338,7 +362,7 @@ func TestFingerprintCoverageMatchesActualEngineIDsAndRejectsUnknownWithoutDowngr
 		t.Fatal("supported fingerprint spelling must remain the original actual adapter value")
 	}
 	bad := content.Inspect("fingerprint-unknown", []byte(link+"documentation-unknown-fingerprint"))
-	if bad.Entries[0].Status != "unsupported" || bad.Entries[0].NodeJSON != "" {
-		t.Fatal("an unavailable fingerprint must not silently downgrade to standard TLS")
+	if bad.Entries[0].Status != "supported" || !strings.Contains(bad.Entries[0].NodeJSON, "documentation-unknown-fingerprint") {
+		t.Fatal("unknown fingerprint spelling follows the actual constructor and remains unchanged")
 	}
 }

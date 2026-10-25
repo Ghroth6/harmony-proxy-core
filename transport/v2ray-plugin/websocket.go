@@ -23,6 +23,7 @@ type Option struct {
 	SkipCertVerify           bool
 	NameCertVerify           string
 	Fingerprint              string
+	ResourcePolicy           func(string) error
 	Certificate              string
 	PrivateKey               string
 	Mux                      bool
@@ -58,6 +59,7 @@ func NewV2rayObfs(ctx context.Context, conn net.Conn, option *Option) (net.Conn,
 			},
 			Fingerprint:    option.Fingerprint,
 			NameCertVerify: option.NameCertVerify,
+			ResourcePolicy: option.ResourcePolicy,
 			Certificate:    option.Certificate,
 			PrivateKey:     option.PrivateKey,
 		})

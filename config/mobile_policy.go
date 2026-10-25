@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/fakeip"
@@ -36,6 +37,20 @@ type mobilePolicyBuiltin struct {
 	fence *mobileCandidateDialer
 }
 
+// A prepared chain resolves against its own graph, including before publication.
+// It cannot accidentally follow the currently active or a later configuration.
+type mobilePolicyProxyLookup struct {
+	candidate *Config
+}
+
+func (t *mobilePolicyProxyLookup) Proxies() map[string]C.Proxy {
+	if t.candidate.mobileNetwork.generation.Load() == 0 {
+		t.candidate.mobileNetwork.attempts.Add(1)
+		return nil
+	}
+	return t.candidate.Proxies
+}
+
 func (b *mobilePolicyBuiltin) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
 	ctx, err := b.fence.context(ctx)
 	if err != nil {
@@ -50,24 +65,72 @@ func (b *mobilePolicyBuiltin) ListenPacketContext(ctx context.Context, metadata 
 	}
 	return b.ProxyAdapter.ListenPacketContext(ctx, metadata)
 }
+func (b *mobilePolicyBuiltin) DialOptions() []dialer.Option {
+	return b.ProxyAdapter.(outbound.ProxyAdapter).DialOptions()
+}
+func (b *mobilePolicyBuiltin) ResolveUDP(ctx context.Context, metadata *C.Metadata) error {
+	ctx, err := b.fence.context(ctx)
+	if err != nil {
+		return err
+	}
+	return b.ProxyAdapter.(outbound.ProxyAdapter).ResolveUDP(ctx, metadata)
+}
 
-func mobilePolicyDialer(ipv6 bool, bootstrap resolver.Resolver) dialer.Dialer {
+func mobilePolicyDialerOptions(ipv6 bool, bootstrap resolver.Resolver) []dialer.Option {
 	options := []dialer.Option{dialer.WithResolver(bootstrap)}
 	if !ipv6 {
 		// Enabled IPv6 permits both families; false in this option means IPv6-only.
 		options = append(options, dialer.WithOnlySingleStack(true))
 	}
-	return dialer.NewDialer(options...)
+	return options
 }
 
-// BuildMobilePolicyCandidate is independent of full-parser side effects.
-// Resources are supplied as verified immutable bytes by mobile/policy. The
-// original rules/groups/general settings remain distinct from selected MATCH.
-func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContext, preferences map[string]string, inputs ...*MobilePolicyResources) (cfg *Config, err error) {
-	prepared = contract.ClonePrepared(prepared)
+// BuildMobileProxyCandidate constructs the production proxy graph behind an
+// inactive physical network fence. Planning and full policy construction share
+// this upstream parser and its candidate resource ownership.
+func BuildMobileProxyCandidate(raw *RawConfig) (cfg *Config, err error) {
 	owned := &configresources.Set{}
-	fence := &mobileCandidateDialer{physical: mobilePolicyDialer(raw.IPv6, resolver.SystemResolver)}
-	cfg = &Config{candidateResources: owned, mobileNetwork: fence, mobilePolicy: &prepared, Providers: map[string]P.ProxyProvider{}, RuleProviders: map[string]P.RuleProvider{}, SubRules: map[string][]C.Rule{}}
+	fence := &mobileCandidateDialer{options: mobilePolicyDialerOptions(raw.IPv6, resolver.SystemResolver)}
+	cfg = &Config{candidateResources: owned, mobileNetwork: fence, mobilePolicy: &contract.PreparedContext{}, Providers: map[string]P.ProxyProvider{}}
+	defer func() {
+		if recover() != nil {
+			err = &MobileValidationError{Code: "POLICY_CONSTRUCTION_FAILED"}
+		}
+		if fence.attempts.Load() != 0 {
+			err = &MobileValidationError{Code: "PREPARATION_NETWORK_FORBIDDEN"}
+		}
+	}()
+	if len(raw.ProxyProvider) != 0 {
+		return cfg, &MobileValidationError{Code: "POLICY_PROXY_PROVIDER_NOT_IMPLEMENTED"}
+	}
+	wrap := func(a C.ProxyAdapter) C.ProxyAdapter { return &mobilePolicyBuiltin{ProxyAdapter: a, fence: fence} }
+	lookup := &mobilePolicyProxyLookup{candidate: cfg}
+	cfg.Proxies, cfg.Providers, err = parseProxiesWithBuiltins(raw, owned, wrap, adapter.WithPhysicalDialerForAPI(fence.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
+		return &mobilePolicyBuiltin{ProxyAdapter: a, fence: fence}
+	}))
+	if err != nil {
+		if errors.Is(err, adapter.ErrUnsupportedProxyType) {
+			return cfg, &MobileValidationError{Code: "PROXY_TYPE_UNSUPPORTED", cause: err}
+		}
+		var gap *outbound.APIIntegrationError
+		if errors.As(err, &gap) {
+			return cfg, &MobileValidationError{Code: gap.Code, cause: err}
+		}
+		var semantic *semanticParseError
+		if errors.As(err, &semantic) {
+			return cfg, &MobileValidationError{Code: semantic.code, Field: semantic.field, cause: err}
+		}
+		return cfg, &MobileValidationError{Code: "POLICY_PROXY_OR_GROUP_INVALID", cause: err}
+	}
+	return cfg, nil
+}
+
+func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContext, preferences map[string]string, inputs ...*MobilePolicyResources) (cfg *Config, err error) {
+	cfg, err = BuildMobileProxyCandidate(raw)
+	prepared = contract.ClonePrepared(prepared)
+	cfg.mobilePolicy = &prepared
+	owned, fence := cfg.candidateResources, cfg.mobileNetwork
+	cfg.RuleProviders, cfg.SubRules = map[string]P.RuleProvider{}, map[string][]C.Rule{}
 	parse := rules.ScopedParser(cfg.RuleProviders, nil)
 	if len(inputs) == 1 && inputs[0] != nil {
 		cfg.mobilePolicyResources = inputs[0]
@@ -85,6 +148,9 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 			})
 		}
 	}
+	if err != nil {
+		return cfg, err
+	}
 	defer func() {
 		if recover() != nil {
 			err = &MobileValidationError{Code: "POLICY_CONSTRUCTION_FAILED"}
@@ -93,13 +159,8 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 			err = &MobileValidationError{Code: "PREPARATION_NETWORK_FORBIDDEN"}
 		}
 	}()
-	if len(raw.ProxyProvider) != 0 || len(raw.RuleProvider) != len(cfg.RuleProviders) {
+	if len(raw.RuleProvider) != len(cfg.RuleProviders) {
 		return cfg, &MobileValidationError{Code: "POLICY_RESOURCE_RUNTIME_NOT_READY"}
-	}
-	for _, node := range raw.Proxy {
-		if err = MobileNodeFields(node); err != nil {
-			return cfg, err
-		}
 	}
 	cfg.General, err = parseGeneral(raw)
 	if err != nil {
@@ -113,10 +174,6 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 	cfg.Hosts, err = parseHosts(raw)
 	if err != nil {
 		return cfg, &MobileValidationError{Code: "POLICY_HOSTS_INVALID"}
-	}
-	cfg.Proxies, cfg.Providers, err = parseProxiesWithBuiltins(raw, owned, func(a C.ProxyAdapter) C.ProxyAdapter { return &mobilePolicyBuiltin{ProxyAdapter: a, fence: fence} }, adapter.WithDialerForAPI(fence))
-	if err != nil {
-		return cfg, &MobileValidationError{Code: "POLICY_PROXY_OR_GROUP_INVALID"}
 	}
 	for group, name := range preferences {
 		proxy := cfg.Proxies[group]
@@ -149,7 +206,7 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 	// published resolver or the system resolver forced by selected-node mode.
 	// The shared fence remains closed throughout construction.
 	bootstrap, _ := cfg.MobileNodeResolvers()
-	fence.physical = mobilePolicyDialer(raw.IPv6, bootstrap)
+	fence.options = mobilePolicyDialerOptions(raw.IPv6, bootstrap)
 	return cfg, nil
 }
 

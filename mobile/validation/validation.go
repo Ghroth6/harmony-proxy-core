@@ -88,8 +88,8 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 	}
 	receipt.Covered = []string{"mihomo-format"}
 	receipt.Phase = "semantic"
-	extendedSelected := config.MobileSelectedShape(raw) && !config.MobileLegacySelectedShape(raw)
-	if diagnostics := inspectInputScope(input, extendedSelected); len(diagnostics) != 0 {
+	selected := config.MobileSelectedShape(raw)
+	if diagnostics := inspectInputScope(input, selected); len(diagnostics) != 0 {
 		receipt.Category = "incomplete"
 		receipt.Diagnostics = diagnostics
 		for _, diagnostic := range diagnostics {
@@ -100,7 +100,7 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		return
 	}
 	validateStatic := config.ValidateMobileStatic
-	if extendedSelected {
+	if selected {
 		validateStatic = config.ValidateMobileSelected
 	}
 	if err := validateStatic(raw); err != nil {
@@ -109,7 +109,7 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		if errors.As(err, &diagnostic) {
 			if diagnostic.Code == "CANDIDATE_CLEANUP_FAILED" {
 				receipt.Category = "failure"
-			} else if diagnostic.Code == "CAPABILITY_NOT_COVERED" {
+			} else if diagnostic.Code == "CAPABILITY_NOT_COVERED" || diagnostic.Code == "PROXY_TYPE_UNSUPPORTED" || strings.HasSuffix(diagnostic.Code, "NOT_IMPLEMENTED") {
 				receipt.Category = "incomplete"
 			}
 			message := "Mihomo rejected a static node or proxy group definition."
@@ -133,6 +133,9 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		return
 	}
 	receipt.Category = "pass"
+	// Historical validation only determines which old coverage labels remain
+	// truthful. Its narrower checks never reject a current selected candidate.
+	extendedSelected := selected && (!config.MobileLegacySelectedShape(raw) || config.ValidateMobileStatic(raw) != nil)
 	if extendedSelected {
 		receipt.Covered = append(receipt.Covered, "mobile-proxy-ipv4-tcp-v2", "static-mobile-proxy-node", "explicit-select-references", "MATCH-rule-references", "candidate-resources-closed")
 		receipt.Uncovered = []string{"runtime-connectivity", "application-udp-dns-ipv6", "original-source-policy-and-resources"}

@@ -9,8 +9,12 @@ import (
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/structure"
 	"github.com/metacubex/mihomo/component/configresources"
+	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/proxydialer"
 	C "github.com/metacubex/mihomo/constant"
 )
+
+var ErrUnsupportedProxyType = errors.New("unsupported proxy type")
 
 func ParseProxy(mapping map[string]any, options ...ProxyOption) (_ C.Proxy, retErr error) {
 	decoder := structure.NewDecoder(structure.Option{TagName: "proxy", WeaklyTypedInput: true, KeyReplacer: structure.DefaultKeyReplacer})
@@ -21,9 +25,12 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (_ C.Proxy, retE
 
 	opt := applyProxyOptions(options...)
 	basicOption := outbound.BasicOption{
-		DialerForAPI: opt.DialerForAPI,
-		TunnelForAPI: opt.TunnelForAPI,
-		ProviderName: opt.ProviderName,
+		DialerForAPI:         opt.DialerForAPI,
+		PhysicalDialerForAPI: opt.PhysicalDialerForAPI,
+		ProxyLookupForAPI:    opt.ProxyLookupForAPI,
+		ResourcePolicyForAPI: opt.ResourcePolicyForAPI,
+		TunnelForAPI:         opt.TunnelForAPI,
+		ProviderName:         opt.ProviderName,
 	}
 
 	var (
@@ -228,7 +235,7 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (_ C.Proxy, retE
 		}
 		proxy, err = outbound.NewEasyTier(*easyTierOption)
 	default:
-		return nil, fmt.Errorf("unsupport proxy type: %s", proxyType)
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProxyType, proxyType)
 	}
 
 	if err != nil {
@@ -262,14 +269,21 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (_ C.Proxy, retE
 		}
 	}
 
+	if opt.WrapAdapter != nil {
+		proxy = opt.WrapAdapter(proxy)
+	}
 	proxy = outbound.NewAutoCloseProxyAdapter(proxy)
 	return NewProxy(proxy), nil
 }
 
 type proxyOption struct {
-	DialerForAPI C.Dialer
-	TunnelForAPI C.Tunnel
-	ProviderName string
+	DialerForAPI         C.Dialer
+	TunnelForAPI         C.Tunnel
+	ProviderName         string
+	PhysicalDialerForAPI func([]dialer.Option) C.Dialer
+	ProxyLookupForAPI    proxydialer.ProxyLookup
+	ResourcePolicyForAPI func(string) error
+	WrapAdapter          func(outbound.ProxyAdapter) outbound.ProxyAdapter
 }
 
 func applyProxyOptions(options ...ProxyOption) proxyOption {
@@ -286,6 +300,26 @@ func WithDialerForAPI(dialer C.Dialer) ProxyOption {
 	return func(opt *proxyOption) {
 		opt.DialerForAPI = dialer
 	}
+}
+
+// WithPhysicalDialerForAPI composes a physical transport without replacing the
+// original dialer-proxy chain or the adapter's interface/IP/TFO/MPTCP options.
+func WithPhysicalDialerForAPI(factory func([]dialer.Option) C.Dialer) ProxyOption {
+	return func(opt *proxyOption) { opt.PhysicalDialerForAPI = factory }
+}
+
+func WithProxyLookupForAPI(lookup proxydialer.ProxyLookup) ProxyOption {
+	return func(opt *proxyOption) { opt.ProxyLookupForAPI = lookup }
+}
+
+func WithResourcePolicyForAPI(policy func(string) error) ProxyOption {
+	return func(opt *proxyOption) { opt.ResourcePolicyForAPI = policy }
+}
+
+// WithAdapterWrapper binds embedded API ownership before a parsed adapter is
+// exposed or leased. The wrapper must retain the adapter's Close obligation.
+func WithAdapterWrapper(wrap func(outbound.ProxyAdapter) outbound.ProxyAdapter) ProxyOption {
+	return func(opt *proxyOption) { opt.WrapAdapter = wrap }
 }
 
 func WithTunnelForAPI(tunnel C.Tunnel) ProxyOption {

@@ -24,7 +24,7 @@ import (
 
 // NewTLSKeyPairLoader creates a loader function for TLS key pairs from the provided certificate and private key data or file paths.
 // If both certificate and privateKey are empty, generates a random TLS RSA key pair.
-func NewTLSKeyPairLoader(certificate, privateKey string) (func() (*tls.Certificate, error), error) {
+func NewTLSKeyPairLoader(certificate, privateKey string, resourcePolicy ...func(string) error) (func() (*tls.Certificate, error), error) {
 	if certificate == "" && privateKey == "" {
 		var err error
 		certificate, privateKey, _, err = NewRandomTLSKeyPair(KeyPairTypeRSA)
@@ -51,6 +51,11 @@ func NewTLSKeyPairLoader(certificate, privateKey string) (func() (*tls.Certifica
 	}
 	if loadErr != nil {
 		return nil, fmt.Errorf("parse certificate failed, maybe format error:%s, or path error: %s", painTextErr.Error(), loadErr.Error())
+	}
+	if len(resourcePolicy) > 0 && resourcePolicy[0] != nil {
+		if err := resourcePolicy[0]("PROXY_TLS_WATCHER_NOT_IMPLEMENTED"); err != nil {
+			return nil, err
+		}
 	}
 	gcFlag := new(os.File) // tiny (on the order of 16 bytes or less) and pointer-free objects may never run the finalizer, so we choose new an os.File
 	updateMutex := sync.RWMutex{}

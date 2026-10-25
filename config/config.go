@@ -916,7 +916,9 @@ func parseProxiesWithBuiltins(cfg *RawConfig, owned *configresources.Set, wrapBu
 	proxies = make(map[string]C.Proxy)
 	providersMap = make(map[string]P.ProxyProvider)
 	proxiesConfig := cfg.Proxy
-	groupsConfig := cfg.ProxyGroup
+	// Sorting construction dependencies must not rewrite original group order;
+	// mobile planning binds identities to that order independently of this DAG.
+	groupsConfig := slices.Clone(cfg.ProxyGroup)
 	providersConfig := cfg.ProxyProvider
 
 	var (
@@ -973,7 +975,7 @@ func parseProxiesWithBuiltins(cfg *RawConfig, owned *configresources.Set, wrapBu
 
 	// check if any loop exists and sort the ProxyGroups
 	if err := proxyGroupsDagSort(groupsConfig); err != nil {
-		return nil, nil, err
+		return nil, nil, &semanticParseError{code: "GROUP_INVALID", field: "proxy-groups", cause: err}
 	}
 
 	var AllProviders []string

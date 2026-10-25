@@ -60,6 +60,7 @@ type RelayOption struct {
 	SkipCertVerify    bool   `proxy:"skip-cert-verify,omitempty"`
 	NameCertVerify    string `proxy:"name-cert-verify,omitempty"`
 	Fingerprint       string `proxy:"fingerprint,omitempty"`
+	ResourcePolicy    func(string) error
 	Certificate       string `proxy:"certificate,omitempty"`
 	PrivateKey        string `proxy:"private-key,omitempty"`
 	ClientFingerprint string `proxy:"client-fingerprint,omitempty"`
@@ -178,6 +179,7 @@ func (d *relayDialer) dialRelayServer(ctx context.Context, fallbackAddress strin
 			SkipCertVerify:    d.option.SkipCertVerify,
 			NameCertVerify:    d.option.NameCertVerify,
 			FingerPrint:       d.option.Fingerprint,
+			ResourcePolicy:    d.option.ResourcePolicy,
 			Certificate:       d.option.Certificate,
 			PrivateKey:        d.option.PrivateKey,
 			ClientFingerprint: d.option.ClientFingerprint,

@@ -25,6 +25,7 @@ const (
 )
 
 var operationPattern = regexp.MustCompile(`^[A-Za-z0-9:_-]{1,128}$`)
+var protocolPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 var linkPattern = regexp.MustCompile(`(?m)^[A-Za-z][A-Za-z0-9+.-]*://`)
 
 // Inspector's observer is the preparation network boundary: an attempted dial
@@ -151,12 +152,10 @@ func boundedReceipt(receipt Receipt) Receipt {
 
 func (i *Inspector) entry(position int, entryDigest string, node map[string]any, name, protocol, code string) Entry {
 	entry := Entry{Position: position, Protocol: protocol, Status: "invalid", Code: code, EntryDigest: entryDigest}
-	switch protocol {
-	case "ss", "trojan", "vmess", "vless", "anytls", "hysteria2":
-	default:
+	if !protocolPattern.MatchString(protocol) {
 		entry.Protocol = "unknown"
 		if code == "" {
-			code = "ENTRY_PROTOCOL_UNSUPPORTED"
+			code = "ENTRY_PROTOCOL_INVALID"
 		}
 	}
 	entry.DisplayName = strings.Map(func(r rune) rune {
@@ -184,11 +183,17 @@ func (i *Inspector) entry(position int, entryDigest string, node map[string]any,
 			if errors.As(err, &detail) && detail.Code == "CAPABILITY_NOT_COVERED" {
 				code = "ENTRY_CAPABILITY_UNSUPPORTED"
 			}
+			if detail != nil && detail.Code == "PROXY_TYPE_UNSUPPORTED" {
+				code = "ENTRY_PROTOCOL_UNSUPPORTED"
+			}
+			if detail != nil && strings.HasSuffix(detail.Code, "NOT_IMPLEMENTED") {
+				code = "ENTRY_INTEGRATION_NOT_IMPLEMENTED"
+			}
 		}
 	}
 	entry.Code = code
 	if code != "" {
-		if strings.Contains(code, "UNSUPPORTED") {
+		if strings.Contains(code, "UNSUPPORTED") || strings.HasSuffix(code, "NOT_IMPLEMENTED") {
 			entry.Status = "unsupported"
 		}
 		return entry

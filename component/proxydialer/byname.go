@@ -11,20 +11,37 @@ import (
 
 type Tunnel interface {
 	C.Tunnel
+	ProxyLookup
+}
+
+// ProxyLookup is the exact dependency of named chained dialing. Embedded
+// candidates can provide their own graph without borrowing a global tunnel.
+type ProxyLookup interface {
 	Proxies() map[string]C.Proxy
 }
 
 type byNameProxyDialer struct {
 	proxyName string
 	tunnel    C.Tunnel
+	lookup    ProxyLookup
+}
+
+func (d byNameProxyDialer) proxies() (map[string]C.Proxy, error) {
+	lookup := d.lookup
+	if lookup == nil {
+		lookup, _ = d.tunnel.(ProxyLookup)
+	}
+	if lookup == nil {
+		return nil, fmt.Errorf("tunnel is invalid, must be proxydialer.Tunnel, but got: %T", d.tunnel)
+	}
+	return lookup.Proxies(), nil
 }
 
 func (d byNameProxyDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	tunnel, _ := d.tunnel.(Tunnel)
-	if tunnel == nil {
-		return nil, fmt.Errorf("tunnel is invalid, must be proxydialer.Tunnel, but got: %T", d.tunnel)
+	proxies, err := d.proxies()
+	if err != nil {
+		return nil, err
 	}
-	proxies := tunnel.Proxies()
 	proxy, ok := proxies[d.proxyName]
 	if !ok {
 		return nil, fmt.Errorf("proxyName[%s] not found", d.proxyName)
@@ -33,11 +50,10 @@ func (d byNameProxyDialer) DialContext(ctx context.Context, network, address str
 }
 
 func (d byNameProxyDialer) ListenPacket(ctx context.Context, network, address string, rAddrPort netip.AddrPort) (net.PacketConn, error) {
-	tunnel, _ := d.tunnel.(Tunnel)
-	if tunnel == nil {
-		return nil, fmt.Errorf("tunnel is invalid, must be proxydialer.Tunnel, but got: %T", d.tunnel)
+	proxies, err := d.proxies()
+	if err != nil {
+		return nil, err
 	}
-	proxies := tunnel.Proxies()
 	proxy, ok := proxies[d.proxyName]
 	if !ok {
 		return nil, fmt.Errorf("proxyName[%s] not found", d.proxyName)
@@ -47,4 +63,8 @@ func (d byNameProxyDialer) ListenPacket(ctx context.Context, network, address st
 
 func NewByName(proxyName string, tunnel C.Tunnel) C.Dialer {
 	return byNameProxyDialer{proxyName: proxyName, tunnel: tunnel}
+}
+
+func NewByNameWithLookup(proxyName string, lookup ProxyLookup) C.Dialer {
+	return byNameProxyDialer{proxyName: proxyName, lookup: lookup}
 }

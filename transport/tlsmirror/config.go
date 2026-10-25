@@ -23,6 +23,7 @@ type ClientConfig struct {
 	ALPN               []string
 	Fingerprint        string
 	Certificate        string
+	ResourcePolicy     func(string) error
 	PrivateKey         string
 	ClientFingerprint  string
 	ForwardAddressHint string

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,12 +11,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
+
 	"unicode/utf8"
 
 	"github.com/metacubex/mihomo/common/orderedmap"
+	"github.com/metacubex/mihomo/common/structure"
 	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/config"
+	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/mobile/validation"
 	"go.yaml.in/yaml/v3"
@@ -30,10 +33,10 @@ func canonical(input any) ([]byte, error) {
 }
 
 func (e *Engine) Plan(operationID string, input []byte, available []PreparedResource) PlanReceipt {
-	return e.plan(operationID, input, available, nil)
+	return e.plan(operationID, input, available, nil, nil)
 }
 
-func (e *Engine) plan(operationID string, input []byte, available []PreparedResource, verified *map[string]fixedResource) (receipt PlanReceipt) {
+func (e *Engine) plan(operationID string, input []byte, available []PreparedResource, verified *map[string]fixedResource, resolvedMembers map[string][]string) (receipt PlanReceipt) {
 	receipt = PlanReceipt{SchemaVersion: contract.Version, OperationID: operationID, InputDigest: digest(input), PlannerVersion: contract.PlannerVersion,
 		Category: "failure", Code: "POLICY_FAILURE", Requirements: []contract.Requirement{}, Groups: []contract.Group{}, Adaptations: []contract.Adaptation{}, CoreIdentity: validation.Identity()}
 	defer func() {
@@ -66,26 +69,15 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 		receipt.Code = "POLICY_GEODATA_UPDATE_UNSUPPORTED"
 		return
 	}
-	// Planning must not promise resource readiness for a node whose original
-	// fields would be dropped or defaulted by the runtime adapter. This shared
-	// gate is purely static; construction and cleanup remain in Validate/Build.
-	for _, node := range raw.Proxy {
-		if err := config.MobileNodeFields(node); err != nil {
-			receipt.Category = "invalid"
-			receipt.Code = "POLICY_PROXY_INVALID"
-			var diagnostic *config.MobileValidationError
-			if errors.As(err, &diagnostic) {
-				receipt.Code = diagnostic.Code
-				if diagnostic.Code == "CAPABILITY_NOT_COVERED" {
-					receipt.Category = "unsupported"
-				}
-			}
-			return
-		}
-	}
-	groups, code := planGroups(raw, receipt.InputDigest)
+	groups, code := e.planGroups(raw, receipt.InputDigest, resolvedMembers)
 	if code != "" {
-		receipt.Category = "unsupported"
+		receipt.Category = "invalid"
+		if strings.HasSuffix(code, "NOT_IMPLEMENTED") || code == "PROXY_TYPE_UNSUPPORTED" {
+			receipt.Category = "unsupported"
+		}
+		if code == "PREPARATION_NETWORK_FORBIDDEN" || code == "POLICY_CLEANUP_FAILED" || code == "POLICY_CONSTRUCTION_FAILED" {
+			receipt.Category = "failure"
+		}
 		receipt.Code = code
 		return
 	}
@@ -273,132 +265,72 @@ func strictYAML(node *yaml.Node, depth int) error {
 	return nil
 }
 
-func planGroups(raw *config.RawConfig, inputDigest string) ([]contract.Group, string) {
+// Planning and runtime use the same real upstream proxy graph. The candidate
+// owns all constructed adapters/health owners and its network fence stays shut.
+func (e *Engine) planGroups(raw *config.RawConfig, inputDigest string, resolvedMembers map[string][]string) (result []contract.Group, code string) {
 	if len(raw.ProxyGroup) > contract.MaxGroups {
 		return nil, "POLICY_GROUP_BOUNDS"
 	}
-	names := map[string]string{"DIRECT": "builtin", "REJECT": "builtin", "REJECT-DROP": "builtin", "PASS": "builtin", "COMPATIBLE": "builtin"}
-	for _, node := range raw.Proxy {
-		name, ok := node["name"].(string)
-		if !ok || name == "" || names[name] != "" {
-			return nil, "POLICY_GROUP_INVALID"
+	candidate, err := config.BuildMobileProxyCandidate(raw)
+	if candidate != nil {
+		defer func() {
+			if err := candidate.Discard(context.Background()); err != nil {
+				e.retainCandidate(candidate, err)
+				result = nil
+				code = "POLICY_CLEANUP_FAILED"
+			}
+		}()
+	}
+	if err != nil {
+		var detail *config.MobileValidationError
+		if errors.As(err, &detail) {
+			return nil, detail.Code
 		}
-		names[name] = "node"
+		return nil, "POLICY_PROXY_OR_GROUP_INVALID"
+	}
+	names := map[string]string{}
+	for name := range candidate.Proxies {
+		names[name] = "builtin"
+	}
+	for _, node := range raw.Proxy {
+		var original struct {
+			Name string `proxy:"name"`
+		}
+		decoder := structure.NewDecoder(structure.Option{TagName: "proxy", WeaklyTypedInput: true, KeyReplacer: structure.DefaultKeyReplacer})
+		if decoder.Decode(node, &original) != nil {
+			return nil, "PROXY_INVALID"
+		}
+		names[original.Name] = "node"
 	}
 	for _, group := range raw.ProxyGroup {
-		name, ok := group["name"].(string)
-		if !ok || name == "" || names[name] != "" {
-			return nil, "POLICY_GROUP_INVALID"
-		}
+		name, _ := group["name"].(string)
 		names[name] = "group"
 	}
-	groups := []contract.Group{}
+	result = []contract.Group{}
 	total := 0
-	for position, group := range raw.ProxyGroup {
-		name := group["name"].(string)
-		kind, _ := group["type"].(string)
-		if kind != "select" && kind != "url-test" && kind != "fallback" {
-			return nil, "POLICY_GROUP_UNSUPPORTED"
-		}
-		if code := groupFields(group, kind); code != "" {
-			return nil, code
-		}
-		members, ok := group["proxies"].([]any)
+	for position, mapping := range raw.ProxyGroup {
+		name, _ := mapping["name"].(string)
+		kind, _ := mapping["type"].(string)
+		group, ok := candidate.Proxies[name].Adapter().(interface{ GetProxies(bool) []C.Proxy })
 		if !ok {
-			return nil, "POLICY_GROUP_UNSUPPORTED"
+			return nil, "POLICY_GROUP_INVALID"
 		}
+		members := group.GetProxies(false)
 		total += len(members)
 		if len(members) > contract.MaxMembers || total > contract.MaxTotalMembers {
 			return nil, "POLICY_GROUP_BOUNDS"
 		}
 		item := contract.Group{GroupRef: digest([]byte(inputDigest + ":group:" + strconv.Itoa(position+1))), Position: position + 1, DisplayName: safeName(name), Type: kind, Members: []contract.Member{}}
 		for index, member := range members {
-			name, ok := member.(string)
-			if !ok || names[name] == "" {
-				return nil, "POLICY_GROUP_INVALID"
+			item.Members = append(item.Members, contract.Member{MemberRef: digest([]byte(inputDigest + ":group:" + strconv.Itoa(position+1) + ":member:" + strconv.Itoa(index+1))), Position: index + 1, DisplayName: safeName(member.Name()), Kind: names[member.Name()]})
+			if resolvedMembers != nil {
+				resolvedMembers[item.GroupRef] = append(resolvedMembers[item.GroupRef], member.Name())
 			}
-			item.Members = append(item.Members, contract.Member{MemberRef: digest([]byte(inputDigest + ":group:" + strconv.Itoa(position+1) + ":member:" + strconv.Itoa(index+1))), Position: index + 1, DisplayName: safeName(name), Kind: names[name]})
 		}
-		groups = append(groups, item)
+		result = append(result, item)
 	}
-	return groups, ""
+	return result, ""
 }
-
-// Group maps bypass yaml.KnownFields and the upstream decoder is deliberately
-// weak. Gate every declared value before that decoder can drop or coerce it.
-func groupFields(group map[string]any, kind string) string {
-	for key, value := range group {
-		switch key {
-		case "name", "type", "url", "empty-fallback", "filter", "exclude-filter", "exclude-type", "icon":
-			if _, ok := value.(string); !ok {
-				return "POLICY_GROUP_INVALID"
-			}
-		case "expected-status":
-			if _, ok := value.(string); !ok {
-				if status, ok := value.(int); !ok || status < 0 || status > 65535 {
-					return "POLICY_GROUP_INVALID"
-				}
-			}
-		case "default-selected":
-			if kind != "select" {
-				return "POLICY_GROUP_PARAMETER_UNSUPPORTED"
-			}
-			if _, ok := value.(string); !ok {
-				return "POLICY_GROUP_INVALID"
-			}
-		case "tolerance":
-			if kind != "url-test" {
-				return "POLICY_GROUP_PARAMETER_UNSUPPORTED"
-			}
-			n, ok := value.(int)
-			if !ok || n < 0 || n > 65535 {
-				return "POLICY_GROUP_INVALID"
-			}
-		case "interval":
-			var interval int64
-			switch n := value.(type) {
-			case int:
-				interval = int64(n)
-			case string:
-				// Preserve the pinned decoder's base-0/native-int semantics;
-				// validating must not normalize the original group map.
-				parsed, err := strconv.ParseInt(n, 0, strconv.IntSize)
-				if err != nil {
-					return "POLICY_GROUP_INVALID"
-				}
-				interval = parsed
-			default:
-				return "POLICY_GROUP_INVALID"
-			}
-			// HealthCheck multiplies seconds into time.Duration before starting
-			// its ticker. Reject overflow rather than accepting a broken timer.
-			if interval < 0 || interval > int64((1<<63-1)/time.Second) {
-				return "POLICY_GROUP_INVALID"
-			}
-		case "timeout", "max-failed-times":
-			n, ok := value.(int)
-			if !ok || n < 0 {
-				return "POLICY_GROUP_INVALID"
-			}
-		case "lazy", "disable-udp", "hidden":
-			if _, ok := value.(bool); !ok {
-				return "POLICY_GROUP_INVALID"
-			}
-		case "proxies":
-			if _, ok := value.([]any); !ok {
-				return "POLICY_GROUP_INVALID"
-			}
-		case "use", "include-all", "include-all-proxies", "include-all-providers":
-			// These alter the effective member list, which this exact opaque
-			// original-member contract does not yet construct or expose.
-			return "POLICY_GROUP_PARAMETER_UNSUPPORTED"
-		default:
-			return "POLICY_GROUP_PARAMETER_UNSUPPORTED"
-		}
-	}
-	return ""
-}
-
 func safeName(name string) string {
 	if len(name) > 512 {
 		return ""
@@ -421,7 +353,7 @@ func allSubRules(raw *config.RawConfig) []string {
 
 func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest string, preparedRules ...[]string) ([]contract.Requirement, string) {
 	if len(raw.ProxyProvider) != 0 {
-		return nil, "POLICY_PROXY_PROVIDER_UNSUPPORTED"
+		return nil, "POLICY_PROXY_PROVIDER_NOT_IMPLEMENTED"
 	}
 	result := []contract.Requirement{}
 	add := func(kind, format, logical, sourceKind, uri, headers, path, proxy string, interval, maxBytes int64) {
