@@ -12,7 +12,9 @@ import (
 	"github.com/metacubex/mihomo/common/pool"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/log"
+	D "github.com/miekg/dns"
 )
 
 type Dns struct {
@@ -36,7 +38,7 @@ func (d *Dns) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, er
 	callbackDone := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() { defer close(callbackDone); _ = right.Close() })
 	go func() {
-		_ = resolver.RelayDnsConnWithService(ctx, right, 0, service)
+		_ = resolver.RelayDnsProxyConn(ctx, right, 0, service)
 		cancel()
 		if !stop() {
 			<-callbackDone
@@ -66,8 +68,23 @@ func (d *Dns) relayContext(ctx context.Context) (context.Context, context.Cancel
 			return nil, nil, nil, nil, err
 		}
 	}
+	if service != nil {
+		service = dnsProxyService{service}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	return ctx, cancel, finish, service, nil
+}
+
+type dnsProxyService struct{ resolver.Service }
+
+func (s dnsProxyService) ServeMsg(ctx context.Context, request *D.Msg) (*D.Msg, error) {
+	reply, err := s.Service.ServeMsg(ctx, request)
+	// An owner can reject admission before its cancellation callback reaches
+	// this association. Retirement must never become an ordinary SERVFAIL.
+	if errors.Is(err, dns.ErrResolverRetired) || errors.Is(err, dns.ErrResolverNotActive) {
+		err = errors.Join(context.Canceled, err)
+	}
+	return reply, err
 }
 
 type dnsRelayConn struct {
@@ -202,10 +219,7 @@ func (d *dnsPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 
 	go func() { // don't block the WriteTo function
 		defer d.workers.Done()
-		ctx, cancel := context.WithTimeout(d.ctx, resolver.DefaultDnsRelayTimeout)
-		defer cancel()
-
-		buf, err := resolver.RelayDnsPacketWithService(ctx, buf[:len(p)], buf, d.service)
+		buf, err := resolver.RelayDnsProxyPacket(d.ctx, buf[:len(p)], buf, d.service)
 		if err != nil {
 			put()
 			return

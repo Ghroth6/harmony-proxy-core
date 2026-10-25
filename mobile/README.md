@@ -64,6 +64,8 @@ acquisition.
 `type: dns` associations capture the candidate's actual DNS service. TCP relays
 and UDP query workers borrow that service's existing owner, close on cancellation
 and join before the owner finishes; they never consult a later global service.
+Ordinary query failures still reply SERVFAIL while the association is active;
+cancellation and owner retirement terminate it without a replacement answer.
 MASQUE parses fallible node DNS settings before allocating its protocol stack,
 so failed preparation leaves no stack workers behind.
 

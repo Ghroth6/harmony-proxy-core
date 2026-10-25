@@ -28,10 +28,10 @@ func RequestUDPSize(msg *D.Msg) int {
 }
 
 func RelayDnsConn(ctx context.Context, conn net.Conn, readTimeout time.Duration) error {
-	return relayDnsConn(ctx, conn, readTimeout, nil, false)
+	return relayDnsConn(ctx, conn, readTimeout, nil, false, false)
 }
 
-func relayDnsConn(ctx context.Context, conn net.Conn, readTimeout time.Duration, service Service, strict bool) (result error) {
+func relayDnsConn(ctx context.Context, conn net.Conn, readTimeout time.Duration, service Service, strict, replyFailure bool) (result error) {
 	buff := pool.Get(pool.UDPBufferSize)
 	defer func() {
 		_ = pool.Put(buff)
@@ -75,11 +75,14 @@ func relayDnsConn(ctx context.Context, conn net.Conn, readTimeout time.Duration,
 		}
 
 		err = func() error {
-			ctx, cancel := context.WithTimeout(ctx, DefaultDnsRelayTimeout)
+			queryCtx, cancel := context.WithTimeout(ctx, DefaultDnsRelayTimeout)
 			defer cancel()
 			inData := buff[:n]
 			outBuff := buff[2:]
-			msg, err := relayDnsPacketWithService(ctx, inData, outBuff, 0, service, strict)
+			msg, err := relayDnsPacketWithService(queryCtx, inData, outBuff, 0, service, strict)
+			if err != nil && replyFailure {
+				msg, err = dnsFailureResponse(ctx, inData, outBuff, err)
+			}
 			if err != nil {
 				return err
 			}
@@ -181,5 +184,38 @@ func RelayDnsPacketWithService(ctx context.Context, payload []byte, target []byt
 	return relayDnsPacketWithService(ctx, payload, target, bound, service, true)
 }
 func RelayDnsConnWithService(ctx context.Context, conn net.Conn, readTimeout time.Duration, service Service) error {
-	return relayDnsConn(ctx, conn, readTimeout, service, true)
+	return relayDnsConn(ctx, conn, readTimeout, service, true, false)
+}
+
+// DNS proxies retain upstream SERVFAIL replies for ordinary query failures while
+// capturing one service. Association cancellation remains terminal, including
+// when a single query's deadline has expired before its active association.
+func RelayDnsProxyConn(ctx context.Context, conn net.Conn, readTimeout time.Duration, service Service) error {
+	return relayDnsConn(ctx, conn, readTimeout, service, true, true)
+}
+
+func RelayDnsProxyPacket(ctx context.Context, payload []byte, target []byte, service Service) ([]byte, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, DefaultDnsRelayTimeout)
+	defer cancel()
+	reply, err := RelayDnsPacketWithService(queryCtx, payload, target, service)
+	if err != nil {
+		return dnsFailureResponse(ctx, payload, target, err)
+	}
+	return reply, nil
+}
+
+func dnsFailureResponse(ctx context.Context, payload, target []byte, cause error) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if errors.Is(cause, context.Canceled) {
+		return nil, cause
+	}
+	request := new(D.Msg)
+	if err := request.Unpack(payload); err != nil {
+		return nil, cause
+	}
+	reply := new(D.Msg)
+	reply.SetRcode(request, D.RcodeServerFailure)
+	return reply.PackBuffer(target)
 }

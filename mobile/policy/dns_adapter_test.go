@@ -251,3 +251,129 @@ func TestOriginalDNSAdapterCancellationJoinsPendingTCPAndUDPQueries(t *testing.T
 		})
 	}
 }
+
+func TestOriginalDNSAdapterReturnsSERVFAILAndKeepsActiveAssociation(t *testing.T) {
+	for _, transport := range []string{"tcp", "udp"} {
+		t.Run(transport, func(t *testing.T) {
+			upstream, err := net.ListenPacket("udp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := &D.Server{PacketConn: upstream, Handler: D.HandlerFunc(func(w D.ResponseWriter, request *D.Msg) {
+				response := new(D.Msg)
+				response.SetReply(request)
+				if request.Question[0].Name == "failure.adapter.invalid." {
+					response.Rcode = D.RcodeServerFailure
+				} else {
+					answer, err := D.NewRR(request.Question[0].Name + " 60 IN A 192.0.2.10")
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					response.Answer = []D.RR{answer}
+				}
+				_ = w.WriteMsg(response)
+			})}
+			serverDone := make(chan struct{})
+			go func() { defer close(serverDone); _ = server.ActivateAndServe() }()
+			t.Cleanup(func() { _ = server.Shutdown(); <-serverDone })
+			engine, err := policy.NewEngine(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := engine.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			input := []byte(fmt.Sprintf("ipv6: false\nprofile: {store-fake-ip: false}\nproxies: [{name: PublicDNS, type: dns}]\ndns: {enable: true, ipv6: false, enhanced-mode: redir-host, nameserver: ['%s'], default-nameserver: [127.0.0.1]}\nrules: ['MATCH,PublicDNS']\n", upstream.LocalAddr().String()))
+			platform := publicPlatform()
+			platform.RuntimeOptions.DNS = true
+			platform.TunPolicy.DNSServers = []string{"10.111.0.2"}
+			prepared, err := contract.Seal(contract.Digest(input), nil, platform, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := engine.BuildCandidate(input, prepared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var protected atomic.Int32
+			root, _ := activatePublicPolicy(t, cfg, []string{}, &protected)
+			metadata := &C.Metadata{NetWork: C.TCP, DstIP: netip.MustParseAddr("192.0.2.53"), DstPort: 53}
+			var conn net.Conn
+			var packet net.PacketConn
+			if transport == "tcp" {
+				conn, err = cfg.Proxies["PublicDNS"].DialContext(root, metadata)
+			} else {
+				packet, err = cfg.Proxies["PublicDNS"].ListenPacketContext(root, metadata)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if conn != nil {
+				defer conn.Close()
+			} else {
+				defer packet.Close()
+			}
+			for _, name := range []string{"failure.adapter.invalid.", "success.adapter.invalid."} {
+				question := new(D.Msg)
+				question.SetQuestion(name, D.TypeA)
+				payload, _ := question.Pack()
+				result := make(chan []byte, 1)
+				if conn != nil {
+					frame := make([]byte, 2+len(payload))
+					binary.BigEndian.PutUint16(frame, uint16(len(payload)))
+					copy(frame[2:], payload)
+					if _, err := conn.Write(frame); err != nil {
+						t.Fatal(err)
+					}
+					go func() {
+						header := make([]byte, 2)
+						if _, err := io.ReadFull(conn, header); err != nil {
+							result <- nil
+							return
+						}
+						answer := make([]byte, binary.BigEndian.Uint16(header))
+						if _, err := io.ReadFull(conn, answer); err != nil {
+							answer = nil
+						}
+						result <- answer
+					}()
+				} else {
+					if _, err := packet.WriteTo(payload, &net.UDPAddr{IP: net.IPv4(192, 0, 2, 53), Port: 53}); err != nil {
+						t.Fatal(err)
+					}
+					go func() {
+						answer := make([]byte, 2048)
+						n, _, err := packet.ReadFrom(answer)
+						if err != nil {
+							result <- nil
+						} else {
+							result <- answer[:n]
+						}
+					}()
+				}
+				select {
+				case answer := <-result:
+					response := new(D.Msg)
+					if response.Unpack(answer) != nil || response.Id != question.Id {
+						t.Fatal("active DNS association closed instead of replying")
+					}
+					if name == "failure.adapter.invalid." {
+						if response.Rcode != D.RcodeServerFailure {
+							t.Fatal("ordinary upstream failure must retain SERVFAIL")
+						}
+					} else if response.Rcode != D.RcodeSuccess || len(response.Answer) != 1 || response.Answer[0].(*D.A).A.String() != "192.0.2.10" {
+						t.Fatal("association must remain usable after its SERVFAIL response")
+					}
+				case <-time.After(time.Second):
+					t.Fatal("active DNS association dropped its reply")
+				}
+			}
+			if protected.Load() == 0 {
+				t.Fatal("actual DNS error/recovery exchanges bypassed protection")
+			}
+		})
+	}
+}
