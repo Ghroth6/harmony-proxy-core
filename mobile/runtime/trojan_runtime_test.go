@@ -412,7 +412,7 @@ func TestTrojanRuntimeRechecksExactBytesAndScopeBeforeAcquiringIngress(t *testin
 		{"non boolean certificate policy", "sni: node.example.invalid", "sni: node.example.invalid, skip-cert-verify: 'true'", false},
 		{"certificate policy changed after digest", "sni: node.example.invalid", "sni: node.example.invalid, skip-cert-verify: true", true},
 		{"direct fallback", "proxies: [sample]", "proxies: [sample, DIRECT]", false},
-		{"uncovered field", "sni: node.example.invalid", "sni: node.example.invalid, dialer-proxy: DIRECT", false},
+		{"supported chain without network epoch", "sni: node.example.invalid", "sni: node.example.invalid, dialer-proxy: DIRECT", false},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
 			generation := nextGeneration()
@@ -431,6 +431,12 @@ func TestTrojanRuntimeRechecksExactBytesAndScopeBeforeAcquiringIngress(t *testin
 			code, outcome := "CANDIDATE_RECHECK", "failed"
 			if mutation.staleDigest {
 				code, outcome = "INPUT_DIGEST", "rejected"
+			}
+			if mutation.name == "supported chain without network epoch" {
+				// The field now uses real upstream construction. This legacy
+				// envelope must still fail before ingress: it lacks the accepted
+				// network generation required by the current node scope.
+				code = "NETWORK_GENERATION_MISMATCH"
 			}
 			if stopped.FailureCode != code || stopped.Outcome != outcome || stopped.Cleanup != "complete" || stopped.PendingOwners != (R.PendingOwners{}) || stopped.ForwardingActive {
 				t.Fatalf("runtime accepted stale or uncovered Trojan input: %+v", stopped)

@@ -2,8 +2,6 @@ package validation
 
 import (
 	"bytes"
-	"errors"
-	"github.com/metacubex/mihomo/config"
 	"io"
 	"strconv"
 	"strings"
@@ -54,16 +52,8 @@ func inspectScope(document *yaml.Node, extendedSelected bool) []Diagnostic {
 			return scopeDiagnostic("RESOURCE_UNAVAILABLE", field, "Referenced configuration resources have not been prepared for validation.")
 		case "proxies":
 			if extendedSelected && value.Kind == yaml.SequenceNode {
-				for _, entry := range value.Content {
-					var node map[string]any
-					if entry.Decode(&node) != nil {
-						continue
-					}
-					var diagnostic *config.MobileValidationError
-					if err := config.MobileNodeFields(node); errors.As(err, &diagnostic) && diagnostic.Code == "CAPABILITY_NOT_COVERED" {
-						return scopeDiagnostic("UNSUPPORTED_CAPABILITY", field, "An original node field or value has not been covered.")
-					}
-				}
+				// Actual node decoding/construction belongs to the following
+				// validation operation; scope discovery remains free of resources.
 				continue
 			}
 			if result := inspectEntries(value, field, true); result != nil {
