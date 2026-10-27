@@ -17,7 +17,6 @@ import (
 // activates ingress, performs DNS, or opens a physical socket.
 func (e *runEngine) configurePacketStack(target StartRequest) string {
 	e.options = target.RuntimeOptions
-	e.sourcePolicy = target.PreparedPolicy != nil
 	if e.options.DNS {
 		if e.cfg.MobileDNSService() == nil {
 			return "DNS_SERVICE_NOT_READY"

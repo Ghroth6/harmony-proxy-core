@@ -215,7 +215,7 @@ func DecodeStart(generation, transferID uint64, input, request []byte) (StartReq
 		return fail("REQUEST_JSON")
 	}
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(request, &fields) != nil || !fieldsWithOptional(fields, []string{"contractVersion", "operationId", "generation", "networkGeneration", "transferId", "inputRevision", "inputDigest", "runtimeOptions", "platformPolicy", "tunPolicy"}, "preparedPolicy") {
+	if json.Unmarshal(request, &fields) != nil || !exactFields(fields, "contractVersion", "operationId", "generation", "networkGeneration", "transferId", "inputRevision", "inputDigest", "runtimeOptions", "platformPolicy", "tunPolicy", "preparedPolicy") {
 		return fail("REQUEST_FIELDS")
 	}
 	for name, keys := range map[string][]string{
@@ -240,10 +240,8 @@ func DecodeStart(generation, transferID uint64, input, request []byte) (StartReq
 			return fail("REQUEST_FIELDS")
 		}
 	}
-	if encoded, ok := fields["preparedPolicy"]; ok {
-		if !preparedFields(encoded) {
-			return fail("REQUEST_FIELDS")
-		}
+	if !preparedFields(fields["preparedPolicy"]) {
+		return fail("REQUEST_FIELDS")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(request))
 	decoder.DisallowUnknownFields()
@@ -261,14 +259,13 @@ func DecodeStart(generation, transferID uint64, input, request []byte) (StartReq
 		return fail("INPUT_DIGEST")
 	}
 	options := target.RuntimeOptions
-	sourcePolicy := target.PreparedPolicy != nil
-	if sourcePolicy && target.NetworkGeneration == 0 {
+	if target.NetworkGeneration == 0 {
 		return fail("REQUEST_IDENTITY")
 	}
 	if options.Entry != "system-vpn" || options.ExplicitListeners || (options.Transport != "tcp" && options.Transport != "tcp-udp") || (options.Transport == "tcp-udp") != options.UDP || (options.DNS && !options.UDP) {
 		return fail("RUNTIME_OPTIONS")
 	}
-	if (!sourcePolicy && (options.DNS || options.IPv6 || options.UDP || options.ResourceDownloads)) || (sourcePolicy && !options.UDP) {
+	if !options.UDP {
 		return fail("RUNTIME_OPTIONS")
 	}
 	policy := target.PlatformPolicy

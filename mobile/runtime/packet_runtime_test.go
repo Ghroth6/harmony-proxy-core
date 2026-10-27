@@ -4,33 +4,52 @@ package runtime_test
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/metacubex/mihomo/component/platformnetwork"
+	"github.com/metacubex/mihomo/mobile/policy"
 	"github.com/metacubex/mihomo/mobile/protection"
 	R "github.com/metacubex/mihomo/mobile/runtime"
 )
 
 var fixed = []byte("proxies:\n  - {name: sample, type: ss, server: 127.0.0.1, port: 9, cipher: aes-128-gcm, password: test-only}\nproxy-groups:\n  - {name: selected, type: select, proxies: [sample]}\nrules:\n  - MATCH,selected\n")
 
-func fixedRequest(generation, transfer uint64) []byte {
-	var fields map[string]any
-	json.Unmarshal([]byte(envelope()), &fields)
-	sum := sha256.Sum256(fixed)
-	fields["inputDigest"] = "sha256:" + hex.EncodeToString(sum[:])
-	fields["generation"] = generation
-	fields["transferId"] = fmt.Sprint(transfer)
-	encoded, _ := json.Marshal(fields)
-	return encoded
+func preparedNodeRequest(t *testing.T, input []byte, generation uint64) []byte {
+	t.Helper()
+	snapshot, ok := platformnetwork.Current()
+	if !ok {
+		t.Fatal("node run requires a submitted network snapshot")
+	}
+	return clientPolicyRequest(t, input, generation, snapshot.Generation, false, true)
+}
+
+func newNodePolicyManager(t *testing.T, system R.DescriptorSystem, generation uint64) *R.Manager {
+	t.Helper()
+	owner, err := policy.NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := R.NewManagerWithPolicy(system, &productionGate, owner)
+	t.Cleanup(func() {
+		manager.Stop(generation)
+		productionGate.Unregister(generation)
+		if err := owner.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return manager
+}
+
+func newNodeManager(t *testing.T, system R.DescriptorSystem, generation uint64) *R.Manager {
+	t.Helper()
+	manager := newNodePolicyManager(t, system, generation)
+	publishClientNetwork(t, manager)
+	return manager
 }
 
 type packetDescriptors struct {
@@ -107,35 +126,12 @@ func register(generation uint64, callback protection.Callback) {
 	}
 }
 
-func TestSelectedChaChaInputStartsTheRealMobileEngineAndStopsNormally(t *testing.T) {
-	input := []byte(strings.Replace(string(fixed), "aes-128-gcm", "chacha20-ietf-poly1305", 1))
-	generation := nextGeneration()
-	register(generation, func(uint64, uint64, uintptr) int32 { return protection.Success })
-	var fields map[string]any
-	json.Unmarshal(fixedRequest(generation, 1), &fields)
-	sum := sha256.Sum256(input)
-	fields["inputDigest"] = "sha256:" + hex.EncodeToString(sum[:])
-	request, _ := json.Marshal(fields)
-	system := newPacketDescriptors()
-	manager := R.NewManager(system, &productionGate)
-	started := manager.Start(manager.Consume(generation, 1, 9), input, request)
-	stopped := manager.Stop(generation)
-	if started.Outcome != "running" || !started.ForwardingActive || stopped.Phase != "stopped" || stopped.Cleanup != "complete" || stopped.PendingOwners != (R.PendingOwners{}) {
-		t.Fatalf("real selected-cipher engine/normal-stop path failed: start=%+v stop=%+v", started, stopped)
-	}
-	for _, fd := range []int{9, 40, 41} {
-		if system.closes[fd] != 1 {
-			t.Fatalf("descriptor %d close count %d", fd, system.closes[fd])
-		}
-	}
-}
-
 func TestMobileRunJoinsRealCancelledTCPHandshakeBeforeDescriptorClose(t *testing.T) {
 	generation := nextGeneration()
 	register(generation, func(uint64, uint64, uintptr) int32 { return protection.Success })
 	system := newPacketDescriptors()
-	manager := R.NewManager(system, &productionGate)
-	started := manager.Start(manager.Consume(generation, 1, 9), fixed, fixedRequest(generation, 1))
+	manager := newNodeManager(t, system, generation)
+	started := manager.Start(manager.Consume(generation, 1, 9), fixed, preparedNodeRequest(t, fixed, generation))
 	if started.Outcome != "running" || !started.ForwardingActive {
 		t.Fatalf("real stack not ready: %+v", started)
 	}
@@ -171,10 +167,10 @@ func TestStopDuringOwnedConstructionRegistersLateWakeAndClosesIt(t *testing.T) {
 	register(generation, func(uint64, uint64, uintptr) int32 { return protection.Success })
 	system := newPacketDescriptors()
 	system.nonblockWait = make(chan struct{})
-	manager := R.NewManager(system, &productionGate)
+	manager := newNodeManager(t, system, generation)
 	started := make(chan R.Receipt, 1)
 	handoff := manager.Consume(generation, 1, 9)
-	go func() { started <- manager.Start(handoff, fixed, fixedRequest(generation, 1)) }()
+	go func() { started <- manager.Start(handoff, fixed, preparedNodeRequest(t, fixed, generation)) }()
 	deadline := time.After(time.Second)
 	for {
 		query := manager.Query(generation, 1)
@@ -220,8 +216,8 @@ func TestPacketShortWriteClosesAllOwnersWithoutWritingTailAsPacket(t *testing.T)
 	register(generation, func(uint64, uint64, uintptr) int32 { return protection.Success })
 	system := newPacketDescriptors()
 	system.shortWrite = true
-	manager := R.NewManager(system, &productionGate)
-	started := manager.Start(manager.Consume(generation, 1, 9), fixed, fixedRequest(generation, 1))
+	manager := newNodeManager(t, system, generation)
+	started := manager.Start(manager.Consume(generation, 1, 9), fixed, preparedNodeRequest(t, fixed, generation))
 	if started.Outcome != "running" {
 		t.Fatal(started.FailureCode)
 	}
@@ -256,8 +252,8 @@ func TestActualForwardingCannotBypassFailedGenerationProtection(t *testing.T) {
 		return protection.PlatformFailure
 	})
 	system := newPacketDescriptors()
-	manager := R.NewManager(system, &productionGate)
-	started := manager.Start(manager.Consume(generation, 1, 9), fixed, fixedRequest(generation, 1))
+	manager := newNodeManager(t, system, generation)
+	started := manager.Start(manager.Consume(generation, 1, 9), fixed, preparedNodeRequest(t, fixed, generation))
 	if started.Outcome != "running" {
 		t.Fatal(started.FailureCode)
 	}
@@ -298,8 +294,8 @@ func TestPartialWakeFailureAttemptsEveryIndependentCloseAndPreservesUnknown(t *t
 	register(generation, func(uint64, uint64, uintptr) int32 { return protection.Success })
 	system := newPacketDescriptors()
 	system.failed[40] = true
-	manager := R.NewManager(partialWake{system}, &productionGate)
-	manager.Start(manager.Consume(generation, 1, 9), fixed, fixedRequest(generation, 1))
+	manager := newNodeManager(t, partialWake{system}, generation)
+	manager.Start(manager.Consume(generation, 1, 9), fixed, preparedNodeRequest(t, fixed, generation))
 	stopped := manager.Stop(generation)
 	if stopped.Cleanup != "unknown" || stopped.Phase != "failed" || stopped.PendingOwners != (R.PendingOwners{}) {
 		t.Fatalf("partial failure lost: %+v", stopped)
@@ -319,9 +315,9 @@ func TestStartObservationTimeoutKeepsRealConstructorOwnedUntilStop(t *testing.T)
 	register(generation, func(uint64, uint64, uintptr) int32 { return protection.Success })
 	system := newPacketDescriptors()
 	system.nonblockWait = make(chan struct{})
-	manager := R.NewManager(system, &productionGate)
+	manager := newNodeManager(t, system, generation)
 	before := time.Now()
-	started := manager.Start(manager.Consume(generation, 1, 9), fixed, fixedRequest(generation, 1))
+	started := manager.Start(manager.Consume(generation, 1, 9), fixed, preparedNodeRequest(t, fixed, generation))
 	if elapsed := time.Since(before); elapsed < 4900*time.Millisecond || elapsed > 6*time.Second {
 		t.Fatalf("start observation not bounded: %s", elapsed)
 	}

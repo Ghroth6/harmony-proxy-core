@@ -20,14 +20,34 @@ import (
 	"github.com/metacubex/mihomo/tunnel"
 )
 
-// MobileSelectedShape is the explicit local selected-node policy. It does not
-// claim coverage of a source YAML's groups, DNS, providers or original rules.
-func MobileSelectedShape(raw *RawConfig) bool { return mobileFixedShape(raw) }
+// MobileSelectedShape identifies the independent manual static-check subset.
+// Runtime preparation accepts composed node policies through mobile/policy.
+func MobileSelectedShape(raw *RawConfig) bool {
+	if raw == nil || len(raw.Proxy) != 1 || len(raw.ProxyGroup) != 1 || len(raw.Rule) != 1 || len(raw.ProxyProvider) != 0 || len(raw.RuleProvider) != 0 || len(raw.SubRules) != 0 {
+		return false
+	}
+	node, group := raw.Proxy[0], raw.ProxyGroup[0]
+	groupName, ok := group["name"].(string)
+	if !ok || groupName == "" || groupName == node["name"] || group["type"] != "select" {
+		return false
+	}
+	for key := range group {
+		if key != "name" && key != "type" && key != "proxies" {
+			return false
+		}
+	}
+	members, ok := group["proxies"].([]any)
+	if !ok || len(members) != 1 || members[0] != node["name"] {
+		return false
+	}
+	parts := strings.Split(raw.Rule[0], ",")
+	return len(parts) == 2 && strings.TrimSpace(parts[0]) == "MATCH" && strings.TrimSpace(parts[1]) == groupName
+}
 
 // MobileLegacySelectedShape preserves the older label only for its audited
 // original fields. New TLS/transport/domain/UDP settings use the v2 label.
 func MobileLegacySelectedShape(raw *RawConfig) bool {
-	if !mobileFixedShape(raw) {
+	if !MobileSelectedShape(raw) {
 		return false
 	}
 	n := raw.Proxy[0]
@@ -117,9 +137,9 @@ func (c *Config) ActivateMobileNetwork(generation uint64) error {
 	return nil
 }
 
-// BuildMobileSelectedCandidate constructs fresh upstream adapters for the
-// explicit selected-node shape and keeps all network paths fenced until
-// runtime activation. It never initializes providers or installs global DNS.
+// BuildMobileSelectedCandidate serves the independent manual static validator.
+// Runtime candidates are built only by the prepared-policy owner. This static
+// candidate never initializes providers, installs DNS or activates networking.
 func BuildMobileSelectedCandidate(raw *RawConfig) (cfg *Config, err error) {
 	owned := &configresources.Set{}
 	gate := &mobileCandidateDialer{options: []dialer.Option{dialer.WithOnlySingleStack(true), dialer.WithResolver(resolver.SystemResolver)}}

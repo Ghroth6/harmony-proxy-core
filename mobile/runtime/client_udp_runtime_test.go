@@ -154,14 +154,18 @@ func clientSSUDPSeal(t *testing.T, password string, salt []byte) cipher.AEAD {
 }
 
 func TestClientTUNUDPUsesOriginalPolicyActualNATAndJoinsNormalStop(t *testing.T) {
-	testClientTUNUDPOriginalPolicy(t, false)
+	testClientTUNUDPOriginalPolicy(t, false, false)
 }
 
 func TestClientTUNIPv6UDPUsesOriginalIPCIDR6RuleAndActualNAT(t *testing.T) {
-	testClientTUNUDPOriginalPolicy(t, true)
+	testClientTUNUDPOriginalPolicy(t, true, false)
 }
 
-func testClientTUNUDPOriginalPolicy(t *testing.T, ipv6 bool) {
+func TestClientTUNUDPUsesProductionComposedNodeAndJoinsNormalStop(t *testing.T) {
+	testClientTUNUDPOriginalPolicy(t, false, true)
+}
+
+func testClientTUNUDPOriginalPolicy(t *testing.T, ipv6, composed bool) {
 	peer, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -185,9 +189,30 @@ func testClientTUNUDPOriginalPolicy(t *testing.T, ipv6 bool) {
 		rules = "  - IP-CIDR6,2001:db8::/32,original-select,no-resolve\n  - MATCH,REJECT\n"
 	}
 	input := []byte(fmt.Sprintf("ipv6: %t\ndns: {enable: false}\nproxies:\n  - {name: client-udp-node, type: ss, server: 127.0.0.1, port: %d, cipher: aes-128-gcm, password: %s, udp: true}\nproxy-groups:\n  - {name: original-select, type: select, proxies: [client-udp-node]}\nrules:\n%s", ipv6, peer.LocalAddr().(*net.UDPAddr).Port, password, rules))
-	request := clientPolicyRequest(t, input, generation, networkGeneration, false, ipv6)
+	nodeName, groupName := "client-udp-node", "original-select"
+	if composed {
+		input, _ = composeInspectedNode(t, input)
+		nodeName, groupName = "selected-node", "selected"
+	}
+	plan := owner.Plan("client-udp-plan", input, nil)
+	if plan.Category != "planned" || !plan.ResourcesComplete || plan.GeneralIPv6 != (ipv6 || composed) || plan.DNSEnabled {
+		t.Fatal("real UDP policy plan changed source defaults")
+	}
+	request := clientPolicyRequest(t, input, generation, networkGeneration, false, ipv6 || composed)
 	var caller R.StartRequest
 	if err = json.Unmarshal(request, &caller); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := policy.Seal(plan.InputDigest, nil, caller.PreparedPolicy.Platform, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validated := owner.Validate("client-udp-validate", input, prepared); validated.Category != "pass" {
+		t.Fatal("real UDP policy validation failed")
+	}
+	caller.PreparedPolicy = &prepared
+	request, err = json.Marshal(caller)
+	if err != nil {
 		t.Fatal(err)
 	}
 	// The document-network destination is never dialled: the only declared rule
@@ -201,7 +226,10 @@ func testClientTUNUDPOriginalPolicy(t *testing.T, ipv6 bool) {
 	if ipv6 {
 		ruleCount, stackName = 2, "gvisor-dual-tcp-udp"
 	}
-	if candidate.Proxies["client-udp-node"] == nil || !candidate.Proxies["client-udp-node"].SupportUDP() || len(candidate.Rules) != ruleCount || candidate.Rules[0].Adapter() != "original-select" {
+	if composed {
+		stackName = "gvisor-dual-tcp-udp"
+	}
+	if candidate.Proxies[nodeName] == nil || !candidate.Proxies[nodeName].SupportUDP() || len(candidate.Rules) != ruleCount || candidate.Rules[0].Adapter() != groupName {
 		_ = candidate.Discard(context.Background())
 		t.Fatal("synthetic source did not construct the sole declared UDP route")
 	}
@@ -286,7 +314,7 @@ func testClientTUNUDPOriginalPolicy(t *testing.T, ipv6 bool) {
 	if ipv6 {
 		family, targetIPv4, rule = "ipv6", "", "IPCIDR"
 	}
-	if connection["targetAddress"] != target.IP.String() || connection["addressFamily"] != family || connection["targetIPv4"] != targetIPv4 || connection["rule"] != rule || connection["node"] != "client-udp-node" {
+	if connection["targetAddress"] != target.IP.String() || connection["addressFamily"] != family || connection["targetIPv4"] != targetIPv4 || connection["rule"] != rule || connection["node"] != nodeName {
 		t.Fatal("source observation did not bind the true TUN destination and original policy match")
 	}
 	stopped := manager.Stop(generation)

@@ -76,14 +76,12 @@ func (e *runEngine) connectionValue(info *statistic.TrackerInfo, state string, k
 	if len(info.Chain) > 0 && safeID.MatchString(info.Chain[0]) {
 		value.Node = info.Chain[0]
 	}
-	if e.sourcePolicy {
-		value.Attribution = &ConnectionAttribution{RulePayloadDigest: observationDigest(info.RulePayload)}
-		if host := normalizedDomain(m.RuleHost()); host != "" {
-			value.Attribution.DomainDigest = observationDigest(host)
-		}
-		if len(info.Chain) > 0 {
-			value.Attribution.NodeDigest = observationDigest(info.Chain[0])
-		}
+	value.Attribution = &ConnectionAttribution{RulePayloadDigest: observationDigest(info.RulePayload)}
+	if host := normalizedDomain(m.RuleHost()); host != "" {
+		value.Attribution.DomainDigest = observationDigest(host)
+	}
+	if len(info.Chain) > 0 {
+		value.Attribution.NodeDigest = observationDigest(info.Chain[0])
 	}
 	return value
 }

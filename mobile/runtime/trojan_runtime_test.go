@@ -187,27 +187,18 @@ func trojanBytes(peer *trojanPeer) []byte {
 	return []byte(fmt.Sprintf("proxies:\n  - {name: sample, type: trojan, server: 127.0.0.1, port: %d, password: %s, sni: node.example.invalid}\nproxy-groups:\n  - {name: selected, type: select, proxies: [sample]}\nrules:\n  - MATCH,selected\n", peer.listener.Addr().(*net.TCPAddr).Port, password))
 }
 
-func trojanEnvelope(input []byte, generation uint64) []byte {
-	var fields map[string]any
-	json.Unmarshal([]byte(envelope()), &fields)
-	sum := sha256.Sum256(input)
-	fields["inputDigest"], fields["generation"], fields["transferId"] = "sha256:"+hex.EncodeToString(sum[:]), generation, "1"
-	encoded, _ := json.Marshal(fields)
-	return encoded
-}
-
 func startTrojanRun(t *testing.T, peer *trojanPeer, callback protection.Callback, certificatePolicy ...bool) (*R.Manager, uint64, *packetDescriptors) {
 	t.Helper()
 	generation := nextGeneration()
 	register(generation, callback)
 	system := newPacketDescriptors()
-	manager := R.NewManager(system, &productionGate)
+	manager := newNodeManager(t, system, generation)
 	t.Cleanup(func() { assertTrojanStopped(t, manager, generation, system) })
 	input := trojanBytes(peer)
 	if len(certificatePolicy) == 1 {
 		input = bytes.Replace(input, []byte("sni: node.example.invalid"), []byte(fmt.Sprintf("sni: node.example.invalid, skip-cert-verify: %t", certificatePolicy[0])), 1)
 	}
-	started := manager.Start(manager.Consume(generation, 1, 9), input, trojanEnvelope(input, generation))
+	started := manager.Start(manager.Consume(generation, 1, 9), input, preparedNodeRequest(t, input, generation))
 	if started.Outcome != "running" || !started.ForwardingActive {
 		t.Fatalf("real Trojan runtime failed to start: %+v", started)
 	}
@@ -402,44 +393,49 @@ func TestTrojanTLSHandshakeTimeoutAndStopClosePhysicalSocketAndJoinOwners(t *tes
 	}
 }
 
-func TestTrojanRuntimeRechecksExactBytesAndScopeBeforeAcquiringIngress(t *testing.T) {
+func TestTrojanRuntimeRechecksExactBytesAndPreparedIdentityBeforeAcquiringIngress(t *testing.T) {
 	input := []byte("proxies:\n  - {name: sample, type: trojan, server: 192.0.2.1, port: 443, password: documentation-only, sni: node.example.invalid}\nproxy-groups:\n  - {name: selected, type: select, proxies: [sample]}\nrules:\n  - MATCH,selected\n")
 	for _, mutation := range []struct {
 		name, from, to string
 		staleDigest    bool
+		code           string
 	}{
-		{"different bytes", "documentation-only", "other-documentation-only", true},
-		{"non boolean certificate policy", "sni: node.example.invalid", "sni: node.example.invalid, skip-cert-verify: 'true'", false},
-		{"certificate policy changed after digest", "sni: node.example.invalid", "sni: node.example.invalid, skip-cert-verify: true", true},
-		{"direct fallback", "proxies: [sample]", "proxies: [sample, DIRECT]", false},
-		{"supported chain without network epoch", "sni: node.example.invalid", "sni: node.example.invalid, dialer-proxy: DIRECT", false},
+		{"different bytes", "documentation-only", "other-documentation-only", true, "INPUT_DIGEST"},
+		{"certificate policy changed after digest", "sni: node.example.invalid", "sni: node.example.invalid, skip-cert-verify: true", true, "INPUT_DIGEST"},
+		{"different declared route", "proxies: [sample]", "proxies: [sample, DIRECT]", false, "POLICY_IDENTITY_INVALID"},
+		{"different candidate chain", "sni: node.example.invalid", "sni: node.example.invalid, dialer-proxy: DIRECT", false, "POLICY_IDENTITY_INVALID"},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
 			generation := nextGeneration()
 			var protected atomic.Int32
 			register(generation, func(uint64, uint64, uintptr) int32 { protected.Add(1); return protection.Success })
 			system := newPacketDescriptors()
-			manager := R.NewManager(system, &productionGate)
+			manager := newNodeManager(t, system, generation)
 			t.Cleanup(func() { manager.Stop(generation); productionGate.Unregister(generation) })
 			actual := bytes.Replace(input, []byte(mutation.from), []byte(mutation.to), 1)
-			request := trojanEnvelope(actual, generation)
-			if mutation.staleDigest {
-				request = trojanEnvelope(input, generation)
+			request := preparedNodeRequest(t, input, generation)
+			if !mutation.staleDigest {
+				// A caller cannot pair a current raw digest with another prepared
+				// graph's source identity, even when both graphs are supported.
+				var target R.StartRequest
+				if err := json.Unmarshal(request, &target); err != nil {
+					t.Fatal(err)
+				}
+				target.InputDigest = fmt.Sprintf("sha256:%x", sha256.Sum256(actual))
+				var err error
+				request, err = json.Marshal(target)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			manager.Start(manager.Consume(generation, 1, 9), actual, request)
 			stopped := manager.Stop(generation)
-			code, outcome := "CANDIDATE_RECHECK", "failed"
+			outcome := "failed"
 			if mutation.staleDigest {
-				code, outcome = "INPUT_DIGEST", "rejected"
+				outcome = "rejected"
 			}
-			if mutation.name == "supported chain without network epoch" {
-				// The field now uses real upstream construction. This legacy
-				// envelope must still fail before ingress: it lacks the accepted
-				// network generation required by the current node scope.
-				code = "NETWORK_GENERATION_MISMATCH"
-			}
-			if stopped.FailureCode != code || stopped.Outcome != outcome || stopped.Cleanup != "complete" || stopped.PendingOwners != (R.PendingOwners{}) || stopped.ForwardingActive {
-				t.Fatalf("runtime accepted stale or uncovered Trojan input: %+v", stopped)
+			if stopped.FailureCode != mutation.code || stopped.Outcome != outcome || stopped.Cleanup != "complete" || stopped.PendingOwners != (R.PendingOwners{}) || stopped.ForwardingActive {
+				t.Fatalf("runtime accepted a different Trojan input/prepared identity: %+v", stopped)
 			}
 			if protected.Load() != 0 || system.closes[9] != 1 || system.closes[40] != 0 || system.closes[41] != 0 {
 				t.Fatal("failed recheck acquired ingress/network or lost descriptor ownership")

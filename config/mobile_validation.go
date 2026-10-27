@@ -86,7 +86,7 @@ func validateLegacyMobileScope(raw *RawConfig) error {
 			}
 			// Trojan is added only for the single fixed runtime sample, not
 			// for the broader M1a static configuration family.
-			if !mobileFixedShape(raw) {
+			if !MobileSelectedShape(raw) {
 				return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED"}
 			}
 			continue
@@ -119,7 +119,7 @@ func validateLegacyMobileScope(raw *RawConfig) error {
 				return &MobileValidationError{Code: "PROXY_INVALID", Field: path + ".password"}
 			}
 			address, parseErr := netip.ParseAddr(proxy["server"].(string))
-			if !mobileFixedShape(raw) || parseErr != nil || !address.Is4() || address.IsUnspecified() || address.IsMulticast() ||
+			if !MobileSelectedShape(raw) || parseErr != nil || !address.Is4() || address.IsUnspecified() || address.IsMulticast() ||
 				(proxy["udp"] != nil && proxy["udp"] != false) {
 				return &MobileValidationError{Code: "CAPABILITY_NOT_COVERED", Field: "proxies"}
 			}

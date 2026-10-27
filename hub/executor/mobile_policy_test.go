@@ -41,6 +41,9 @@ func TestOriginalPolicyPublicationPreservesSourceModeAndOwnedCandidate(t *testin
 	if err := executor.ActivateMobilePolicy(cfg); err != nil {
 		t.Fatal(err)
 	}
+	if tunnel.Status() != tunnel.Running {
+		t.Fatal("explicit entry activation absent")
+	}
 	if err := executor.RetireConfig(context.Background()); err != nil {
 		t.Fatal(err)
 	}

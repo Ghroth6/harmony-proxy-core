@@ -2,14 +2,31 @@ package runtime_test
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/metacubex/mihomo/mobile/policy/contract"
 	R "github.com/metacubex/mihomo/mobile/runtime"
 )
 
 var sample = []byte("proxies: []\n")
+
+func TestRuntimeRequiresPreparedPolicyForEveryStart(t *testing.T) {
+	var request map[string]any
+	if err := json.Unmarshal([]byte(envelope()), &request); err != nil {
+		t.Fatal(err)
+	}
+	delete(request, "preparedPolicy")
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := R.DecodeStart(2, 7, sample, encoded); err == nil {
+		t.Fatal("a static validation receipt must not authorize an unprepared runtime")
+	}
+}
 
 func TestRuntimeV5AcceptsExplicitAllApplicationsAndRejectsPreviousABI(t *testing.T) {
 	encoded := strings.Replace(envelope(), `"applicationIds":["com.huawei.hmos.browser"]`, `"applicationScope":"all","applicationIds":[]`, 1)
@@ -26,11 +43,22 @@ func TestRuntimeV5AcceptsExplicitAllApplicationsAndRejectsPreviousABI(t *testing
 }
 
 func envelope() string {
-	return fmt.Sprintf(`{"contractVersion":5,"operationId":"start:1","generation":2,"networkGeneration":0,"transferId":"7","inputRevision":"fixed-v1","inputDigest":"sha256:%x","runtimeOptions":{"entry":"system-vpn","transport":"tcp","dns":false,"ipv6":false,"udp":false,"explicitListeners":false,"resourceDownloads":false},"platformPolicy":{"revision":"browser-v1","addressFamily":"ipv4","applicationIds":["com.huawei.hmos.browser"]},"tunPolicy":{"address":"10.111.0.1","prefixLength":30,"route":"0.0.0.0","routePrefixLength":0,"mtu":1500}}`, sha256.Sum256(sample))
+	platform := contract.Platform{RuntimeOptions: R.RuntimeOptions{Entry: "system-vpn", Transport: "tcp-udp", UDP: true}, PlatformPolicy: R.PlatformPolicy{Revision: "browser-v1", AddressFamily: "ipv4", ApplicationIDs: []string{"com.huawei.hmos.browser"}}, TunPolicy: R.TunPolicy{Address: "10.111.0.1", PrefixLength: 30, Route: "0.0.0.0", MTU: 1500}}
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(sample))
+	prepared, err := contract.Seal(digest, nil, platform, nil)
+	if err != nil {
+		panic(err)
+	}
+	request := R.StartRequest{ContractVersion: 5, OperationID: "start:1", Generation: 2, NetworkGeneration: 17, TransferID: "7", InputRevision: "policy-v1", InputDigest: digest, RuntimeOptions: platform.RuntimeOptions, PlatformPolicy: platform.PlatformPolicy, TunPolicy: platform.TunPolicy, PreparedPolicy: &prepared}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func TestRuntimeV5CarriesNetworkEpochAndOneMiBInputBudget(t *testing.T) {
-	request := strings.Replace(envelope(), `"networkGeneration":0`, `"networkGeneration":21`, 1)
+	request := strings.Replace(envelope(), `"networkGeneration":17`, `"networkGeneration":21`, 1)
 	decoded, err := R.DecodeStart(2, 7, sample, []byte(request))
 	if err != nil || decoded.NetworkGeneration != 21 || R.MaxInputBytes != 1024*1024 {
 		t.Fatal("runtime v5 must preserve the actual submitted path identity and input budget")
@@ -56,8 +84,9 @@ func TestDecodeStartRejectsAmbiguousOrUnsupportedJSON(t *testing.T) {
 		"nested duplicate":    strings.Replace(envelope(), `"dns":false`, `"dns":false,"dns":false`, 1),
 		"unknown":             strings.Replace(envelope(), `"contractVersion":5`, `"extra":0,"contractVersion":5`, 1),
 		"old version":         strings.Replace(envelope(), `"contractVersion":5`, `"contractVersion":1`, 1),
-		"missing network":     strings.Replace(envelope(), `"networkGeneration":0,`, ``, 1),
-		"unsafe network":      strings.Replace(envelope(), `"networkGeneration":0`, `"networkGeneration":9007199254740992`, 1),
+		"missing network":     strings.Replace(envelope(), `"networkGeneration":17,`, ``, 1),
+		"zero network":        strings.Replace(envelope(), `"networkGeneration":17`, `"networkGeneration":0`, 1),
+		"unsafe network":      strings.Replace(envelope(), `"networkGeneration":17`, `"networkGeneration":9007199254740992`, 1),
 		"missing false":       strings.Replace(envelope(), `"dns":false,`, "", 1),
 		"trailing":            envelope() + ` {}`,
 		"zero transfer":       strings.Replace(envelope(), `"transferId":"7"`, `"transferId":"0"`, 1),

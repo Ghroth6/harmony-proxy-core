@@ -16,7 +16,6 @@ import (
 	"github.com/metacubex/mihomo/component/platformnetwork"
 	"github.com/metacubex/mihomo/mobile/network"
 	"github.com/metacubex/mihomo/mobile/protection"
-	R "github.com/metacubex/mihomo/mobile/runtime"
 	D "github.com/miekg/dns"
 )
 
@@ -25,12 +24,9 @@ func runtimeSnapshot(generation uint64, dns []string) []byte {
 	return []byte(fmt.Sprintf(`{"schemaVersion":1,"generation":%d,"networkId":17,"vpn":false,"online":true,"dns":%s,"interfaces":[{"name":"synthetic0","mtu":1500,"up":true,"addresses":["192.0.2.10/24"],"routes":[{"destination":"0.0.0.0/0","gateway":"192.0.2.1"}]}]}`, generation, addresses))
 }
 
-func nodeNetworkRequest(input []byte, generation, networkGeneration uint64) []byte {
-	var request map[string]any
-	_ = json.Unmarshal(trojanEnvelope(input, generation), &request)
-	request["networkGeneration"] = networkGeneration
-	encoded, _ := json.Marshal(request)
-	return encoded
+func nodeNetworkRequest(t *testing.T, input []byte, generation, networkGeneration uint64) []byte {
+	t.Helper()
+	return clientPolicyRequest(t, input, generation, networkGeneration, false, true)
 }
 
 func TestRuntimeDomainUsesAcceptedSnapshotProtectedDNSAndRealTLSBeforeJoinedStop(t *testing.T) {
@@ -61,7 +57,7 @@ func TestRuntimeDomainUsesAcceptedSnapshotProtectedDNSAndRealTLSBeforeJoinedStop
 	generation := nextGeneration()
 	register(generation, func(uint64, uint64, uintptr) int32 { protects.Add(1); return protection.Success })
 	system := newPacketDescriptors()
-	manager := R.NewManager(system, &productionGate)
+	manager := newNodePolicyManager(t, system, generation)
 	t.Cleanup(func() { assertTrojanStopped(t, manager, generation, system) })
 	controller := network.NewController(manager.NetworkBusy)
 	previous, _ := platformnetwork.Current()
@@ -71,7 +67,7 @@ func TestRuntimeDomainUsesAcceptedSnapshotProtectedDNSAndRealTLSBeforeJoinedStop
 		t.Fatal("real snapshot submission failed")
 	}
 	input := bytes.Replace(trojanBytes(peer), []byte("server: 127.0.0.1"), []byte("server: proxy.example"), 1)
-	started := manager.Start(manager.Consume(generation, 1, 9), input, nodeNetworkRequest(input, generation, networkGeneration))
+	started := manager.Start(manager.Consume(generation, 1, 9), input, nodeNetworkRequest(t, input, generation, networkGeneration))
 	if started.Outcome != "running" || started.NetworkGeneration != networkGeneration || !manager.NetworkBusy() || queries.Load() != 0 || protects.Load() != 0 {
 		t.Fatal("runtime must accept the actual epoch without preparation DNS/dials")
 	}
@@ -120,7 +116,7 @@ func TestRuntimeNetworkEpochAndDomainDNSErrorsAreNotReceiptEchoes(t *testing.T) 
 		requested uint64
 		code      string
 	}{
-		{0, "NETWORK_GENERATION_MISMATCH"},
+		{0, "REQUEST_IDENTITY"},
 		{networkGeneration + 1, "NETWORK_GENERATION_MISMATCH"},
 		{networkGeneration, "NETWORK_DNS_UNAVAILABLE"},
 	} {
@@ -130,12 +126,17 @@ func TestRuntimeNetworkEpochAndDomainDNSErrorsAreNotReceiptEchoes(t *testing.T) 
 			return protection.Success
 		})
 		system := newPacketDescriptors()
-		manager := R.NewManager(system, &productionGate)
-		started := manager.Start(manager.Consume(generation, 1, 9), input, nodeNetworkRequest(input, generation, check.requested))
-		if started.Outcome != "failed" || started.FailureCode != check.code || started.NetworkGeneration != 0 || peer.accepted.Load() != 0 {
+		manager := newNodePolicyManager(t, system, generation)
+		started := manager.Start(manager.Consume(generation, 1, 9), input, nodeNetworkRequest(t, input, generation, check.requested))
+		outcome := "failed"
+		if check.requested == 0 {
+			outcome = "rejected"
+		}
+		if started.Outcome != outcome || started.FailureCode != check.code || started.NetworkGeneration != 0 || peer.accepted.Load() != 0 {
 			t.Fatalf("unaccepted epoch cannot be echoed as actual runtime evidence: %+v", started)
 		}
 		joined := manager.Stop(generation)
+		productionGate.Unregister(generation)
 		if joined.Cleanup != "complete" || joined.NetworkGeneration != 0 || system.closes[9] != 1 {
 			t.Fatal("rejected network epoch did not join descriptor cleanup")
 		}

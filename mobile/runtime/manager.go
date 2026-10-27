@@ -50,7 +50,7 @@ func NewManager(system DescriptorSystem, gate ...*protection.Gate) *Manager {
 }
 
 // NewManagerWithPolicy binds the already opened application-owned resource
-// root. No root/path comes from a Start request, and node callers remain valid.
+// root for every runtime input. No root/path comes from a Start request.
 func NewManagerWithPolicy(system DescriptorSystem, gate *protection.Gate, owner *policy.Engine) *Manager {
 	m := NewManager(system, gate)
 	m.policy = owner
@@ -286,9 +286,6 @@ func (m *Manager) Start(t *Transfer, input, request []byte) Receipt {
 	}
 	t.startAdmitted = true
 	t.receipt.OperationID = target.OperationID
-	if target.PreparedPolicy == nil {
-		t.receipt.CandidateDigest = target.InputDigest
-	}
 	t.receipt.Phase = "validating"
 	t.mu.Unlock()
 	bytes := append([]byte{}, input...)

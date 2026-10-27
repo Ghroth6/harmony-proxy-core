@@ -39,12 +39,12 @@ func TestActualRuntimeReceiptsKeepAllIdentityFieldsOnWire(t *testing.T) {
 
 	generation := nextGeneration()
 	register(generation, func(uint64, uint64, uintptr) int32 { return protection.Success })
-	manager := R.NewManager(newPacketDescriptors(), &productionGate)
+	manager := newNodeManager(t, newPacketDescriptors(), generation)
 	t.Cleanup(func() { manager.Stop(generation) })
 	check("absent-query", manager.Query(generation, 1))
 	check("absent-stop", manager.Stop(generation))
-	started := manager.Start(manager.Consume(generation, 1, 9), fixed, fixedRequest(generation, 1))
-	if started.Outcome != "running" || !started.ForwardingActive || started.InputDigest == "" || started.PlatformPolicyDigest == "" || started.ResourceManifestDigest != "" || started.GroupPreferencesDigest != "" {
+	started := manager.Start(manager.Consume(generation, 1, 9), fixed, preparedNodeRequest(t, fixed, generation))
+	if started.Outcome != "running" || !started.ForwardingActive || started.InputDigest == "" || started.PlatformPolicyDigest == "" || started.ResourceManifestDigest == "" || started.GroupPreferencesDigest == "" {
 		t.Fatalf("actual selected-node candidate did not establish its distinct identity: %+v", started)
 	}
 	check("selected-node-start", started)

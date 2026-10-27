@@ -45,10 +45,10 @@ TFO/MPTCP options. Runtime physical dials borrow the accepted generation and
 candidate bootstrap resolver; no global tunnel is borrowed for chain lookup.
 Standalone node inspection cannot traverse an already published chain. Adapter
 resources are discarded and joined; preparation network attempts are rejected.
-Selected-node select/MATCH composition remains an explicit local policy, separate
-from full original policy. Current selected candidates always use the real
-constructor. Historical static validation only determines older coverage labels;
-its narrower protocol/field checks never reject a current selected candidate.
+Selected-node select/MATCH composition remains an explicit local policy. Both
+composed nodes and full original YAML use the same prepared-policy runtime.
+The independent manual static validator still constructs its own temporary
+selected candidate; historical checks only determine its older coverage labels.
 Coverage classification reads the original values without constructing another
 candidate. Policy validation also reuses its verified plan's adaptations, so a
 second construction or cleanup cannot be hidden after a successful result.
@@ -102,9 +102,9 @@ No public DNS fallback is installed when platform DNS is unavailable.
 
 Runtime contract 5 retains the existing `_v1` C symbol names while explicitly
 rejecting contract-1/2/3/4 requests. Required top-level `networkGeneration` is separate
-from persistent platform policy. New node scope requires the current online
+from persistent platform policy. Every runtime input requires the current online
 snapshot and available DNS for domain nodes; the receipt records only the
-actually accepted generation. Old fixed-IP scope may use zero. Protected physical
+actually accepted positive generation. Protected physical
 SystemResolver DNS and QUIC packet sockets are independent of client TUN UDP/DNS.
 
 Public host evidence includes real core inspection → selected composition →
@@ -113,9 +113,9 @@ identities, actual snapshot cancellation/join, protected local DNS → real Troj
 TLS/authentication/traffic → normal-stop cleanup, and protected real QUIC TLS.
 These isolated fixtures do not prove external node availability, ordinary OHOS
 package integration, browser/TUN traffic or target platform protection.
-Full original YAML policy is being implemented through the separate boundary
-below. The node checkpoint does not complete #25 or original-policy fresh-process
-zero-download #26.
+The policy boundary below serves both full original YAML and composed nodes.
+The historical node checkpoint does not establish current full-policy or
+fresh-process acceptance.
 
 ## Mobile runtime contract
 
@@ -129,7 +129,7 @@ acceptance. Resolve all runtime symbols and the contract version before dup.
 
 The start request contains exactly `contractVersion:5`, `operationId`, `generation`, `networkGeneration`,
 `transferId`, `inputRevision`, `inputDigest`, `runtimeOptions`, `platformPolicy`,
-and `tunPolicy`, with optional `preparedPolicy` for original-source policy.
+`tunPolicy`, and mandatory `preparedPolicy` for every runtime input.
 Generation is a JSON integer 1..INT32_MAX and matches the scalar
 C argument. `transferId` is a canonical positive decimal string matching the
 independent uint64 C argument; the native adapter allocates strictly increasing
@@ -137,19 +137,24 @@ IDs. Input digest is `sha256:` plus 64 lowercase hex digits for the exact bytes.
 Operation/input/policy revision identifiers are `[A-Za-z0-9:_-]`, 1..128 bytes.
 Duplicate, unknown, missing, null or trailing JSON fields are rejected.
 
-Node-base `runtimeOptions` has exactly `entry:"system-vpn"`, `transport:"tcp"`, and false
-`dns`, `ipv6`, `udp`, `explicitListeners`, `resourceDownloads`. `platformPolicy`
-has `revision`, `addressFamily:"ipv4"`, and `applicationIds`, plus the optional
-`applicationScope` defined below. Legacy/include lists have 1..16 distinct valid
-bundle IDs, each <=128 bytes; explicit all has an empty list. The independent immutable `tunPolicy` is exactly
+Every input keeps its independently sealed resources, platform and group
+preferences in `preparedPolicy`. `runtimeOptions` uses `entry:"system-vpn"`,
+`transport:"tcp-udp"`, `udp:true` and `explicitListeners:false`; DNS and IPv6
+follow the actual prepared configuration. The current select/MATCH node base
+omits both settings, preserving Mihomo defaults `IPv6=true`, `DNS.Enable=false`.
+Client UDP ingress does not grant UDP support to a TCP-only physical node.
+`platformPolicy` has `revision`, `addressFamily`, `applicationIds`, and the optional
+`applicationScope` below. Legacy/include lists have 1..16 distinct valid bundle
+IDs, each <=128 bytes; explicit all has an empty list. The IPv4 `tunPolicy` uses
 `{address:"10.111.0.1",prefixLength:30,route:"0.0.0.0",routePrefixLength:0,mtu:1500}`.
-Original-source policy keeps its independently sealed resources, platform and
-group preferences in `preparedPolicy`. Its transport is `tcp-udp`; DNS and IPv6
-follow the actual prepared source. Enabled IPv6 adds `fd00:111::1/126` and `::/0`
+Enabled IPv6 adds `fd00:111::1/126` and `::/0`
 and sets address family `dual`. Enabled DNS uses `10.111.0.2`, plus
 `fd00:111::2` with dual ingress; this does not override original DNS AAAA policy.
 `resourceDownloads` follows the declared runnable provider intervals and never
 authorizes initial resource acquisition during preparation or Start.
+`networkGeneration` must be positive and match the actual accepted online
+snapshot for every Start. The old fixed-node zero-generation bypass is retired;
+even literal-IPv4 nodes require observation of the real underlying network.
 Input and request UTF-8 JSON are each <=1 MiB; receipt <=1 MiB.
 Packet queue size is 128, MTU 1500 and transfer record capacity 64. The transient
 TCP handshake backlog is 1024, matching pinned sing-tun v0.4.27's gVisor
@@ -177,12 +182,11 @@ has been decoded; absence does not fabricate a request identity.
 `coreInstance` is process-owned, fixed within one Go process and different in a
 new process. Identity fields remain strings in every receipt, including absent,
 failed, stopped and selected-node runs; an unavailable identity is an empty
-string, never an omitted field or fabricated digest. Selected-node runs bind
-their actual input and platform digests while resource and preference digests
-remain empty. Accepted original-source receipts bind all four actual digests;
+string, never an omitted field or fabricated digest. Every accepted runtime,
+including resource-free composed nodes, binds all four actual digests;
 they never substitute the raw digest for the composed candidate identity.
-`stack` retains its legacy wire label; original-policy
-capability follows the accepted immutable runtime options and prepared context.
+Before construction `stack` retains its legacy placeholder; accepted runtime
+reports `gvisor-ipv4-tcp-udp` or `gvisor-dual-tcp-udp` from its actual packet stack.
 An absent specific transfer is unknown, never replaced with
 the last run. Duplicate ID or record-capacity faults are retained and block
 new runs, even if a separate rejected descriptor close succeeds. At most 64
@@ -200,7 +204,7 @@ only a negative fd or explicit EBADF establishes no supplied descriptor.
 `afterClose` is not-observed/not-visible/metadata-same/metadata-different/unknown.
 Each resource has `kind`, `state` (unacquired/acquired/closing/closed/unknown),
 and `closeResult`. Resource kinds are candidate, forwarding, wake-read, wake-write,
-packet-stack and tun, plus policy-services for original-source runs; an unexpected
+packet-stack, tun and policy-services; an unexpected
 constructor panic retains construction/unknown.
 `pendingOwners` reports actual owned work for `pumps`, `tcpCallbacks`,
 `constructions`, `forwarding`; original-source snapshots also observe
@@ -317,6 +321,9 @@ records source/lock hashes, tool version, arguments and results. It runs real
 gVisor SYN/handshake/cancellation and real Mihomo candidate/dialer/retirement
 behavior through an injected descriptor syscall boundary, plus the affected
 validation, protection, forwarding, tunnel, config, executor and statistics regressions.
+The same standard entry includes `mobile/policy` and `mobile/policy/contract`,
+including production-shaped node composition, original-policy preparation and
+strict prepared identities.
 It does not use a race detector or execute real Linux/OHOS descriptor syscalls.
 Build actual OHOS bytes with `scripts/build-mobile.ps1`. Its optional
 `-Architecture arm64-v8a|x86_64` keeps ARM64 as the default and records the Go
@@ -360,17 +367,16 @@ then callbacks/forwarding before Stack.Wait and fd close. Caller timeout leaves
 the worker and ownership intact. Every independent safe close and candidate
 retirement starts even if another close remains pending or fails.
 
-`config.BuildMobileFixedCandidate` constructs fresh owned resources only after
-the exact input's independent fixed-coverage validation, and independently gates
-the single SS/aes-128-gcm or Trojan/TCP/TLS/SNI transport and fixed select/MATCH
-shape even for direct callers. It carries partial
-resources back on failure. `executor.PublishMobileFixed` transfers only static
-proxies/rules and explicit IPv4/process/sniffer settings, without entering the
-generic DNS/listener/provider-init/profile/updater application path. Entry
-activation is separate; unpublished candidates use Discard and published ones
-use RetireConfig. Every forwarded root carries the fixed protection generation.
-Binding an unmarked caller inherits its cancellation and keeps that fixed scope's
-policy values. Failed proxy dialing closes and joins its background peek reader
+Every Start independently validates `preparedPolicy` and builds fresh owned
+resources through `mobile/policy.Engine.BuildCandidate`. Static validation's
+M1b/V2 labels never select a runtime implementation. `executor.PublishMobilePolicy`
+transfers the prepared graph, DNS, hosts, sniffer and general semantics without
+entering the daemon listener/provider-init path. Explicit activation follows
+the accepted network snapshot and protection gate. Unpublished candidates use
+Discard; published ones use RetireConfig. Every forwarded root carries its
+accepted protection generation and candidate-local policy routing.
+Binding an unmarked caller inherits cancellation and that run's policy values.
+Failed proxy dialing closes and joins its background peek reader
 before releasing the forwarding lease, as does successful relay completion.
 Unknown closes block a new run. Run-only Query(g,0), matched to the actual current
 operation/generation/transfer, with terminal failed/stopped, nonpending cleanup,
@@ -421,8 +427,8 @@ their own relevant validation.
 The application design, section 15, defines the product-facing responsibilities.
 This section owns the core's internal structure. Existing code below is evidence
 of implementation, not evidence that the new application's VPN path works.
-The fixed M1b P3 implementation and runtime exports are documented above and
-preserve the accepted M1a validation ABI. Broader runtime responsibilities below
+The common prepared-policy runtime and exports are documented above and
+preserve the independent manual validation ABI. Broader runtime responsibilities below
 remain outside this increment unless their own implementation and evidence are
 identified explicitly.
 
@@ -444,7 +450,7 @@ This operation owns no active configuration, provider scheduler, listener or VPN
 An unsupported input is incomplete rather than validated by a shallower fallback.
 The temporary resource set cannot escape as a runnable candidate. Runtime setup
 must construct and own its own resources; it must not reuse discarded validation
-objects. M1b must first extend real checks for any additional required fields.
+objects. Runtime preparation and independent construction use `mobile/policy`.
 
 Module tests exercise `Validate` and the semantic/resource interfaces, including
 invalid references, unsupported fields and construction/cleanup failures. C
@@ -485,7 +491,7 @@ event unsubscribe does not necessarily wait for an already selected callback.
 A new runtime export must bridge those differences explicitly instead of assuming
 that calling the existing functions in sequence establishes a safe lifecycle.
 
-### M1b contract and independent verification
+### Runtime contract and independent verification
 
 The application's `docs/design/contracts/vpn-runtime.md` defines runtime ownership
 and cross-boundary TUN consumption, socket protection and cleanup semantics.
@@ -502,9 +508,9 @@ alone cannot become a mobile TUN-ready receipt. Preserve the existing static
 validation boundary and management/forwarding separation while adding the
 narrow runtime operation.
 
-The fixed runtime ABI/value contract, transfer ledger, candidate identity,
+The runtime ABI/value contract, transfer ledger, candidate identity,
 protection marker, constructor barriers and joined cleanup above implement the
-minimal M1b carrier. Broader configuration and entry capabilities need their own
+common mobile carrier. Broader configuration and entry capabilities need their own
 ownership and verification before extending it. The P2 protection boundary below
 remains an independent capability; registration alone does not start a TUN or
 forwarding runtime.
@@ -519,78 +525,35 @@ when those lifetimes are connected, not inferred from separate names.
 Host tests can establish engine behavior and adapter contracts. Real callback
 threading, descriptor ownership and platform destruction need target-platform
 integration; the complete phone-to-proxy-to-target request and subsequent stop
-remain the application M1b/M1c acceptance. Record each reused patch's purpose,
+remain application acceptance. Record each reused patch's purpose,
 affected path and evidence; neither a design table nor an old host test approves
 the entire historical patch set.
 
-### Fixed M1b configuration coverage
+### Independent manual static validation
 
-The unchanged ABI 1 validation operation appends `m1b-fixed-ipv4-tcp`
-only after original-field scope, real constructor/reference checks and resource
-cleanup succeed. The fixed family allows one IPv4 SS/aes-128-gcm or
-SS/chacha20-ietf-poly1305 node, or one
-IPv4 Trojan/TCP node with TLS and explicit DNS-hostname SNI, each with a nonempty
-password and UDP absent/false; one select containing exactly that node; and
-exactly MATCH to that group without a DIRECT fallback. SS retains its broader
-M1a AES static scope, including DOMAIN rules, while ChaCha and Trojan are accepted only in this
-single fixed shape. `mobile/validation/runtime_scope.go` checks decoded content;
-original-field gating still rejects every additional configuration key. The
-runtime token never means runtime defaults, platform policy, authorization,
-socket protection, reachability or resource setup have been checked. Generic
-M1a pass remains available without this token. No new global configuration,
-listener or download path was introduced.
+The unchanged validation ABI 1 (`cb_validate_v1` / `mobile/validation.Validate`)
+remains available for an explicit manual static check. Selected select/MATCH
+inputs use `config.ValidateMobileSelected` → `BuildMobileSelectedCandidate` and
+discard their temporary real upstream adapters before returning. The constructor
+has no runtime caller. Other supported static shapes use `ValidateMobileStatic`.
+Neither operation owns a prepared-policy context or authorizes Start.
 
-The added ChaCha scope emits `static-ss-chacha20-ietf-poly1305`, never the AES
-marker. The original YAML gate, real static validation and independent runtime
-constructor each keep the one-node IPv4/TCP/select/MATCH restriction; plugins,
-DNS endpoints, UDP, other ciphers and multi-node shapes remain unsupported.
-Construction reuses Mihomo's existing Shadowsocks implementation. Application
-subscription recognition, full entry preview, separate local base and selection
-identity remain in the coordinating application repository. Only its exact
-composed bytes and existing ABI identity fields enter this core.
+Historical `m1b-fixed-ipv4-tcp` and `mobile-proxy-ipv4-tcp-v2` labels remain only
+as ABI 1 static coverage descriptions. Narrow legacy checks classify those labels;
+they never reject an otherwise supported selected static candidate and never
+control runtime defaults, preparation, network observation or socket protection.
+The real node constructor retains upstream protocol, scalar and TLS semantics;
+explicit integration gaps remain incomplete. The existing validation tests keep
+this independent user capability and its truthful coverage boundaries.
 
-`TestSelectedChaChaNodeGetsItsOwnRealCoverage` checks real construction and the
-accurate protocol marker; `TestSelectedChaChaScopeDoesNotCoverOtherCiphersOrConfigurationShapes`
-checks the added scope stays narrow. The `with_gvisor` runtime test starts the
-real fixed mobile engine and normally stops it with injected descriptor syscalls.
-These host checks perform no live proxy request and do not prove target-device
-protection, a remote node, or normal target TUN cleanup.
-
-Trojan original fields are exactly `name/type/server/port/password/sni` and
-optional `udp:false`, `network:tcp`, and boolean `skip-cert-verify`. Defaults for the
-three optional fields are allowed. Name/server/password/SNI are strings; port is
-an integer 1..65535. Server is explicit IPv4, excluding unspecified/multicast.
-SNI is an explicit ASCII DNS hostname (1..253 bytes, labels 1..63 with ASCII
-letters/digits and internal hyphens), excluding IP literals, wildcard names,
-empty labels, trailing dot, whitespace/control characters and implicit server
-fallback. SNI supplies TLS ServerName, never the TCP dial/lookup address.
-Absent/false retains normal certificate chain, hostname and validity checks. Only an explicitly supplied boolean true skips certificate verification; SNI remains the original TLS handshake routing name. A normal failure never changes this flag. Unknown
-keys, alternate certificate verification, client keys,
-dialer chains, interface/mark, custom ALPN/fingerprint, ECH/Reality/wrappers,
-WS/gRPC, DNS dial addresses, UDP, IPv6 and extra listeners remain outside scope.
-SS does not gain Trojan fields; Trojan does not accept `cipher`. Type selection
-precedes original field gating, so field order cannot switch whitelists.
-
-Trojan success emits `static-trojan-tcp-tls-sni` instead of
-`static-ss-aes-128-gcm`; the shared fixed family token remains
-`m1b-fixed-ipv4-tcp`. The receipt additionally carries exactly one policy marker: `trojan-tls-cert-policy-normal` for absent/false, or `trojan-tls-cert-policy-explicit-skip` for explicit true. These markers state input policy and never certify a peer identity. Static construction performs no TLS authentication or
-reachability test. Invalid/missing SNI and wrong scalar types are `invalid` with
-`PROXY_INVALID`; explicitly disallowed capabilities or a nonfixed Trojan shape
-are `incomplete`. Diagnostics report safe field names, never secret values.
-
-`runtime_scope_test.go` verifies this narrower coverage and real classification
-of broken YAML, invalid references, missing resources and unsupported capability.
-The actual phone app must use the new core artifact and preparation assembly;
-backend-only test success does not complete clashbox-meta #13 or #11.
-The runtime test entry also selects `trojan_runtime_test.go`: real isolated host
-TLS peer, physical IPv4 dial/generation protection, normal chain/name/expiry
-rejection, explicit-true mismatched-certificate traffic with unchanged SNI, absent/false refusal without downgrade, typed raw-input/digest rechecks, password/TCP header and bidirectional bytes, real select/MATCH
-observations, handshake timeout and Stop joining physical sockets/owners. The
-peer uses a temporary test CA with serial, restored CA state; production defaults
-are unchanged. Forwarding byte tests enter the public bound forwarding tunnel
-after real Start, while existing packet tests cover gVisor ingress. These host
-fixtures never establish that the existing external node is usable under normal
-TLS on the phone, or that browser-to-TUN forwarding and platform cleanup passed.
+`node_policy_runtime_test.go` exercises public inspection → production-shaped
+composition → Plan/Seal/Validate/BuildCandidate → Start/Stop with real policy,
+upstream defaults, independent candidate ownership and joined resources. Existing
+Trojan runtime tests use that same prepared-policy path with real isolated TLS,
+normal certificate/name/expiry rejection, explicit skip policy, authenticated
+traffic, failed protection and cancellation. Packet/UDP/DNS/IPv6 tests exercise
+actual gVisor ingress. These host checks do not establish target VPN forwarding,
+external reachability or phone cleanup.
 
 ### Safe mobile system logging
 
@@ -777,7 +740,7 @@ overrides retain their original semantics. Sniffer resource dependencies enter
 the fixed Plan closure; preparation neither starts a dispatcher nor fetches a
 resource. Publication installs it for the actual owned TCP handler and UDP/NAT
 sender. Their cancellation and join also retire pending sniff reads and QUIC
-senders. Fixed selected-node publication continues to disable sniffing.
+senders. Composed node policies follow the same configured sniffer semantics.
 
 `profile.store-fake-ip` uses `component/fakeip.ScopedPersistence`, not the daemon
 cachefile singleton. It borrows the Engine's captured root at the fixed path

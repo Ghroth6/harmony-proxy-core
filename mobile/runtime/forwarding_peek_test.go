@@ -55,7 +55,7 @@ func TestFailedActualProxyDialRetainsPeekReaderUntilItReturns(t *testing.T) {
 		return protection.PlatformFailure
 	})
 	system := newPacketDescriptors()
-	manager := R.NewManager(system, &productionGate)
+	manager := newNodeManager(t, system, generation)
 	var releaseOnce sync.Once
 	t.Cleanup(func() {
 		releaseOnce.Do(func() { close(conn.release) })
@@ -63,7 +63,7 @@ func TestFailedActualProxyDialRetainsPeekReaderUntilItReturns(t *testing.T) {
 			t.Errorf("real runtime cleanup: %+v", result)
 		}
 	})
-	if result := manager.Start(manager.Consume(generation, 1, 9), fixed, fixedRequest(generation, 1)); result.Outcome != "running" {
+	if result := manager.Start(manager.Consume(generation, 1, 9), fixed, preparedNodeRequest(t, fixed, generation)); result.Outcome != "running" {
 		t.Fatalf("real candidate/start: %+v", result)
 	}
 	bound, err := tunnel.BoundForwardingTunnel(generation)

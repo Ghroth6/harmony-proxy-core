@@ -23,7 +23,6 @@ import (
 	"github.com/metacubex/mihomo/mobile/network"
 	policycontract "github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/mobile/protection"
-	"github.com/metacubex/mihomo/mobile/validation"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
 )
@@ -47,7 +46,6 @@ type runEngine struct {
 	udp                 *udpBook
 	dns                 *dnsBook
 	options             RuntimeOptions
-	sourcePolicy        bool
 	bound               C.Tunnel
 	root                context.Context
 	wakeRead, wakeWrite *descriptorOwner
@@ -117,56 +115,29 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 			t.stop()
 		}
 	}()
-	sourcePolicy := target.PreparedPolicy != nil
 	platform, err := policycontract.CanonicalJSON(policycontract.Platform{RuntimeOptions: target.RuntimeOptions, PlatformPolicy: target.PlatformPolicy, TunPolicy: target.TunPolicy})
 	if err != nil {
 		t.failure("CANDIDATE_RECHECK")
 		return
 	}
 	platformDigest := policycontract.Digest(platform)
-	covered := false
-	extended := false
-	if sourcePolicy {
-		if t.manager.policy == nil {
-			t.failure("POLICY_RUNTIME_NOT_READY")
-			return
+	if t.manager.policy == nil || target.PreparedPolicy == nil {
+		t.failure("POLICY_RUNTIME_NOT_READY")
+		return
+	}
+	prepared := target.PreparedPolicy
+	if policycontract.Digest(input) != target.InputDigest || target.InputDigest != prepared.InputDigest || platformDigest != prepared.PlatformPolicyDigest {
+		t.failure("POLICY_IDENTITY_INVALID")
+		return
+	}
+	validated := t.manager.policy.Validate(target.OperationID, input, *prepared)
+	if validated.Category != "pass" || validated.InputDigest != target.InputDigest || validated.CandidateDigest != prepared.CandidateDigest {
+		code := validated.Code
+		if code == "" || !safeID.MatchString(code) {
+			code = "CANDIDATE_RECHECK"
 		}
-		prepared := target.PreparedPolicy
-		if policycontract.Digest(input) != target.InputDigest || target.InputDigest != prepared.InputDigest || platformDigest != prepared.PlatformPolicyDigest {
-			t.failure("POLICY_IDENTITY_INVALID")
-			return
-		}
-		validated := t.manager.policy.Validate(target.OperationID, input, *prepared)
-		expectedScope := "original-source-policy-ipv4-v1"
-		if target.RuntimeOptions.IPv6 {
-			expectedScope = "original-source-policy-dual-v1"
-		}
-		for _, coverage := range validated.Covered {
-			covered = covered || coverage == expectedScope
-		}
-		if validated.Category != "pass" || validated.InputDigest != target.InputDigest || validated.CandidateDigest != prepared.CandidateDigest || !covered {
-			code := validated.Code
-			if code == "" || !safeID.MatchString(code) {
-				code = "CANDIDATE_RECHECK"
-			}
-			t.failure(code)
-			return
-		}
-	} else {
-		validationReceipt := validation.Validate(target.OperationID, input)
-		for _, coverage := range validationReceipt.Covered {
-			if coverage == "m1b-fixed-ipv4-tcp" {
-				covered = true
-			}
-			if coverage == "mobile-proxy-ipv4-tcp-v2" {
-				covered = true
-				extended = true
-			}
-		}
-		if validationReceipt.Category != "pass" || validationReceipt.InputDigest != target.InputDigest || !covered {
-			t.failure("CANDIDATE_RECHECK")
-			return
-		}
+		t.failure(code)
+		return
 	}
 	if t.ctx.Err() != nil {
 		return
@@ -177,30 +148,22 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.failure("CANDIDATE_FORMAT")
 		return
 	}
-	if sourcePolicy || extended || target.NetworkGeneration != 0 {
-		needsDNS := sourcePolicy && raw.DNS.Enable
-		for _, node := range raw.Proxy {
-			server, _ := node["server"].(string)
-			if _, err := netip.ParseAddr(server); err != nil {
-				needsDNS = true
-			}
+	needsDNS := raw.DNS.Enable
+	for _, node := range raw.Proxy {
+		server, _ := node["server"].(string)
+		if _, err := netip.ParseAddr(server); err != nil {
+			needsDNS = true
 		}
-		accepted, code := network.Accepted(target.NetworkGeneration, needsDNS)
-		if code != "" {
-			t.failure(code)
-			return
-		}
-		t.mu.Lock()
-		t.receipt.NetworkGeneration = accepted
-		t.mu.Unlock()
 	}
-	if sourcePolicy {
-		engine.cfg, err = t.manager.policy.BuildCandidate(input, *target.PreparedPolicy)
-	} else if extended {
-		engine.cfg, err = config.BuildMobileSelectedCandidate(raw)
-	} else {
-		engine.cfg, err = config.BuildMobileFixedCandidate(raw)
+	accepted, code := network.Accepted(target.NetworkGeneration, needsDNS)
+	if code != "" {
+		t.failure(code)
+		return
 	}
+	t.mu.Lock()
+	t.receipt.NetworkGeneration = accepted
+	t.mu.Unlock()
+	engine.cfg, err = t.manager.policy.BuildCandidate(input, *prepared)
 	if engine.cfg != nil {
 		t.resource("candidate", "acquired", -1)
 	}
@@ -208,9 +171,7 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.failure("CANDIDATE_CONSTRUCT")
 		return
 	}
-	if sourcePolicy {
-		engine.cfg.BindMobilePolicyFailure(t.failure)
-	}
+	engine.cfg.BindMobilePolicyFailure(t.failure)
 	if t.ctx.Err() != nil {
 		return
 	}
@@ -218,10 +179,7 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.failure("PROTECTION_NOT_READY")
 		return
 	}
-	engine.root = protection.WithGeneration(t.ctx, target.Generation)
-	if sourcePolicy {
-		engine.root = tunnel.WithMobilePolicyRouting(engine.root)
-	}
+	engine.root = tunnel.WithMobilePolicyRouting(protection.WithGeneration(t.ctx, target.Generation))
 	tunnel.EnableForwardingLifecycle()
 	if err = tunnel.PrepareForwarding(engine.root, target.Generation); err != nil {
 		t.failure("FORWARDING_PREPARE")
@@ -266,11 +224,7 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.failure("CANDIDATE_NETWORK_ACTIVATE")
 		return
 	}
-	if sourcePolicy {
-		err = executor.PublishMobilePolicy(t.ctx, engine.cfg)
-	} else {
-		err = executor.PublishMobileFixed(t.ctx, engine.cfg)
-	}
+	err = executor.PublishMobilePolicy(t.ctx, engine.cfg)
 	if err != nil {
 		t.failure("CANDIDATE_PUBLISH")
 		return
@@ -278,11 +232,9 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 	engine.published = true
 	t.mu.Lock()
 	t.receipt.InputDigest, t.receipt.PlatformPolicyDigest = target.InputDigest, platformDigest
-	if sourcePolicy {
-		t.receipt.CandidateDigest = target.PreparedPolicy.CandidateDigest
-		t.receipt.ResourceManifestDigest = target.PreparedPolicy.ResourceManifestDigest
-		t.receipt.GroupPreferencesDigest = target.PreparedPolicy.GroupPreferencesDigest
-	}
+	t.receipt.CandidateDigest = prepared.CandidateDigest
+	t.receipt.ResourceManifestDigest = prepared.ResourceManifestDigest
+	t.receipt.GroupPreferencesDigest = prepared.GroupPreferencesDigest
 	t.mu.Unlock()
 	engine.observationCancel = statistic.DefaultManager.SubscribeConnections(engine.observeConnection)
 	t.phase("starting")
@@ -292,13 +244,9 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		return
 	}
 	if err = tunnel.ActivateForwarding(target.Generation); err == nil {
-		if sourcePolicy {
-			err = engine.cfg.ActivateMobilePolicyDNS(engine.root)
-			if err == nil {
-				err = executor.ActivateMobilePolicy(engine.cfg)
-			}
-		} else {
-			err = executor.ActivateMobileFixed(engine.cfg)
+		err = engine.cfg.ActivateMobilePolicyDNS(engine.root)
+		if err == nil {
+			err = executor.ActivateMobilePolicy(engine.cfg)
 		}
 	}
 	if err != nil {
@@ -319,11 +267,9 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 	t.receipt.Outcome = "running"
 	t.receipt.ForwardingActive = true
 	t.mu.Unlock()
-	if sourcePolicy {
-		if err = engine.cfg.ActivateMobilePolicyResources(engine.root); err != nil {
-			t.failure("POLICY_RESOURCES_ACTIVATE")
-			return
-		}
+	if err = engine.cfg.ActivateMobilePolicyResources(engine.root); err != nil {
+		t.failure("POLICY_RESOURCES_ACTIVATE")
+		return
 	}
 	log.MobilePhase(target.Generation, log.StageRunning)
 }
@@ -356,7 +302,7 @@ func (t *Transfer) cleanup() {
 	unknown := false
 	if engine != nil {
 		engine.stopClientIngress()
-		if engine.cfg != nil && engine.sourcePolicy {
+		if engine.cfg != nil {
 			engine.cfg.CancelMobilePolicyServices()
 		}
 		if engine.prepared {
@@ -394,7 +340,7 @@ func (t *Transfer) cleanup() {
 				unknown = true
 			}
 		}
-		if engine.cfg != nil && engine.sourcePolicy {
+		if engine.cfg != nil {
 			t.resource("policy-services", "closing", -1)
 			if err := engine.cfg.WaitMobilePolicyServices(context.Background()); err != nil {
 				unknown = true

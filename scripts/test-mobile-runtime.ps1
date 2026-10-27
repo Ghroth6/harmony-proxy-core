@@ -43,7 +43,7 @@ $env:GOENV='off'; $env:GOTOOLCHAIN='local'; $env:GOOS='windows'; $env:GOARCH='am
 $env:GOMODCACHE=(Resolve-Path -LiteralPath $ModuleCache).Path
 $env:GOPATH=Join-Path $core 'local/cache/go-host'; $env:GOCACHE=Join-Path $core 'local/cache/go-host-cache'
 $env:GOPROXY='off'; $env:GOSUMDB='off'
-$packages = @('mobile/runtime', 'mobile/content', 'mobile/network', 'mobile/validation', 'mobile/protection', 'component/platformnetwork', 'component/dialer', 'component/forwarding', 'transport/tuic/common', 'transport/tuic', 'dns', 'tunnel', 'config', 'hub/executor', 'tunnel/statistic', 'log')
+$packages = @('mobile/runtime', 'mobile/policy', 'mobile/policy/contract', 'mobile/content', 'mobile/network', 'mobile/validation', 'mobile/protection', 'component/platformnetwork', 'component/dialer', 'component/forwarding', 'transport/tuic/common', 'transport/tuic', 'dns', 'tunnel', 'config', 'hub/executor', 'tunnel/statistic', 'log')
 $arguments = @('test', '-mod=mod', '-count=1', '-timeout=90s', '-tags', 'with_gvisor', '-json') + @($packages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })
 [ordered]@{sourceRevision=$revision; goVersion=$version; moduleCache=$env:GOMODCACHE; hostSupplementCache=$HostSupplementCache; arguments=$arguments; sourceSha256=$hashes; scope='Windows CGO=0, real gVisor and engine with injected descriptor syscall boundary; no race detector or target TUN execution'} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $stage 'inputs.json') -Encoding utf8NoBOM
 & $go -C $stage @arguments *> (Join-Path $stage 'tests.jsonl')

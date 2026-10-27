@@ -274,12 +274,27 @@ func runPersistentDomainChild(t *testing.T, mode, root string) {
 		}
 	}
 	domainTCPExchange(t, system, address, 443, 55102, "request:"+host, persistentDomainReply)
-	observed := manager.Query(generation, 1)
-	wire := domainWire(t, observed)
 	expectedConnections := 1
 	if mode == "reopen" {
 		expectedConnections = 2
 	}
+	// Packet delivery and the physical relay's traffic observation complete on
+	// separate workers. Wait through the public query for the already received
+	// bytes, without replaying any DNS question or forwarding transaction.
+	deadline := time.Now().Add(time.Second)
+	var observed R.Receipt
+	for {
+		observed = manager.Query(generation, 1)
+		ready := len(observed.Connections) == expectedConnections
+		for _, connection := range observed.Connections {
+			ready = ready && connection.Download >= int64(len(persistentDomainReply))
+		}
+		if ready || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	wire := domainWire(t, observed)
 	if len(observed.Connections) != expectedConnections || wire.DNS.Sequence != 1 || wire.DNS.Dropped != 0 || wire.DNS.Saturated || len(wire.DNS.Queries) != 1 || protects.Load() == 0 {
 		t.Fatalf("current process did not report its actual domain forwarding and DNS epoch: %+v", observed)
 	}
