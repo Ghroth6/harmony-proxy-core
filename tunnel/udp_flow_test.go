@@ -1,7 +1,6 @@
 package tunnel_test
 
 import (
-	"context"
 	"errors"
 	"net"
 	"net/netip"
@@ -10,9 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/hub/executor"
 	"github.com/metacubex/mihomo/tunnel"
 )
 
@@ -43,49 +40,7 @@ func TestBoundUDPFlowWaitsForActualReadWorkerBeforeCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer peer.Close()
-	raw, err := config.UnmarshalRawConfig([]byte(`proxies:
-  - name: sample
-    type: ss
-    server: 127.0.0.1
-    port: 9
-    cipher: aes-128-gcm
-    password: test-only
-proxy-groups:
-  - name: selected
-    type: select
-    proxies: [sample]
-rules: ["MATCH,selected"]
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidate, err := config.BuildMobileFixedCandidate(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = executor.PublishMobileFixed(context.Background(), candidate); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := executor.RetireConfig(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	if err = executor.ActivateMobileFixed(candidate); err != nil {
-		t.Fatal(err)
-	}
-	tunnel.EnableForwardingLifecycle()
-	id := generation.Add(1)
-	if err = tunnel.StartForwarding(context.Background(), id); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { stopRun(t) })
-	bound, err := tunnel.BoundForwardingTunnel(id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bound, _, _ := originalUDPPolicyRun(t, "MATCH,DIRECT", true)
 	writeEntered := make(chan string, 1)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -146,37 +101,7 @@ func TestBoundUDPDeniedFlowCannotOpenANewPhysicalSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer peer.Close()
-	raw, err := config.UnmarshalRawConfig([]byte("proxies:\n  - {name: sample, type: ss, server: 127.0.0.1, port: 9, cipher: aes-128-gcm, password: test-only}\nproxy-groups:\n  - {name: selected, type: select, proxies: [sample]}\nrules: [\"MATCH,selected\"]\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidate, err := config.BuildMobileFixedCandidate(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = executor.PublishMobileFixed(context.Background(), candidate); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := executor.RetireConfig(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	if err = executor.ActivateMobileFixed(candidate); err != nil {
-		t.Fatal(err)
-	}
-	tunnel.EnableForwardingLifecycle()
-	id := generation.Add(1)
-	if err = tunnel.StartForwarding(context.Background(), id); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { stopRun(t) })
-	bound, err := tunnel.BoundForwardingTunnel(id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bound, _, _ := originalUDPPolicyRun(t, "MATCH,DIRECT", true)
 	packet := &deniedFlowPacket{&flowPacket{completed: make(chan error, 2)}}
 	peerAddr := peer.LocalAddr().(*net.UDPAddr).AddrPort()
 	bound.HandleUDPPacket(packet, &C.Metadata{Type: C.TUN, NetWork: C.UDP, SrcIP: netip.MustParseAddr("10.111.0.2"), SrcPort: 51341, DstIP: peerAddr.Addr(), DstPort: peerAddr.Port(), SpecialProxy: "DIRECT"})
@@ -191,49 +116,7 @@ func TestBoundUDPDeniedFlowCannotOpenANewPhysicalSocket(t *testing.T) {
 }
 
 func TestBoundUDPRejectedRouteReleasesFlowAfterBufferDrop(t *testing.T) {
-	raw, err := config.UnmarshalRawConfig([]byte(`proxies:
-  - name: sample
-    type: ss
-    server: 127.0.0.1
-    port: 9
-    cipher: aes-128-gcm
-    password: test-only
-proxy-groups:
-  - name: selected
-    type: select
-    proxies: [sample]
-rules: ["MATCH,selected"]
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidate, err := config.BuildMobileFixedCandidate(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = executor.PublishMobileFixed(context.Background(), candidate); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := executor.RetireConfig(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	if err = executor.ActivateMobileFixed(candidate); err != nil {
-		t.Fatal(err)
-	}
-	tunnel.EnableForwardingLifecycle()
-	id := generation.Add(1)
-	if err = tunnel.StartForwarding(context.Background(), id); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { stopRun(t) })
-	bound, err := tunnel.BoundForwardingTunnel(id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bound, _, _ := originalUDPPolicyRun(t, "MATCH,REJECT", true)
 	packet := &flowPacket{completed: make(chan error, 2)}
 	bound.HandleUDPPacket(packet, &C.Metadata{Type: C.TUN, NetWork: C.UDP, SrcIP: netip.MustParseAddr("10.111.0.2"), SrcPort: 51341, DstIP: netip.MustParseAddr("127.0.0.1"), DstPort: 3478, SpecialProxy: "unavailable"})
 	select {
