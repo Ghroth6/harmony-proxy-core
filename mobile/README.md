@@ -123,6 +123,14 @@ validation is recorded separately from that initial feasibility experiment.
 Fixed artifacts, raw evidence and restoration are recorded
 in the coordinating repository's
 [TUN reuse report](https://github.com/Ghroth6/clashbox-meta/blob/main/docs/delivery/verification/upstream-tun-reuse-2026-10-28.md).
+The production integration passed 17 Windows test packages (246 top-level
+tests), ordinary ARM64 build/signature checks and one phone's full cached-policy
+IPv4 TCP/UDP, DNS attribution and normal-stop path. The application host suite
+also passed 625 tests. Exact artifacts, failed sandbox attempts, retained TCP
+adapter rationale and device restoration are in the
+[integration report](https://github.com/Ghroth6/clashbox-meta/blob/main/docs/delivery/verification/upstream-tun-integration-2026-10-29.md).
+These results do not establish phone IPv6, every application/protocol or long
+background operation.
 
 ### Current wire contract
 
