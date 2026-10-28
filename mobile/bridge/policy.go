@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 	"unsafe"
 
+	constant "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/mobile/policy"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 )
@@ -61,6 +62,9 @@ func cb_policy_storage_root_v1(root *C.uint8_t, rootSize C.uint32_t) (status C.i
 	}
 	mobilePolicyOwner.root = value
 	mobilePolicyOwner.engine = owner
+	// The application supplies this private root once per process, before any
+	// provider/cache activation. Preserve upstream relative path semantics.
+	constant.SetHomeDir(value)
 	return 0
 }
 

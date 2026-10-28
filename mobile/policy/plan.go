@@ -46,7 +46,7 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 			receipt.ResourcesComplete = false
 		}
 	}()
-	if !safeOperation(operationID) || len(input) > contract.MaxControlBytes || len(available) > contract.MaxResources {
+	if !safeOperation(operationID) || len(input) > contract.MaxControlBytes {
 		receipt.Code = "POLICY_REQUEST_BOUNDS"
 		return
 	}
@@ -62,12 +62,10 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 	}
 	receipt.GeneralIPv6, receipt.DNSEnabled, receipt.DNSIPv6 = raw.IPv6, raw.DNS.Enable, raw.DNS.IPv6
 	receipt.StoreSelected, receipt.StoreFakeIP = raw.Profile.StoreSelected, raw.Profile.StoreFakeIP
-	// This pinned mobile owner has no geodata refresh/swap implementation.
-	// Refuse the declared behavior rather than claiming ready with a dead timer.
-	if raw.GeoAutoUpdate {
-		receipt.Category = "unsupported"
-		receipt.Code = "POLICY_GEODATA_UPDATE_UNSUPPORTED"
-		return
+	for _, provider := range raw.ProxyProvider {
+		if provider["type"] == "http" {
+			receipt.RuntimeDownloads = true
+		}
 	}
 	groups, code := e.planGroups(raw, receipt.InputDigest, resolvedMembers)
 	if code != "" {
@@ -89,10 +87,6 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 		return
 	}
 	receipt.Requirements = requirements
-	if len(requirements) > contract.MaxResources {
-		receipt.Code = "POLICY_RESOURCE_BOUNDS"
-		return
-	}
 	fixed, code := e.loadResources(available)
 	if code != "" {
 		receipt.Category = "invalid"
@@ -268,9 +262,6 @@ func strictYAML(node *yaml.Node, depth int) error {
 // Planning and runtime use the same real upstream proxy graph. The candidate
 // owns all constructed adapters/health owners and its network fence stays shut.
 func (e *Engine) planGroups(raw *config.RawConfig, inputDigest string, resolvedMembers map[string][]string) (result []contract.Group, code string) {
-	if len(raw.ProxyGroup) > contract.MaxGroups {
-		return nil, "POLICY_GROUP_BOUNDS"
-	}
 	candidate, err := config.BuildMobileProxyCandidate(raw)
 	if candidate != nil {
 		defer func() {
@@ -302,12 +293,18 @@ func (e *Engine) planGroups(raw *config.RawConfig, inputDigest string, resolvedM
 		}
 		names[original.Name] = "node"
 	}
+	for _, provider := range candidate.Providers {
+		for _, proxy := range provider.Proxies() {
+			if names[proxy.Name()] == "" {
+				names[proxy.Name()] = "node"
+			}
+		}
+	}
 	for _, group := range raw.ProxyGroup {
 		name, _ := group["name"].(string)
 		names[name] = "group"
 	}
 	result = []contract.Group{}
-	total := 0
 	for position, mapping := range raw.ProxyGroup {
 		name, _ := mapping["name"].(string)
 		kind, _ := mapping["type"].(string)
@@ -316,10 +313,6 @@ func (e *Engine) planGroups(raw *config.RawConfig, inputDigest string, resolvedM
 			return nil, "POLICY_GROUP_INVALID"
 		}
 		members := group.GetProxies(false)
-		total += len(members)
-		if len(members) > contract.MaxMembers || total > contract.MaxTotalMembers {
-			return nil, "POLICY_GROUP_BOUNDS"
-		}
 		item := contract.Group{GroupRef: digest([]byte(inputDigest + ":group:" + strconv.Itoa(position+1))), Position: position + 1, DisplayName: safeName(name), Type: kind, Members: []contract.Member{}}
 		for index, member := range members {
 			item.Members = append(item.Members, contract.Member{MemberRef: digest([]byte(inputDigest + ":group:" + strconv.Itoa(position+1) + ":member:" + strconv.Itoa(index+1))), Position: index + 1, DisplayName: safeName(member.Name()), Kind: names[member.Name()]})
@@ -352,9 +345,6 @@ func allSubRules(raw *config.RawConfig) []string {
 }
 
 func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest string, preparedRules ...[]string) ([]contract.Requirement, string) {
-	if len(raw.ProxyProvider) != 0 {
-		return nil, "POLICY_PROXY_PROVIDER_NOT_IMPLEMENTED"
-	}
 	result := []contract.Requirement{}
 	add := func(kind, format, logical, sourceKind, uri, headers, path, proxy string, interval, maxBytes int64) {
 		description := map[string]any{"kind": kind, "format": format, "sourceKind": sourceKind, "sourceUri": uri, "sourceHeadersJson": headers, "originalPath": path, "downloadProxy": proxy, "intervalSeconds": interval, "maxBytes": maxBytes}
@@ -382,7 +372,7 @@ func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest st
 		if behavior != "classical" && behavior != "domain" && behavior != "ipcidr" {
 			return nil, "POLICY_RESOURCE_BEHAVIOR_UNSUPPORTED"
 		}
-		if format != "yaml" && format != "text" {
+		if format != "yaml" && format != "text" && format != "mrs" || format == "mrs" && behavior == "classical" {
 			return nil, "POLICY_RESOURCE_FORMAT_UNSUPPORTED"
 		}
 		if kind == "inline" {
@@ -418,7 +408,7 @@ func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest st
 			}
 			headers = string(encoded)
 		}
-		maxBytes := int64(contract.MaxTextBytes)
+		maxBytes := int64(contract.MaxResourceBytes)
 		if limit, present := value["size-limit"]; present {
 			number, ok := limit.(int)
 			if !ok || number < 0 {
@@ -526,7 +516,7 @@ func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest st
 		case "asn":
 			uri = raw.GeoXUrl.ASN
 		}
-		add(kind, format, kind, "engine-default", uri, "", "", "", interval, contract.MaxBinaryBytes)
+		add(kind, format, kind, "engine-default", uri, "", "", "", interval, contract.MaxResourceBytes)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].RefID < result[j].RefID })
 	return result, ""

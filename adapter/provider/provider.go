@@ -20,6 +20,7 @@ import (
 	"github.com/metacubex/mihomo/component/resource"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
+	"github.com/metacubex/mihomo/log"
 
 	"github.com/dlclark/regexp2"
 	"github.com/metacubex/http"
@@ -64,7 +65,18 @@ func (bp *baseProvider) Version() uint32 {
 }
 
 func (bp *baseProvider) Initial() error {
+	activateProxyResources(bp.Proxies())
 	return bp.healthCheck.start()
+}
+
+func activateProxyResources(proxies []C.Proxy) {
+	for _, proxy := range proxies {
+		if owner, ok := proxy.Adapter().(interface{ ActivateResources() error }); ok {
+			if err := owner.ActivateResources(); err != nil {
+				log.Errorln("Activate proxy %s resources: %s", proxy.Name(), err)
+			}
+		}
+	}
 }
 
 func (bp *baseProvider) BindHealthCheckContext(root context.Context) error {
@@ -392,7 +404,8 @@ func (cp *CompatibleProvider) Close() error {
 	return cp.compatibleProvider.Close()
 }
 
-func NewProxiesParser(pdName string, tunnel C.Tunnel, filter string, excludeFilter string, excludeType string, dialerProxy string, override overrideSchema, ageSecretKey string) (resource.Parser[[]C.Proxy], error) {
+func NewProxiesParser(pdName string, tunnel C.Tunnel, filter string, excludeFilter string, excludeType string, dialerProxy string, override overrideSchema, ageSecretKey string, options ...adapter.ProxyOption) (resource.Parser[[]C.Proxy], error) {
+	options = append(append([]adapter.ProxyOption{}, options...), adapter.WithDeferredResourceActivation())
 	var excludeTypeArray []string
 	if excludeType != "" {
 		excludeTypeArray = strings.Split(excludeType, "|")
@@ -503,7 +516,7 @@ func NewProxiesParser(pdName string, tunnel C.Tunnel, filter string, excludeFilt
 					return nil, fmt.Errorf("proxy %d override error: %w", idx, err)
 				}
 
-				proxy, err := adapter.ParseProxy(mapping, adapter.WithTunnelForAPI(tunnel), adapter.WithProviderName(pdName))
+				proxy, err := adapter.ParseProxy(mapping, append([]adapter.ProxyOption{adapter.WithTunnelForAPI(tunnel), adapter.WithProviderName(pdName)}, options...)...)
 				if err != nil {
 					return nil, fmt.Errorf("proxy %d error: %w", idx, err)
 				}

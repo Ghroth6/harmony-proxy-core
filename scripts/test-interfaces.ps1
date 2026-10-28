@@ -15,7 +15,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect core working tree' }
 if ($dirty.Count -ne 0) { throw 'Commit changes first: interface validation requires a clean core working tree' }
 
 $packages = @(
-  'common/event', 'adapter', 'tunnel/statistic', 'adapter/outbound', 'adapter/outboundgroup',
+  'common/event', 'common/lifecycle', 'component/ca', 'adapter', 'tunnel/statistic', 'adapter/outbound', 'adapter/outboundgroup',
   'hub/executor', 'config', 'component/configresources', 'component/platformnetwork', 'component/iface',
   'component/dialer', 'dns', 'component/forwarding', 'component/http',
   'tunnel', 'hub/route', 'listener/sing_tun',

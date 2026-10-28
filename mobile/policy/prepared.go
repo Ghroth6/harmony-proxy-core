@@ -171,7 +171,7 @@ func (e *Engine) verify(input []byte, prepared contract.PreparedContext) (*prepa
 }
 
 func policyPlatform(raw *config.RawConfig, plan PlanReceipt, platform contract.Platform) bool {
-	periodic := false
+	periodic := plan.RuntimeDownloads
 	for _, requirement := range plan.Requirements {
 		if requirement.IntervalSeconds > 0 && (requirement.SourceKind == "http" || requirement.SourceKind == "engine-default") {
 			periodic = true

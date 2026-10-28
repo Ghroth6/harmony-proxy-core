@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"github.com/metacubex/mihomo/common/lifecycle"
 	"math/big"
 	"os"
 	"runtime"
@@ -25,6 +26,10 @@ import (
 // NewTLSKeyPairLoader creates a loader function for TLS key pairs from the provided certificate and private key data or file paths.
 // If both certificate and privateKey are empty, generates a random TLS RSA key pair.
 func NewTLSKeyPairLoader(certificate, privateKey string, resourcePolicy ...func(string) error) (func() (*tls.Certificate, error), error) {
+	return newTLSKeyPairLoader(certificate, privateKey, nil, resourcePolicy...)
+}
+
+func newTLSKeyPairLoader(certificate, privateKey string, owner *lifecycle.Group, resourcePolicy ...func(string) error) (func() (*tls.Certificate, error), error) {
 	if certificate == "" && privateKey == "" {
 		var err error
 		certificate, privateKey, _, err = NewRandomTLSKeyPair(KeyPairTypeRSA)
@@ -52,31 +57,65 @@ func NewTLSKeyPairLoader(certificate, privateKey string, resourcePolicy ...func(
 	if loadErr != nil {
 		return nil, fmt.Errorf("parse certificate failed, maybe format error:%s, or path error: %s", painTextErr.Error(), loadErr.Error())
 	}
-	if len(resourcePolicy) > 0 && resourcePolicy[0] != nil {
+	if owner == nil && len(resourcePolicy) > 0 && resourcePolicy[0] != nil {
 		if err := resourcePolicy[0]("PROXY_TLS_WATCHER_NOT_IMPLEMENTED"); err != nil {
 			return nil, err
 		}
 	}
 	gcFlag := new(os.File) // tiny (on the order of 16 bytes or less) and pointer-free objects may never run the finalizer, so we choose new an os.File
 	updateMutex := sync.RWMutex{}
-	if watcher, err := fswatch.NewWatcher(fswatch.Options{Path: []string{certificate, privateKey}, Callback: func(path string) {
-		updateMutex.Lock()
-		defer updateMutex.Unlock()
-		if newCert, err := tls.LoadX509KeyPair(certificate, privateKey); err == nil {
-			cert = newCert
+	closed := false
+	var watcher *fswatch.Watcher
+	start := func() error {
+		var err error
+		watcher, err = fswatch.NewWatcher(fswatch.Options{Path: []string{certificate, privateKey}, Callback: func(path string) {
+			updateMutex.Lock()
+			defer updateMutex.Unlock()
+			if closed {
+				return
+			}
+			if newCert, err := tls.LoadX509KeyPair(certificate, privateKey); err == nil {
+				cert = newCert
+			}
+		}})
+		if err != nil {
+			return err
 		}
-	}}); err == nil {
-		if err = watcher.Start(); err == nil {
-			runtime.SetFinalizer(gcFlag, func(f *os.File) {
-				_ = watcher.Close()
-			})
+		return watcher.Start()
+	}
+	closeWatcher := func() error {
+		updateMutex.Lock()
+		closed = true
+		updateMutex.Unlock()
+		if watcher != nil {
+			return watcher.Close()
+		}
+		return nil
+	}
+	if owner != nil {
+		owned := &ownedKeyPairWatcher{paths: []string{certificate, privateKey}, reload: func() {
+			updateMutex.Lock()
+			defer updateMutex.Unlock()
+			if newCert, err := tls.LoadX509KeyPair(certificate, privateKey); err == nil {
+				cert = newCert
+			}
+		}}
+		if err := owner.Add(owned.Start, owned.Close); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := start(); err == nil {
+			runtime.SetFinalizer(gcFlag, func(f *os.File) { _ = closeWatcher() })
+		} else {
+			_ = closeWatcher()
 		}
 	}
 	return func() (*tls.Certificate, error) {
 		defer runtime.KeepAlive(gcFlag)
 		updateMutex.RLock()
 		defer updateMutex.RUnlock()
-		return &cert, nil
+		current := cert
+		return &current, nil
 	}, nil
 }
 

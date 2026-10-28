@@ -38,6 +38,7 @@ type PlanReceipt struct {
 	Category          string                  `json:"category"`
 	Code              string                  `json:"code"`
 	ResourcesComplete bool                    `json:"resourcesComplete"`
+	RuntimeDownloads  bool                    `json:"runtimeDownloads,omitempty"`
 	Requirements      []contract.Requirement  `json:"requirements"`
 	Groups            []contract.Group        `json:"groups"`
 	GeneralIPv6       bool                    `json:"generalIPv6"`

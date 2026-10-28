@@ -66,6 +66,23 @@ func (f *Fetcher[V]) Name() string               { return f.name }
 func (f *Fetcher[V]) Vehicle() P.Vehicle         { return f.vehicle }
 func (f *Fetcher[V]) VehicleType() P.VehicleType { return f.vehicle.Type() }
 func (f *Fetcher[V]) Context() context.Context   { return f.ctx }
+
+// BindContext supplies the embedding runtime's network/ownership context before
+// initialization. Normal cache loading and refresh timing remain unchanged.
+func (f *Fetcher[V]) BindContext(root context.Context) error {
+	f.startMutex.Lock()
+	defer f.startMutex.Unlock()
+	f.lifecycleMutex.Lock()
+	defer f.lifecycleMutex.Unlock()
+	if root == nil || root.Err() != nil || f.started || f.prepared || f.retired || f.active != 0 {
+		return errors.New("resource context cannot bind after activation")
+	}
+	f.ctxCancel()
+	ctx, cancel := context.WithCancel(root)
+	f.ctx, f.ctxCancel = WithCommitGuard(ctx, f.Commit), cancel
+	return nil
+}
+
 func (f *Fetcher[V]) UpdatedAt() time.Time {
 	f.stateMutex.RLock()
 	defer f.stateMutex.RUnlock()

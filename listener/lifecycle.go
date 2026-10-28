@@ -65,6 +65,16 @@ func recreatePair[T interface {
 }](tcp *T, udp *U, addr string, requireUDP bool, newTCP func() (T, error), newUDP func() (U, error)) error {
 	var zeroTCP T
 	var zeroUDP U
+	if !requireUDP && *tcp != zeroTCP && *udp == zeroUDP && (*tcp).RawAddress() == addr {
+		if err := closeAndClear(udp); err != nil {
+			return err
+		}
+		next, err := newUDP()
+		if err == nil {
+			*udp = next
+		}
+		return err
+	}
 	if *tcp != zeroTCP && *udp != zeroUDP && (*tcp).RawAddress() == addr && (*udp).RawAddress() == addr {
 		return nil
 	}

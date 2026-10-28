@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
+	"github.com/metacubex/mihomo/common/lifecycle"
 	"github.com/metacubex/mihomo/common/structure"
 	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/dialer"
@@ -25,11 +26,28 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (_ C.Proxy, retE
 	}
 
 	opt := applyProxyOptions(options...)
+	var resources *lifecycle.Group
+	var release func()
+	if opt.ResourceOwner != nil {
+		resources = &lifecycle.Group{}
+		var err error
+		release, err = opt.ResourceOwner.Adopt(resources, opt.DeferResourceActivation)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if retErr != nil {
+				retErr = errors.Join(retErr, resources.Close())
+				release()
+			}
+		}()
+	}
 	basicOption := outbound.BasicOption{
 		DialerForAPI:         opt.DialerForAPI,
 		PhysicalDialerForAPI: opt.PhysicalDialerForAPI,
 		ProxyLookupForAPI:    opt.ProxyLookupForAPI,
 		ResourcePolicyForAPI: opt.ResourcePolicyForAPI,
+		ResourceOwner:        resources,
 		DNSServiceForAPI:     opt.DNSServiceForAPI,
 		TunnelForAPI:         opt.TunnelForAPI,
 		ProviderName:         opt.ProviderName,
@@ -271,6 +289,9 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (_ C.Proxy, retE
 		}
 	}
 
+	if resources != nil {
+		proxy = &resourceOwnedAdapter{ProxyAdapter: proxy, resources: resources, release: release}
+	}
 	if opt.WrapAdapter != nil {
 		proxy = opt.WrapAdapter(proxy)
 	}
@@ -279,14 +300,20 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (_ C.Proxy, retE
 }
 
 type proxyOption struct {
-	DialerForAPI         C.Dialer
-	TunnelForAPI         C.Tunnel
-	ProviderName         string
-	PhysicalDialerForAPI func([]dialer.Option) C.Dialer
-	ProxyLookupForAPI    proxydialer.ProxyLookup
-	ResourcePolicyForAPI func(string) error
-	DNSServiceForAPI     func() resolver.Service
-	WrapAdapter          func(outbound.ProxyAdapter) outbound.ProxyAdapter
+	DeferResourceActivation bool
+	DialerForAPI            C.Dialer
+	TunnelForAPI            C.Tunnel
+	ProviderName            string
+	PhysicalDialerForAPI    func([]dialer.Option) C.Dialer
+	ProxyLookupForAPI       proxydialer.ProxyLookup
+	ResourceOwner           *lifecycle.Group
+	ResourcePolicyForAPI    func(string) error
+	DNSServiceForAPI        func() resolver.Service
+	WrapAdapter             func(outbound.ProxyAdapter) outbound.ProxyAdapter
+}
+
+func WithDeferredResourceActivation() ProxyOption {
+	return func(opt *proxyOption) { opt.DeferResourceActivation = true }
 }
 
 func applyProxyOptions(options ...ProxyOption) proxyOption {
@@ -339,4 +366,8 @@ func WithProviderName(name string) ProxyOption {
 	return func(opt *proxyOption) {
 		opt.ProviderName = name
 	}
+}
+
+func WithResourceOwner(owner *lifecycle.Group) ProxyOption {
+	return func(opt *proxyOption) { opt.ResourceOwner = owner }
 }

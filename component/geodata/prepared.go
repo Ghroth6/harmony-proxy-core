@@ -86,15 +86,16 @@ func VerifyPrepared(kind string, data []byte) error {
 // Prepared freezes the resource instance and its matcher caches. Global
 // country caches and process-wide MMDB readers cannot alias another manifest.
 type Prepared struct {
-	mu          sync.Mutex
-	closed      bool
-	loader      Loader
-	siteMatcher string
-	data        map[string][]byte
-	sites       map[string]router.DomainMatcher
-	ips         map[string]router.IPMatcher
-	mmdb        *mmdb.IPReader
-	asn         *mmdb.ASNReader
+	mu              sync.Mutex
+	closed          bool
+	loader          Loader
+	siteMatcher     string
+	data            map[string][]byte
+	sites           map[string]router.DomainMatcher
+	ips             map[string]router.IPMatcher
+	mmdb            *mmdb.IPReader
+	asn             *mmdb.ASNReader
+	retiredCloseErr error
 }
 
 func NewPrepared(data map[string][]byte, loaderName, siteMatcher string) (*Prepared, error) {
@@ -218,7 +219,7 @@ func (p *Prepared) Close() error {
 		return nil
 	}
 	p.closed = true
-	var errs []error
+	errs := []error{p.retiredCloseErr}
 	if p.mmdb != nil {
 		errs = append(errs, p.mmdb.Close())
 	}
@@ -229,4 +230,63 @@ func (p *Prepared) Close() error {
 	p.sites = nil
 	p.ips = nil
 	return errors.Join(errs...)
+}
+
+// Replace validates all already-used groups against the new complete database
+// before switching readers. Rules keep their scoped getter and see the new data.
+func (p *Prepared) Replace(kind string, value []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return errors.New("prepared geodata unavailable")
+	}
+	data := make(map[string][]byte, len(p.data))
+	for k, v := range p.data {
+		data[k] = v
+	}
+	data[kind] = value
+	next := &Prepared{loader: p.loader, siteMatcher: p.siteMatcher, data: data, sites: map[string]router.DomainMatcher{}, ips: map[string]router.IPMatcher{}}
+	if err := VerifyPrepared(kind, value); err != nil {
+		return err
+	}
+	var err error
+	switch kind {
+	case "mmdb":
+		next.mmdb, err = mmdb.NewPreparedIP(value)
+	case "asn":
+		next.asn, err = mmdb.NewPreparedASN(value)
+	case "geosite":
+		for key := range p.sites {
+			if _, err = next.Site(key); err != nil {
+				return err
+			}
+		}
+	case "geoip":
+		for key := range p.ips {
+			if _, err = next.IP(key); err != nil {
+				return err
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	switch kind {
+	case "mmdb":
+		if p.mmdb != nil {
+			p.retiredCloseErr = errors.Join(p.retiredCloseErr, p.mmdb.Close())
+		}
+		p.mmdb = next.mmdb
+	case "asn":
+		if p.asn != nil {
+			p.retiredCloseErr = errors.Join(p.retiredCloseErr, p.asn.Close())
+		}
+		p.asn = next.asn
+	case "geosite":
+		p.sites = next.sites
+	case "geoip":
+		p.ips = next.ips
+	}
+	p.data = data
+	return nil
 }

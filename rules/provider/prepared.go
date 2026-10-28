@@ -16,6 +16,9 @@ import (
 func NewPreparedRuleSetProvider(name string, behavior P.RuleBehavior, format P.RuleFormat, interval time.Duration, vehicle P.Vehicle, input []byte, parse common.ParseRuleFunc, decode func([]byte) ([]string, error)) (*RuleSetProvider, error) {
 	rp := &RuleSetProvider{&ruleSetProvider{baseProvider: baseProvider{behavior: behavior}, format: format, notifyDone: make(chan struct{})}}
 	rp.Fetcher = resource.NewFetcher(name, interval, vehicle, nil, func(bytes []byte) (ruleStrategy, error) {
+		if format == P.MrsRule {
+			return rulesParse(bytes, newStrategy(behavior, parse), format)
+		}
 		payload, err := decode(bytes)
 		if err != nil {
 			return nil, err
@@ -31,6 +34,12 @@ func NewPreparedRuleSetProvider(name string, behavior P.RuleBehavior, format P.R
 		return rp, err
 	}
 	return rp, nil
+}
+
+// ValidateRuleSet uses the same decoder and strategy as the running provider.
+func ValidateRuleSet(input []byte, behavior P.RuleBehavior, format P.RuleFormat, parse common.ParseRuleFunc) error {
+	_, err := rulesParse(input, newStrategy(behavior, parse), format)
+	return err
 }
 
 func (rp *RuleSetProvider) ActivateScheduled(ctx context.Context) error {

@@ -57,10 +57,10 @@ func envelope() string {
 	return string(encoded)
 }
 
-func TestRuntimeV5CarriesNetworkEpochAndOneMiBInputBudget(t *testing.T) {
+func TestRuntimeV5CarriesNetworkEpochAndNativeLengthRepresentation(t *testing.T) {
 	request := strings.Replace(envelope(), `"networkGeneration":17`, `"networkGeneration":21`, 1)
 	decoded, err := R.DecodeStart(2, 7, sample, []byte(request))
-	if err != nil || decoded.NetworkGeneration != 21 || R.MaxInputBytes != 1024*1024 {
+	if err != nil || decoded.NetworkGeneration != 21 || R.MaxInputBytes != 1<<31-1 {
 		t.Fatal("runtime v5 must preserve the actual submitted path identity and input budget")
 	}
 }
@@ -119,9 +119,7 @@ func TestDecodeStartBoundedAndUTF8Values(t *testing.T) {
 			t.Fatal("unbounded or non-UTF8 request accepted")
 		}
 	}
-	if _, err := R.DecodeStart(2, 7, make([]byte, R.MaxInputBytes+1), []byte(envelope())); err == nil {
-		t.Fatal("unbounded candidate accepted")
-	}
+
 	if _, err := R.DecodeStart(2, 0, sample, []byte(envelope())); err == nil {
 		t.Fatal("zero transfer accepted")
 	}

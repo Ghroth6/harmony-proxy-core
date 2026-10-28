@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"errors"
+	"github.com/metacubex/mihomo/common/lifecycle"
 
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outbound"
@@ -11,8 +12,10 @@ import (
 	"github.com/metacubex/mihomo/component/fakeip"
 	"github.com/metacubex/mihomo/component/forwarding"
 	"github.com/metacubex/mihomo/component/resolver"
+	"github.com/metacubex/mihomo/component/resource"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/rules"
 	RC "github.com/metacubex/mihomo/rules/common"
@@ -24,10 +27,11 @@ type MobilePolicyServices interface {
 	Wait(context.Context) error
 }
 type MobilePolicyResources struct {
-	RuleProviders map[string]P.RuleProvider
-	ParseRule     RC.ParseRuleFunc
-	Services      MobilePolicyServices
-	FakeIPState   *fakeip.ScopedPersistence
+	RuleProviders   map[string]P.RuleProvider
+	ParseRule       RC.ParseRuleFunc
+	Services        MobilePolicyServices
+	FakeIPState     *fakeip.ScopedPersistence
+	ResourceAttempt func()
 }
 
 // Builtins must obey the same preparation fence as remote adapters. Groups
@@ -35,6 +39,13 @@ type MobilePolicyResources struct {
 type mobilePolicyBuiltin struct {
 	C.ProxyAdapter
 	fence *mobileCandidateDialer
+}
+
+func (a *mobilePolicyBuiltin) ActivateResources() error {
+	if owner, ok := a.ProxyAdapter.(interface{ ActivateResources() error }); ok {
+		return owner.ActivateResources()
+	}
+	return nil
 }
 
 // A prepared chain resolves against its own graph, including before publication.
@@ -91,7 +102,7 @@ func mobilePolicyDialerOptions(ipv6 bool, bootstrap resolver.Resolver) []dialer.
 func BuildMobileProxyCandidate(raw *RawConfig) (cfg *Config, err error) {
 	owned := &configresources.Set{}
 	fence := &mobileCandidateDialer{options: mobilePolicyDialerOptions(raw.IPv6, resolver.SystemResolver)}
-	cfg = &Config{candidateResources: owned, mobileNetwork: fence, mobilePolicy: &contract.PreparedContext{}, Providers: map[string]P.ProxyProvider{}}
+	cfg = &Config{candidateResources: owned, mobileAdapterResources: &lifecycle.Group{}, mobileNetwork: fence, mobilePolicy: &contract.PreparedContext{}, Providers: map[string]P.ProxyProvider{}}
 	defer func() {
 		if recover() != nil {
 			err = &MobileValidationError{Code: "POLICY_CONSTRUCTION_FAILED"}
@@ -100,12 +111,9 @@ func BuildMobileProxyCandidate(raw *RawConfig) (cfg *Config, err error) {
 			err = &MobileValidationError{Code: "PREPARATION_NETWORK_FORBIDDEN"}
 		}
 	}()
-	if len(raw.ProxyProvider) != 0 {
-		return cfg, &MobileValidationError{Code: "POLICY_PROXY_PROVIDER_NOT_IMPLEMENTED"}
-	}
 	wrap := func(a C.ProxyAdapter) C.ProxyAdapter { return &mobilePolicyBuiltin{ProxyAdapter: a, fence: fence} }
 	lookup := &mobilePolicyProxyLookup{candidate: cfg}
-	cfg.Proxies, cfg.Providers, err = parseProxiesWithBuiltins(raw, owned, wrap, adapter.WithPhysicalDialerForAPI(fence.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithDNSServiceForAPI(cfg.mobileAdapterDNSService), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
+	cfg.Proxies, cfg.Providers, err = parseProxiesWithBuiltins(raw, owned, wrap, adapter.WithPhysicalDialerForAPI(fence.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithResourceOwner(cfg.mobileAdapterResources), adapter.WithDNSServiceForAPI(cfg.mobileAdapterDNSService), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
 		return &mobilePolicyBuiltin{ProxyAdapter: a, fence: fence}
 	}))
 	if err != nil {
@@ -270,6 +278,9 @@ func (c *Config) WaitMobilePolicyServices(ctx context.Context) error {
 	if c != nil && c.mobilePolicyResources != nil && c.mobilePolicyResources.Services != nil {
 		errs = append(errs, c.mobilePolicyResources.Services.Wait(ctx))
 	}
+	if c != nil && c.mobileAdapterResources != nil {
+		errs = append(errs, c.mobileAdapterResources.Close())
+	}
 	return errors.Join(errs...)
 }
 
@@ -289,13 +300,21 @@ func (c *Config) BindMobilePolicyHealthChecks(root context.Context) error {
 		}
 		root = forwarding.Bind(root, scope)
 	}
+	if c.mobilePolicyResources != nil && c.mobilePolicyResources.ResourceAttempt != nil {
+		root = resource.WithObserver(root, c.mobilePolicyResources.ResourceAttempt)
+	}
 	for _, provider := range c.Providers {
 		owner, ok := provider.(interface{ BindHealthCheckContext(context.Context) error })
-		if !ok || provider.VehicleType() != P.Compatible {
+		if !ok {
 			return errors.New("POLICY_HEALTHCHECK_OWNER_INVALID")
 		}
 		if err := owner.BindHealthCheckContext(root); err != nil {
 			return err
+		}
+		if fetcher, ok := provider.(interface{ BindContext(context.Context) error }); ok {
+			if err := fetcher.BindContext(root); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -313,7 +332,10 @@ func (c *Config) ActivateMobilePolicyHealthChecks() error {
 	}
 	for _, provider := range c.Providers {
 		if err := provider.Initial(); err != nil {
-			return err
+			// Upstream keeps the configuration running after an individual
+			// provider's initialization fails. Its payload/cache/fallback and
+			// refresh policy remain authoritative.
+			log.Errorln("Initial proxy provider %s error: %s", provider.Name(), err)
 		}
 	}
 	return nil

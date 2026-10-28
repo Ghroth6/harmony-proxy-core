@@ -127,9 +127,6 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 	if addr == "" {
 		addr = "tailscale"
 	}
-	if err := option.CheckResource("PROXY_DNS_REGISTRY_NOT_IMPLEMENTED"); err != nil {
-		return nil, err
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	outbound := &Tailscale{
 		Base: NewBase(BaseOption{
@@ -182,7 +179,23 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 	}
 	dnsTransport := tailscaleDNSTransport{tailscale: outbound}
 	outbound.dnsResolver = dns.NewResolverFromClient(dnsTransport)
-	outbound.unregisterDNSResolver = dns.RegisterTailscaleDnsClient(option.Name, dnsTransport)
+	register := func() error {
+		outbound.unregisterDNSResolver = dns.RegisterTailscaleDnsClient(option.Name, dnsTransport)
+		return nil
+	}
+	if option.ResourceOwner != nil {
+		if err := option.ResourceOwner.Add(register, func() error {
+			if outbound.unregisterDNSResolver != nil {
+				outbound.unregisterDNSResolver()
+			}
+			return nil
+		}); err != nil {
+			_ = outbound.Close()
+			return nil, err
+		}
+	} else {
+		_ = register()
+	}
 	return outbound, nil
 }
 

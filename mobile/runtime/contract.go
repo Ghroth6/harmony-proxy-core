@@ -21,8 +21,8 @@ import (
 const (
 	ContractVersion    = 5
 	MaxGeneration      = 0x7fffffff
-	MaxInputBytes      = 1024 * 1024
-	MaxRequestBytes    = 1024 * 1024
+	MaxInputBytes      = policy.MaxControlBytes
+	MaxRequestBytes    = policy.MaxControlBytes
 	MaxOutputBytes     = 1024 * 1024
 	MaxOutputNodes     = 65536
 	PacketQueue        = 128
@@ -297,12 +297,12 @@ func preparedFields(encoded []byte) bool {
 		return false
 	}
 	for _, collection := range []struct {
-		name  string
-		limit int
-		keys  []string
-	}{{"resources", policy.MaxResources, []string{"refId", "kind", "format", "sourceDigest", "contentDigest", "byteLength", "relativePath"}}, {"groupPreferences", policy.MaxGroups, []string{"groupRef", "memberRef"}}} {
+		name string
+
+		keys []string
+	}{{"resources", []string{"refId", "kind", "format", "sourceDigest", "contentDigest", "byteLength", "relativePath"}}, {"groupPreferences", []string{"groupRef", "memberRef"}}} {
 		var items []json.RawMessage
-		if json.Unmarshal(fields[collection.name], &items) != nil || items == nil || len(items) > collection.limit {
+		if json.Unmarshal(fields[collection.name], &items) != nil || items == nil {
 			return false
 		}
 		for _, item := range items {

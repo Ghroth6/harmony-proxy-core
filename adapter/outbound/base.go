@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/metacubex/mihomo/common/lifecycle"
 	"net"
 	"syscall"
 
@@ -203,6 +204,7 @@ type BasicOption struct {
 	// dialer-proxy still uses the upstream proxy dialer and its original tunnel.
 	PhysicalDialerForAPI func([]dialer.Option) C.Dialer `proxy:"-"`
 	ProxyLookupForAPI    proxydialer.ProxyLookup        `proxy:"-"`
+	ResourceOwner        *lifecycle.Group               `proxy:"-"`
 	ResourcePolicyForAPI func(string) error             `proxy:"-"`
 	DNSServiceForAPI     func() resolver.Service        `proxy:"-"`
 	TunnelForAPI         C.Tunnel                       `proxy:"-"`

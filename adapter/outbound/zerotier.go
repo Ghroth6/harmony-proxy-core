@@ -289,10 +289,6 @@ func NewZeroTier(option ZeroTierOption) (*ZeroTier, error) {
 		return nil, C.Path.ErrNotSafePath(option.StateDir)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := option.CheckResource("PROXY_STATE_STORE_NOT_IMPLEMENTED"); err != nil {
-		cancel()
-		return nil, err
-	}
 	stateStore, err := ZT.NewFileStore(&zeroTierStateFS{directory: option.StateDir, outbound: option.Name})
 	if err != nil {
 		cancel()

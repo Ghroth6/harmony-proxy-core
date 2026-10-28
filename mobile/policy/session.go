@@ -22,6 +22,7 @@ type resourceSession struct {
 	prepared                      contract.PreparedContext
 	providers                     map[string]P.RuleProvider
 	geo                           *geodata.Prepared
+	geoUpdates                    []geoRefresh
 	fakeIPState                   *fakeip.ScopedPersistence
 	mu                            sync.Mutex
 	activated, retired            bool
@@ -112,7 +113,7 @@ func (s *resourceSession) ActivateScheduled(root context.Context) error {
 			}
 		}
 	}
-	return nil
+	return s.startGeoUpdates(bound)
 }
 func (s *resourceSession) Cancel() {
 	s.mu.Lock()
@@ -215,18 +216,6 @@ func (s *resourceSession) reserveAdoption(value ResourceVersion) error {
 	defer s.mu.Unlock()
 	if s.retired || s.closeErr != nil {
 		return errors.New("POLICY_RESOURCE_OWNER_RETIRED")
-	}
-	var total int64
-	for ref, current := range s.adopted {
-		if ref == value.RefID {
-			current = value
-		} else if pending, ok := s.pendingAdoptions[ref]; ok {
-			current = pending
-		}
-		total += current.ByteLength
-	}
-	if total > contract.MaxTotalBytes {
-		return errors.New("POLICY_RESOURCE_BOUNDS")
 	}
 	s.pendingAdoptions[value.RefID] = value
 	return nil

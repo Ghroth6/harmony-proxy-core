@@ -34,7 +34,7 @@ func publicProtectedPolicy(t *testing.T, callback protection.Callback) uint64 {
 	return generation
 }
 
-func TestPolicyResourceTotalBudgetRejectsWholeManifestBeforeFileReads(t *testing.T) {
+func TestPolicyResourceManifestDoesNotRejectAnArbitraryTotalBudget(t *testing.T) {
 	engine, err := policy.NewEngine(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -43,12 +43,12 @@ func TestPolicyResourceTotalBudgetRejectsWholeManifestBeforeFileReads(t *testing
 	resources := []contract.Resource{}
 	for _, name := range []string{"documentation-one", "documentation-two", "documentation-three"} {
 		digest := contract.Digest([]byte(name))
-		resources = append(resources, contract.Resource{RefID: digest, Kind: "mmdb", Format: "mmdb", SourceDigest: digest, ContentDigest: digest, ByteLength: contract.MaxBinaryBytes, RelativePath: "immutable/" + digest[7:] + "/mmdb.mmdb"})
+		resources = append(resources, contract.Resource{RefID: digest, Kind: "mmdb", Format: "mmdb", SourceDigest: digest, ContentDigest: digest, ByteLength: 128 * 1024 * 1024, RelativePath: "immutable/" + digest[7:] + "/mmdb.mmdb"})
 	}
 	baseline := engine.ResourceAcquireCount()
 	plan := engine.Plan("whole-resource-total-cap", []byte(noResourcePolicy), resources)
-	if plan.Category != "invalid" || plan.ResourcesComplete || plan.Code != "POLICY_RESOURCE_BOUNDS" || engine.ResourceAcquireCount() != baseline {
-		t.Fatal("whole declared resource total must reject before a missing-file error or any acquisition")
+	if plan.Category != "invalid" || plan.ResourcesComplete || plan.Code != "POLICY_RESOURCE_READ_FAILED" || engine.ResourceAcquireCount() != baseline {
+		t.Fatal("large resources must reach actual file validation without an arbitrary total quota")
 	}
 }
 

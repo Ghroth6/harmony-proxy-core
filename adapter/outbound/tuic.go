@@ -144,6 +144,7 @@ func NewTuic(option TuicOption) (*Tuic, error) {
 		Fingerprint:    option.Fingerprint,
 		NameCertVerify: option.NameCertVerify,
 		ResourcePolicy: option.ResourcePolicyForAPI,
+		ResourceOwner:  option.ResourceOwner,
 		Certificate:    option.Certificate,
 		PrivateKey:     option.PrivateKey,
 	})

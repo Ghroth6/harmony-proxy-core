@@ -3,6 +3,7 @@ package vmess
 import (
 	"context"
 	"errors"
+	"github.com/metacubex/mihomo/common/lifecycle"
 	"net"
 
 	"github.com/metacubex/mihomo/component/ca"
@@ -21,6 +22,7 @@ type TLSConfig struct {
 	SkipCertVerify    bool
 	NameCertVerify    string
 	FingerPrint       string
+	ResourceOwner     *lifecycle.Group
 	ResourcePolicy    func(string) error
 	Certificate       string
 	PrivateKey        string
@@ -45,6 +47,7 @@ func (cfg *TLSConfig) ToStdConfig() (*tls.Config, error) {
 		Fingerprint:    cfg.FingerPrint,
 		NameCertVerify: cfg.NameCertVerify,
 		ResourcePolicy: cfg.ResourcePolicy,
+		ResourceOwner:  cfg.ResourceOwner,
 		Certificate:    cfg.Certificate,
 		PrivateKey:     cfg.PrivateKey,
 	})
@@ -61,6 +64,7 @@ func StreamTLSConn(ctx context.Context, conn net.Conn, cfg *TLSConfig) (net.Conn
 			Host:              cfg.Host,
 			Fingerprint:       cfg.FingerPrint,
 			ResourcePolicy:    cfg.ResourcePolicy,
+			ResourceOwner:     cfg.ResourceOwner,
 			Certificate:       cfg.Certificate,
 			PrivateKey:        cfg.PrivateKey,
 			ClientFingerprint: cfg.ClientFingerprint,
@@ -101,6 +105,7 @@ func StreamTLSConn(ctx context.Context, conn net.Conn, cfg *TLSConfig) (net.Conn
 			ALPN:               cfg.NextProtos,
 			Fingerprint:        cfg.FingerPrint,
 			ResourcePolicy:     cfg.ResourcePolicy,
+			ResourceOwner:      cfg.ResourceOwner,
 			Certificate:        cfg.Certificate,
 			PrivateKey:         cfg.PrivateKey,
 			ClientFingerprint:  cfg.ClientFingerprint,

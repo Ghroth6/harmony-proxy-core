@@ -145,9 +145,6 @@ func NewEasyTier(option EasyTierOption) (*EasyTier, error) {
 	if addr == "" {
 		addr = "easytier"
 	}
-	if err := option.CheckResource("PROXY_DNS_REGISTRY_NOT_IMPLEMENTED"); err != nil {
-		return nil, err
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	outbound := &EasyTier{
 		Base: NewBase(BaseOption{
@@ -168,7 +165,23 @@ func NewEasyTier(option EasyTierOption) (*EasyTier, error) {
 		cancel:     cancel,
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
-	outbound.unregister = dns.RegisterEasyTierDnsClient(option.Name, easyTierDNSTransport{easytier: outbound})
+	register := func() error {
+		outbound.unregister = dns.RegisterEasyTierDnsClient(option.Name, easyTierDNSTransport{easytier: outbound})
+		return nil
+	}
+	if option.ResourceOwner != nil {
+		if err := option.ResourceOwner.Add(register, func() error {
+			if outbound.unregister != nil {
+				outbound.unregister()
+			}
+			return nil
+		}); err != nil {
+			_ = outbound.Close()
+			return nil, err
+		}
+	} else {
+		_ = register()
+	}
 	return outbound, nil
 }
 

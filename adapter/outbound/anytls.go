@@ -157,6 +157,7 @@ func NewAnyTLS(option AnyTLSOption) (*AnyTLS, error) {
 		NextProtos:        option.ALPN,
 		FingerPrint:       option.Fingerprint,
 		ResourcePolicy:    option.ResourcePolicyForAPI,
+		ResourceOwner:     option.ResourceOwner,
 		Certificate:       option.Certificate,
 		PrivateKey:        option.PrivateKey,
 		ClientFingerprint: option.ClientFingerprint,

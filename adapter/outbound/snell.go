@@ -192,6 +192,7 @@ func NewSnell(option SnellOption) (*Snell, error) {
 			Host:              opt.Host,
 			Fingerprint:       opt.Fingerprint,
 			ResourcePolicy:    option.ResourcePolicyForAPI,
+			ResourceOwner:     option.ResourceOwner,
 			Certificate:       opt.Certificate,
 			PrivateKey:        opt.PrivateKey,
 			ClientFingerprint: option.ClientFingerprint,

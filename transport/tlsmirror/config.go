@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"github.com/metacubex/mihomo/common/lifecycle"
 	"math/big"
 	"net"
 	"time"
@@ -23,6 +24,7 @@ type ClientConfig struct {
 	ALPN               []string
 	Fingerprint        string
 	Certificate        string
+	ResourceOwner      *lifecycle.Group
 	ResourcePolicy     func(string) error
 	PrivateKey         string
 	ClientFingerprint  string

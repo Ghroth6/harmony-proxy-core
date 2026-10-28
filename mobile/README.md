@@ -41,21 +41,25 @@ cancellation and owner retirement terminate it without a replacement answer.
 MASQUE parses fallible node DNS settings before allocating its protocol stack,
 so failed preparation leaves no stack workers behind.
 
-Concrete remaining integration gaps are explicit at the operation that needs
-ownership: global node DNS registration (`PROXY_DNS_REGISTRY_NOT_IMPLEMENTED`),
-ZeroTier persistent state (`PROXY_STATE_STORE_NOT_IMPLEMENTED`), unprotected
-Hysteria fake-TCP raw sockets (`PROXY_RAW_SOCKET_NOT_IMPLEMENTED`) and a valid
-file-backed TLS pair's filesystem watcher (`PROXY_TLS_WATCHER_NOT_IMPLEMENTED`).
-The TLS loader first performs real file reads and key parsing; invalid paths
-retain upstream errors, and inline pairs need no watcher. SSH key and ZeroTier
-planet reads retain normal safe-path/read validation. These describe missing
-mobile ownership, not permanent protocol bans. Proxy-provider acquisition and
-refresh are not integrated with the immutable resource owner
-(`POLICY_PROXY_PROVIDER_NOT_IMPLEMENTED`); MRS rule-provider decoding and geodata
-refresh/swap also require their concrete mobile integrations. The current rule
-resource schema implements yaml/text, inline/file/HTTP and the options actually
-consumed by its owner; it does not claim full upstream resource compatibility.
+Proxy providers use the official parser, cache/payload initialization, refresh
+and fallback behavior. Individual initialization failures are logged without
+rejecting unrelated entries. Provider fetchers and health checks are bound to
+the current runtime; preparation does not fetch. Node DNS registrations and TLS
+file watchers are deferred until activation and retired with their node. The
+process-private home is bound once by the application; ZeroTier retains its
+original lazy persistent store. TLS watch ownership uses fsnotify directly to
+close partial starts and join callbacks (the pinned fswatch API cannot do so).
+MRS domain/ipcidr rules use the official decoder. GEO updates use the official
+stale-first schedule with a runtime context; new complete bytes are validated,
+saved and substituted into the active scoped matchers. Failed updates keep the
+previous matcher and stopping joins the updater.
 
+Hysteria fake-TCP remains an explicit integration gap
+(`PROXY_RAW_SOCKET_NOT_IMPLEMENTED`). The pinned Linux implementation directly
+opens raw IP and TCP sockets and invokes iptables outside the injected dialer.
+The OHOS build targets Linux, so compiling that code does not establish app
+privileges or VPN protection. No phone/root/network permission claim follows
+from host verification. Other Hysteria modes are independent.
 Public host regressions cover authenticated two-hop SOCKS5 bytes/destinations,
 one protected physical socket, closed preparation admission, upstream group
 expansion/selection identity, real file errors and refusal before unowned side
@@ -170,7 +174,7 @@ authorizes initial resource acquisition during preparation or Start.
 `networkGeneration` must be positive and match the actual accepted online
 snapshot for every Start. The old fixed-node zero-generation bypass is retired;
 even literal-IPv4 nodes require observation of the real underlying network.
-Input and request UTF-8 JSON are each <=1 MiB; receipt <=1 MiB.
+Input and request lengths must fit the signed C.int ABI (INT32_MAX); observation receipts retain their separate 1 MiB budget.
 Packet queue size is 128, MTU 1500 and transfer record capacity 64. The transient
 TCP handshake backlog is 1024, matching pinned sing-tun v0.4.27's gVisor
 forwarder. A completed handshake releases its backlog reservation while the
@@ -429,7 +433,7 @@ the bytes of a library: record the built library hash alongside the source commi
 
 `mobile/include/cb_validation.h` describes C ownership. `cb_validate_v1` copies
 borrowed inputs; the caller must free every returned buffer using `cb_free_v1`.
-Bounds are 1 MiB for input and 128 UTF-8 bytes for the operation identifier.
+Input length must fit the signed C.int ABI (INT32_MAX); operation identifiers remain at most 128 UTF-8 bytes.
 No engine objects or Go pointers cross the boundary.
 
 Backend diagnostic tests are not target-app acceptance. The application's real
@@ -675,7 +679,7 @@ Native Context binds the trusted resource root once through
 receives raw bytes plus a strict available-resource array;
 `cb_policy_validate_v1` receives the independently sealed prepared context;
 `cb_policy_resources_v1` observes the accepted run's actual resource ledger.
-Raw and control JSON are each bounded to 1 MiB; results to 8 MiB. No resource
+Raw/control/result lengths must fit the signed C.int ABI (INT32_MAX). No group, member, resource-count or aggregate-resource admission quota is imposed. Resource byte lengths retain exact JSON integers; explicit source size-limit is honored. No resource
 bytes or caller-chosen root cross the runtime request. Empty raw has a typed
 invalid result and its actual digest. Unknown/missing/null/duplicate fields,
 malformed Unicode and trailing JSON are rejected before typed preparation.

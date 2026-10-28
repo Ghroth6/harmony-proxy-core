@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/metacubex/mihomo/common/lifecycle"
 	"net"
 
 	"github.com/metacubex/mihomo/component/ca"
@@ -36,6 +37,7 @@ type ShadowTLSOption struct {
 	Password          string
 	Host              string
 	Fingerprint       string
+	ResourceOwner     *lifecycle.Group
 	ResourcePolicy    func(string) error
 	Certificate       string
 	PrivateKey        string
@@ -157,6 +159,7 @@ func NewShadowTLS(ctx context.Context, conn net.Conn, option *ShadowTLSOption) (
 		Fingerprint:    option.Fingerprint,
 		NameCertVerify: option.NameCertVerify,
 		ResourcePolicy: option.ResourcePolicy,
+		ResourceOwner:  option.ResourceOwner,
 		Certificate:    option.Certificate,
 		PrivateKey:     option.PrivateKey,
 	})

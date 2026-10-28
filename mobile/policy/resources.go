@@ -12,10 +12,12 @@ import (
 	"unicode/utf8"
 
 	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/rules"
 	RC "github.com/metacubex/mihomo/rules/common"
 	"github.com/metacubex/mihomo/rules/logic"
+	RP "github.com/metacubex/mihomo/rules/provider"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -26,21 +28,13 @@ type fixedResource struct {
 
 func (e *Engine) loadResources(available []contract.Resource) (map[string]fixedResource, string) {
 	result := map[string]fixedResource{}
-	var total int64
 	for _, resource := range available {
-		if !contract.IsDigest(resource.RefID) || !contract.IsDigest(resource.SourceDigest) || !contract.IsDigest(resource.ContentDigest) || resource.ByteLength <= 0 || resource.ByteLength > contract.MaxBinaryBytes || result[resource.RefID].value.RefID != "" {
+		if !contract.IsDigest(resource.RefID) || !contract.IsDigest(resource.SourceDigest) || !contract.IsDigest(resource.ContentDigest) || resource.ByteLength <= 0 || resource.ByteLength > contract.MaxResourceBytes || result[resource.RefID].value.RefID != "" {
 			return nil, "POLICY_RESOURCE_IDENTITY_INVALID"
 		}
 		allowed := resource.Kind == "rule-provider" && (resource.Format == "yaml" || resource.Format == "text" || resource.Format == "mrs") || (resource.Kind == "mmdb" || resource.Kind == "asn") && resource.Format == "mmdb" || (resource.Kind == "geoip" || resource.Kind == "geosite") && resource.Format == "dat"
 		if !allowed {
 			return nil, "POLICY_RESOURCE_IDENTITY_INVALID"
-		}
-		if resource.Kind == "rule-provider" && resource.ByteLength > contract.MaxTextBytes && resource.Format != "mrs" {
-			return nil, "POLICY_RESOURCE_BOUNDS"
-		}
-		total += resource.ByteLength
-		if total > contract.MaxTotalBytes {
-			return nil, "POLICY_RESOURCE_BOUNDS"
 		}
 		expected := "immutable/" + resource.ContentDigest[7:] + "/" + resource.Kind + "." + resource.Format
 		if resource.RelativePath != expected {
@@ -99,7 +93,14 @@ func matchResource(requirement contract.Requirement, resource fixedResource) str
 }
 
 func providerPayload(data []byte, format, behavior string) ([]string, string) {
-	if !utf8.Valid(data) || len(data) > contract.MaxTextBytes {
+	if format == "mrs" {
+		kind, err := P.ParseBehavior(behavior)
+		if err != nil || RP.ValidateRuleSet(data, kind, P.MrsRule, preflightProviderRule) != nil {
+			return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
+		}
+		return nil, ""
+	}
+	if !utf8.Valid(data) || len(data) > contract.MaxResourceBytes {
 		return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
 	}
 	var payload []string
@@ -129,9 +130,6 @@ func providerPayload(data []byte, format, behavior string) ([]string, string) {
 		}
 	default:
 		return nil, "POLICY_RESOURCE_FORMAT_UNSUPPORTED"
-	}
-	if len(payload) > 262144 {
-		return nil, "POLICY_RESOURCE_BOUNDS"
 	}
 	for _, line := range payload {
 		if strings.TrimSpace(line) == "" {

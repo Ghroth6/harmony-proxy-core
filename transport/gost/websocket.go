@@ -2,6 +2,7 @@ package gost
 
 import (
 	"context"
+	"github.com/metacubex/mihomo/common/lifecycle"
 	"net"
 
 	"github.com/metacubex/mihomo/component/ca"
@@ -24,6 +25,7 @@ type Option struct {
 	SkipCertVerify bool
 	NameCertVerify string
 	Fingerprint    string
+	ResourceOwner  *lifecycle.Group
 	ResourcePolicy func(string) error
 	Certificate    string
 	PrivateKey     string
@@ -74,6 +76,7 @@ func NewGostWebsocket(ctx context.Context, conn net.Conn, option *Option) (net.C
 			Fingerprint:    option.Fingerprint,
 			NameCertVerify: option.NameCertVerify,
 			ResourcePolicy: option.ResourcePolicy,
+			ResourceOwner:  option.ResourceOwner,
 			Certificate:    option.Certificate,
 			PrivateKey:     option.PrivateKey,
 		})

@@ -15,7 +15,7 @@ func TestOriginalPolicyDoesNotBorrowGlobalNodeDNSRegistry(t *testing.T) {
 	defer engine.Close()
 	input := []byte("ipv6: false\ndns: {enable: false}\nproxies:\n - {name: Public, type: tailscale}\nrules: ['MATCH,Public']\n")
 	plan := engine.Plan("node-global-resource-owner", input, nil)
-	if plan.Category != "unsupported" || plan.Code != "PROXY_DNS_REGISTRY_NOT_IMPLEMENTED" {
+	if plan.Category != "planned" || plan.Code != "" {
 		t.Fatalf("global DNS registration requires a captured candidate owner: %s/%s", plan.Category, plan.Code)
 	}
 }

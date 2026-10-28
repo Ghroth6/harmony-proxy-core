@@ -23,7 +23,7 @@ import (
 	"github.com/metacubex/mihomo/transport/socks5"
 )
 
-func TestOriginalPolicyKeepsRealNodeFileReadsAndReportsUnownedTLSWatcher(t *testing.T) {
+func TestOriginalPolicyKeepsRealNodeFileReadsAndOwnsDeferredTLSWatcher(t *testing.T) {
 	root := t.TempDir()
 	oldRoot := C.Path.HomeDir()
 	C.SetHomeDir(root)
@@ -50,7 +50,7 @@ func TestOriginalPolicyKeepsRealNodeFileReadsAndReportsUnownedTLSWatcher(t *test
 		{"read-key", "{name: Public, type: ssh, server: 127.0.0.1, port: 22, username: public, private-key: ./node.key}", "planned", ""},
 		{"missing-key", "{name: Public, type: ssh, server: 127.0.0.1, port: 22, username: public, private-key: ./missing.key}", "invalid", "PROXY_INVALID"},
 		{"missing-tls-file", "{name: Public, type: socks5, server: 127.0.0.1, port: 1080, tls: true, certificate: ./missing.crt, private-key: ./missing.key}", "invalid", "PROXY_INVALID"},
-		{"watcher-owner", "{name: Public, type: socks5, server: 127.0.0.1, port: 1080, tls: true, certificate: ./tls.crt, private-key: ./tls.key}", "unsupported", "PROXY_TLS_WATCHER_NOT_IMPLEMENTED"},
+		{"watcher-owner", "{name: Public, type: socks5, server: 127.0.0.1, port: 1080, tls: true, certificate: ./tls.crt, private-key: ./tls.key}", "planned", ""},
 	} {
 		t.Run(item.name, func(t *testing.T) {
 			engine, err := policy.NewEngine(t.TempDir())

@@ -20,6 +20,13 @@ type autoCloseProxyAdapter struct {
 	lifetime *adapterLifetime
 }
 
+func (a *autoCloseProxyAdapter) ActivateResources() error {
+	if owner, ok := a.ProxyAdapter.(interface{ ActivateResources() error }); ok {
+		return owner.ActivateResources()
+	}
+	return nil
+}
+
 // Keep the owner containing the finalizer out of this graph. Returned wrappers
 // hold that owner, but the lifetime only holds raw connection close records.
 // Calling raw.AddRef(owner) here would create a cycle through the finalizer.

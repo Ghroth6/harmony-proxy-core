@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"errors"
+	"github.com/metacubex/mihomo/common/lifecycle"
 	"net"
 	"net/netip"
 	"sync/atomic"
@@ -52,6 +53,8 @@ func (t *preparationProxyLookup) Proxies() map[string]C.Proxy {
 // boundary. The optional observer reports attempts, never destinations or data.
 func ValidateMobileNode(node map[string]any, networkObserver func()) (err error) {
 	owned := &configresources.Set{}
+	resources := &lifecycle.Group{}
+	defer func() { err = errors.Join(err, resources.Close()) }()
 	guard := &preparationDialer{observer: networkObserver}
 	defer func() {
 		if recover() != nil {
@@ -66,7 +69,7 @@ func ValidateMobileNode(node map[string]any, networkObserver func()) (err error)
 			err = &MobileValidationError{Code: "PREPARATION_NETWORK_FORBIDDEN", cause: err}
 		}
 	}()
-	proxy, parseErr := adapter.ParseProxy(node, adapter.WithPhysicalDialerForAPI(func([]dialer.Option) C.Dialer { return guard }), adapter.WithProxyLookupForAPI(&preparationProxyLookup{guard: guard}), adapter.WithResourcePolicyForAPI(mobileResourcePolicy))
+	proxy, parseErr := adapter.ParseProxy(node, adapter.WithPhysicalDialerForAPI(func([]dialer.Option) C.Dialer { return guard }), adapter.WithProxyLookupForAPI(&preparationProxyLookup{guard: guard}), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithResourceOwner(resources))
 	if proxy != nil {
 		owned.AddProxy(proxy)
 	}

@@ -66,6 +66,7 @@ func Dial(ctx context.Context, rawConn net.Conn, cfg ClientConfig) (*Conn, error
 		NameCertVerify: cfg.NameCertVerify,
 		Certificate:    cfg.Certificate,
 		ResourcePolicy: cfg.ResourcePolicy,
+		ResourceOwner:  cfg.ResourceOwner,
 		PrivateKey:     cfg.PrivateKey,
 	})
 	if err != nil {

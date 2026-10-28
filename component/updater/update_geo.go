@@ -298,31 +298,12 @@ func RegisterGeoUpdater() {
 		log.Errorln("[GEO] Invalid update interval: %d", updateInterval)
 		return
 	}
-
 	go func() {
-		ticker := time.NewTicker(time.Duration(updateInterval) * time.Hour)
-		defer ticker.Stop()
-
 		lastUpdate, err := getUpdateTime()
 		if err != nil {
-			log.Errorln("[GEO] Get GEO database update time error: %s", err.Error())
+			log.Errorln("[GEO] Get GEO database update time error: %s", err)
 			return
 		}
-
-		log.Infoln("[GEO] last update time %s", lastUpdate)
-		if lastUpdate.Add(time.Duration(updateInterval) * time.Hour).Before(time.Now()) {
-			log.Infoln("[GEO] Database has not been updated for %v, update now", time.Duration(updateInterval)*time.Hour)
-			if err := UpdateGeoDatabases(); err != nil {
-				log.Errorln("[GEO] Failed to update GEO database: %s", err.Error())
-				return
-			}
-		}
-
-		for range ticker.C {
-			log.Infoln("[GEO] updating database every %d hours", updateInterval)
-			if err := UpdateGeoDatabases(); err != nil {
-				log.Errorln("[GEO] Failed to update GEO database: %s", err.Error())
-			}
-		}
+		RunGeoUpdater(context.Background(), time.Duration(updateInterval)*time.Hour, lastUpdate, func(context.Context) error { return UpdateGeoDatabases() })
 	}()
 }

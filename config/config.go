@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/metacubex/mihomo/common/lifecycle"
 	"net"
 	"net/netip"
 	"net/url"
@@ -217,12 +218,13 @@ type Config struct {
 	TLS           *TLS
 
 	// A pointer preserves ownership across shallow runtime copies of a candidate.
-	candidateResources    *configresources.Set
-	mobileNetwork         *mobileCandidateDialer
-	mobilePolicy          *contract.PreparedContext
-	mobilePolicyResources *MobilePolicyResources
-	mobilePolicyFailure   func(string)
-	mobileDNS             *mobileDNS
+	candidateResources     *configresources.Set
+	mobileNetwork          *mobileCandidateDialer
+	mobilePolicy           *contract.PreparedContext
+	mobilePolicyResources  *MobilePolicyResources
+	mobileAdapterResources *lifecycle.Group
+	mobilePolicyFailure    func(string)
+	mobileDNS              *mobileDNS
 }
 
 type RawCors struct {
@@ -985,7 +987,7 @@ func parseProxiesWithBuiltins(cfg *RawConfig, owned *configresources.Set, wrapBu
 			return nil, nil, fmt.Errorf("can not defined a provider called `%s`", provider.ReservedName)
 		}
 
-		pd, err := provider.ParseProxyProvider(name, mapping, T.Tunnel)
+		pd, err := provider.ParseProxyProvider(name, mapping, T.Tunnel, mobileOptions...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("parse proxy provider %s error: %w", name, err)
 		}

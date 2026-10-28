@@ -138,6 +138,9 @@ func HttpRequest(ctx context.Context, url, method string, header map[string][]st
 		client.Transport = &resourceTransport{base: transport, policy: opt.resource}
 		client.CheckRedirect = opt.resource.redirect
 	}
+	if opt.observer != nil {
+		client.Transport = &observedTransport{client.Transport, opt.observer}
+	}
 	response, err := client.Do(req)
 	if err != nil {
 		if cause := ctx.Err(); cause != nil {
@@ -178,10 +181,27 @@ func (b *requestBody) Close() error {
 type Option func(opt *option)
 
 type option struct {
+	observer     func()
 	specialProxy string
 	dialer       C.Dialer
 	caOption     ca.Option
 	resource     *resourceRequest
+}
+
+type observedTransport struct {
+	http.RoundTripper
+	observe func()
+}
+
+func (t *observedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if err := request.Context().Err(); err != nil {
+		return nil, err
+	}
+	t.observe()
+	return t.RoundTripper.RoundTrip(request)
+}
+func WithRequestObserver(observer func()) Option {
+	return func(opt *option) { opt.observer = observer }
 }
 
 func WithSpecialProxy(name string) Option {

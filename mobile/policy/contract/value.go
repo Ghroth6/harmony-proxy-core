@@ -7,15 +7,13 @@ import "regexp"
 const Version = 1
 const ABIVersion = 2
 const PlannerVersion = "mobile-policy-1"
-const MaxControlBytes = 1024 * 1024
-const MaxResultBytes = 8 * 1024 * 1024
-const MaxResources = 128
-const MaxTextBytes = 16 * 1024 * 1024
-const MaxBinaryBytes = 128 * 1024 * 1024
-const MaxTotalBytes = 256 * 1024 * 1024
-const MaxGroups = 512
-const MaxMembers = 4096
-const MaxTotalMembers = 32768
+
+// C.GoBytes takes a signed C.int; lengths crossing that ABI must fit it.
+const MaxControlBytes = 1<<31 - 1
+const MaxResultBytes = 1<<31 - 1
+
+// Resource lengths cross JSON into JavaScript and must remain exact integers.
+const MaxResourceBytes = 1<<53 - 1
 
 type Resource struct {
 	RefID         string `json:"refId"`

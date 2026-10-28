@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	MaxInputBytes     = 1024 * 1024
+	MaxInputBytes     = 1<<31 - 1 // signed C.int length at the native ABI
 	MaxOperationBytes = 128
 	ABIVersion        = 1
 )

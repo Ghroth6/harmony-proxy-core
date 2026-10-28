@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/common/structure"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/resource"
@@ -44,7 +45,7 @@ type proxyProviderSchema struct {
 	Header      map[string][]string `provider:"header,omitempty"`
 }
 
-func ParseProxyProvider(name string, mapping map[string]any, tunnel C.Tunnel) (_ P.ProxyProvider, err error) {
+func ParseProxyProvider(name string, mapping map[string]any, tunnel C.Tunnel, options ...adapter.ProxyOption) (_ P.ProxyProvider, err error) {
 	decoder := structure.NewDecoder(structure.Option{TagName: "provider", WeaklyTypedInput: true})
 
 	schema := &proxyProviderSchema{
@@ -68,7 +69,7 @@ func ParseProxyProvider(name string, mapping map[string]any, tunnel C.Tunnel) (_
 		}
 		hcInterval = uint(schema.HealthCheck.Interval)
 	}
-	parser, err := NewProxiesParser(name, tunnel, schema.Filter, schema.ExcludeFilter, schema.ExcludeType, schema.DialerProxy, schema.Override, schema.AgeSecretKey)
+	parser, err := NewProxiesParser(name, tunnel, schema.Filter, schema.ExcludeFilter, schema.ExcludeType, schema.DialerProxy, schema.Override, schema.AgeSecretKey, options...)
 	if err != nil {
 		return nil, err
 	}

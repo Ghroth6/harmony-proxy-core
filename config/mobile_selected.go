@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"errors"
+	"github.com/metacubex/mihomo/common/lifecycle"
 	"net"
 	"net/netip"
 	"strings"
@@ -143,7 +144,7 @@ func (c *Config) ActivateMobileNetwork(generation uint64) error {
 func BuildMobileSelectedCandidate(raw *RawConfig) (cfg *Config, err error) {
 	owned := &configresources.Set{}
 	gate := &mobileCandidateDialer{options: []dialer.Option{dialer.WithOnlySingleStack(true), dialer.WithResolver(resolver.SystemResolver)}}
-	cfg = &Config{candidateResources: owned, mobileNetwork: gate, General: &General{Mode: tunnel.Rule, FindProcessMode: process.FindProcessOff, IPv6: false}, Providers: map[string]P.ProxyProvider{}, RuleProviders: map[string]P.RuleProvider{}, SubRules: map[string][]C.Rule{}}
+	cfg = &Config{candidateResources: owned, mobileAdapterResources: &lifecycle.Group{}, mobileNetwork: gate, General: &General{Mode: tunnel.Rule, FindProcessMode: process.FindProcessOff, IPv6: false}, Providers: map[string]P.ProxyProvider{}, RuleProviders: map[string]P.RuleProvider{}, SubRules: map[string][]C.Rule{}}
 	defer func() {
 		if recover() != nil {
 			err = &MobileValidationError{Code: "CORE_FAILURE"}
@@ -156,7 +157,7 @@ func BuildMobileSelectedCandidate(raw *RawConfig) (cfg *Config, err error) {
 		return cfg, &MobileValidationError{Code: "CAPABILITY_NOT_COVERED"}
 	}
 	lookup := &mobilePolicyProxyLookup{candidate: cfg}
-	cfg.Proxies, cfg.Providers, err = parseProxiesInto(raw, owned, adapter.WithPhysicalDialerForAPI(gate.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithDNSServiceForAPI(cfg.mobileAdapterDNSService), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
+	cfg.Proxies, cfg.Providers, err = parseProxiesInto(raw, owned, adapter.WithPhysicalDialerForAPI(gate.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithResourceOwner(cfg.mobileAdapterResources), adapter.WithDNSServiceForAPI(cfg.mobileAdapterDNSService), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
 		return &mobilePolicyBuiltin{ProxyAdapter: a, fence: gate}
 	}))
 	if err != nil {

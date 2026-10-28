@@ -18,7 +18,7 @@ import (
 )
 
 func (e *Engine) prepareProviders(raw *config.RawConfig, prepared contract.PreparedContext, requirements []contract.Requirement, fixed map[string]fixedResource) (*config.MobilePolicyResources, error) {
-	inputs := &config.MobilePolicyResources{RuleProviders: map[string]P.RuleProvider{}}
+	inputs := &config.MobilePolicyResources{RuleProviders: map[string]P.RuleProvider{}, ResourceAttempt: func() { actualResourceAttempts.Add(1) }}
 	geo, parseGeo, err := prepareGeoData(raw, fixed)
 	if err != nil {
 		return inputs, err
@@ -29,6 +29,7 @@ func (e *Engine) prepareProviders(raw *config.RawConfig, prepared contract.Prepa
 		return inputs, err
 	}
 	session.geo = geo
+	session.prepareGeoUpdates(requirements, fixed)
 	inputs.Services = session
 	if raw.Profile.StoreFakeIP && raw.DNS.Enable && raw.DNS.EnhancedMode == C.DNSFakeIP {
 		inputs.FakeIPState, err = fakeip.NewScopedPersistence(e.root, prepared.InputDigest)

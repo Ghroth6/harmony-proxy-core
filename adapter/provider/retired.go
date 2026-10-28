@@ -83,6 +83,7 @@ func (pp *proxySetProvider) setProxies(proxies []C.Proxy) {
 		go pp.finishRetiredProxy(entry)
 	}
 	pp.proxies = proxies
+	activateProxyResources(proxies)
 	pp.version++
 	pp.healthCheck.setProxies(proxies)
 	if pp.healthCheck.auto() {
@@ -145,18 +146,6 @@ func (pp *proxySetProvider) waitRetiredProxies(ctx context.Context) error {
 				continue
 			}
 		}
-		if entry.err != nil {
-			errs = append(errs, fmt.Errorf("retire previous proxy %q: %w", entry.name, entry.err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-func (pp *proxySetProvider) retirementError() error {
-	pp.mutex.RLock()
-	defer pp.mutex.RUnlock()
-	var errs []error
-	for entry := range pp.retired {
 		if entry.err != nil {
 			errs = append(errs, fmt.Errorf("retire previous proxy %q: %w", entry.name, entry.err))
 		}

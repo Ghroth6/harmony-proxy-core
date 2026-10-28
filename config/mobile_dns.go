@@ -115,6 +115,11 @@ func (c *Config) ActivateMobilePolicyDNS(root context.Context) error {
 	if err := c.CheckCandidate(); err != nil {
 		return err
 	}
+	if c.mobileAdapterResources != nil {
+		if err := c.mobileAdapterResources.Activate(); err != nil {
+			return err
+		}
+	}
 	if c.mobileDNS == nil {
 		return nil
 	}

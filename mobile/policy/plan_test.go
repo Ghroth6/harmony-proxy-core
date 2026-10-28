@@ -11,32 +11,6 @@ import (
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 )
 
-func TestPolicyGeoAutoUpdateCannotPretendThatMissingSchedulerIsReady(t *testing.T) {
-	engine, err := policy.NewEngine(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer engine.Close()
-	input := []byte("ipv6: false\ndns: {enable: false}\ngeo-auto-update: true\ngeo-update-interval: 1\nrules: ['MATCH,DIRECT']\n")
-	plan := engine.Plan("geo-periodic-not-ready", input, nil)
-	if plan.Category != "unsupported" || plan.Code != "POLICY_GEODATA_UPDATE_UNSUPPORTED" || plan.ResourcesComplete {
-		t.Fatal("unimplemented original geodata updates must be an explicit whole-policy refusal")
-	}
-	prepared, err := contract.Seal(plan.InputDigest, nil, publicPlatform(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if receipt := engine.Validate("geo-periodic-validate", input, prepared); receipt.Category == "pass" || receipt.Code != "POLICY_GEODATA_UPDATE_UNSUPPORTED" {
-		t.Fatal("static validation cannot advertise a missing runtime updater")
-	}
-	if cfg, err := engine.BuildCandidate(input, prepared); cfg != nil || err == nil || err.Error() != "POLICY_GEODATA_UPDATE_UNSUPPORTED" {
-		if cfg != nil {
-			_ = cfg.Discard(context.Background())
-		}
-		t.Fatal("independent runtime construction must retain the same refusal")
-	}
-}
-
 func TestPolicyEngineCannotCloseWhileAcceptedCandidateOwnsResources(t *testing.T) {
 	engine, err := policy.NewEngine(t.TempDir())
 	if err != nil {
