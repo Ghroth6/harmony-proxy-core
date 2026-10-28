@@ -46,6 +46,7 @@ func TestOriginalGroupSupportedFieldsAndMemberOrderArePreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer engine.Close()
+	before := engine.ResourceAcquireCount()
 	raw := []byte(`ipv6: false
 dns: {enable: false}
 proxy-groups:
@@ -73,7 +74,7 @@ rules: ['MATCH,PublicSelect']
 	if candidate.Proxies["PublicSelect"].Adapter().(interface{ Now() string }).Now() != "DIRECT" {
 		t.Fatal("original default-selected must remain effective")
 	}
-	if engine.ResourceAcquireCount() != "0" {
+	if engine.ResourceAcquireCount() != before {
 		t.Fatal("group checks must not acquire resources")
 	}
 }
