@@ -6,30 +6,34 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/metacubex/mihomo/mobile/content"
 	"github.com/metacubex/mihomo/mobile/policy"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/mobile/protection"
 	R "github.com/metacubex/mihomo/mobile/runtime"
+	"go.yaml.in/yaml/v3"
 )
 
-// Production composes the inspector's canonical JSON with this saved base.
-// Neither component supplies a hidden IPv6 or DNS setting.
-func composeInspectedNode(t *testing.T, original []byte) ([]byte, content.Receipt) {
+// Core runtime fixtures use canonical nodes. Application import integration is
+// covered by the application nativecore tests, without a reverse dependency.
+func composeInspectedNode(t *testing.T, original []byte) ([]byte, string) {
 	t.Helper()
-	inspected := content.Inspect("public-node-inspection", original)
-	if len(inspected.Entries) != 1 || inspected.Entries[0].Status != "supported" {
-		t.Fatalf("public node inspection failed: %+v", inspected)
+	var source struct {
+		Proxies []map[string]any `yaml:"proxies"`
 	}
-	input := []byte("proxies:\n  - " + inspected.Entries[0].NodeJSON + "\nproxy-groups:\n  - name: selected\n    type: select\n    proxies: [\"selected-node\"]\nrules:\n  - MATCH,selected\n")
-	return input, inspected
+	if err := yaml.Unmarshal(original, &source); err != nil || len(source.Proxies) != 1 {
+		t.Fatal("invalid node fixture")
+	}
+	source.Proxies[0]["name"] = "selected-node"
+	node, err := json.Marshal(source.Proxies[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("proxies:\n  - " + string(node) + "\nproxy-groups:\n  - name: selected\n    type: select\n    proxies: [\"selected-node\"]\nrules:\n  - MATCH,selected\n")
+	return input, contract.Digest(original)
 }
-
 func TestComposedNodesUsePreparedPolicyDefaultsAndJoinedRuntime(t *testing.T) {
 	for _, node := range []struct {
 		name, fields string
@@ -62,7 +66,7 @@ func TestComposedNodesUsePreparedPolicyDefaultsAndJoinedRuntime(t *testing.T) {
 			})
 			baseline := owner.ResourceAcquireCount()
 			plan := owner.Plan("public-node-plan", input, nil)
-			if plan.Category != "planned" || !plan.ResourcesComplete || len(plan.Requirements) != 0 || !plan.GeneralIPv6 || plan.DNSEnabled || plan.InputDigest == inspected.InputDigest {
+			if plan.Category != "planned" || !plan.ResourcesComplete || len(plan.Requirements) != 0 || !plan.GeneralIPv6 || plan.DNSEnabled || plan.InputDigest == inspected {
 				t.Fatalf("composed identity and upstream IPv6/DNS defaults changed: %+v", plan)
 			}
 			networkGeneration := publishClientNetwork(t, manager)
@@ -107,21 +111,6 @@ func TestComposedNodesUsePreparedPolicyDefaultsAndJoinedRuntime(t *testing.T) {
 			started := manager.Start(manager.Consume(generation, 1, 9), input, encoded)
 			if started.Outcome != "running" || started.Stack != "gvisor-dual-tcp-udp" || started.NetworkGeneration != networkGeneration || started.InputDigest != plan.InputDigest || started.CandidateDigest != prepared.CandidateDigest || started.ResourceManifestDigest != prepared.ResourceManifestDigest || started.PlatformPolicyDigest != prepared.PlatformPolicyDigest || started.GroupPreferencesDigest != prepared.GroupPreferencesDigest || owner.ResourceAcquireCount() != baseline || protected.Load() != 0 {
 				t.Fatalf("composed node did not enter common prepared runtime: %+v", started)
-			}
-			if !node.udp {
-				peer, err := net.ListenPacket("udp4", "127.0.0.1:0")
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer peer.Close()
-				system.inject(clientUDP4Packet(peer.LocalAddr(), 51233, []byte("must-not-fall-back-direct")))
-				_ = peer.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
-				if _, _, err := peer.ReadFrom(make([]byte, 128)); err == nil {
-					t.Fatal("TCP-only composed node silently sent UDP through DIRECT")
-				}
-				if protected.Load() != 0 || len(manager.Query(generation, 1).Connections) != 0 {
-					t.Fatal("unsupported node UDP opened a physical route or published a successful connection")
-				}
 			}
 			stopped := manager.Stop(generation)
 			if stopped.Phase != "stopped" || stopped.Cleanup != "complete" || stopped.PendingOwners != (R.PendingOwners{}) {

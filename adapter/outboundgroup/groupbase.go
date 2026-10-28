@@ -11,7 +11,6 @@ import (
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/utils"
-	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
@@ -35,7 +34,6 @@ type GroupBase struct {
 	testTimeout       int
 	maxFailedTimes    int
 	emptyFallback     C.Proxy
-	selection         selectionState
 
 	// for GetProxies
 	getProxiesMutex  sync.Mutex
@@ -292,9 +290,7 @@ func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func(
 
 		gb.failedTimes++
 		if gb.failedTimes == 1 {
-			if forwarding.Generation(ctx) == 0 {
-				log.Debugln("ProxyGroup: %s first failed", gb.Name())
-			}
+			log.Debugln("ProxyGroup: %s first failed", gb.Name())
 			gb.failedTime = time.Now()
 		} else {
 			if time.Since(gb.failedTime) > time.Duration(gb.testTimeout)*time.Millisecond {
@@ -302,15 +298,9 @@ func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func(
 				return
 			}
 
-			if forwarding.Generation(ctx) == 0 {
-				log.Debugln("ProxyGroup: %s failed count: %d", gb.Name(), gb.failedTimes)
-			}
+			log.Debugln("ProxyGroup: %s failed count: %d", gb.Name(), gb.failedTimes)
 			if gb.failedTimes >= gb.maxFailedTimes {
-				if forwarding.Generation(ctx) == 0 {
-					log.Warnln("because %s failed multiple times, activate health check", gb.Name())
-				} else {
-					log.Warnln("Mobile group activates an owned health check after failures")
-				}
+				log.Warnln("because %s failed multiple times, activate health check", gb.Name())
 				fn()
 			}
 		}

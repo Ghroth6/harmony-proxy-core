@@ -69,9 +69,9 @@ func (t *Transfer) phase(phase string) {
 	if changed {
 		switch phase {
 		case "constructing":
-			log.MobilePhase(t.receipt.Generation, log.StageConstructing)
+			log.Infoln("[Mobile] generation=%d constructing", t.receipt.Generation)
 		case "starting":
-			log.MobilePhase(t.receipt.Generation, log.StageStarting)
+			log.Infoln("[Mobile] generation=%d starting", t.receipt.Generation)
 		}
 	}
 }
@@ -95,7 +95,7 @@ func (t *Transfer) failure(code string) {
 	}
 	t.mu.Unlock()
 	if first {
-		log.MobilePhase(t.receipt.Generation, log.StageRuntimeFailed)
+		log.Infoln("[Mobile] generation=%d runtime-failed", t.receipt.Generation)
 	}
 	t.stop()
 }
@@ -271,7 +271,7 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.failure("POLICY_RESOURCES_ACTIVATE")
 		return
 	}
-	log.MobilePhase(target.Generation, log.StageRunning)
+	log.Infoln("[Mobile] generation=%d running", target.Generation)
 }
 func (t *Transfer) stop() {
 	t.mu.Lock()
@@ -287,7 +287,7 @@ func (t *Transfer) stop() {
 	admitted := t.startAdmitted
 	t.mu.Unlock()
 	if changed {
-		log.MobilePhase(t.receipt.Generation, log.StageStopping)
+		log.Infoln("[Mobile] generation=%d stopping", t.receipt.Generation)
 	}
 	if t.manager.gate != nil {
 		t.manager.gate.Unregister(t.receipt.Generation)
@@ -351,7 +351,7 @@ func (t *Transfer) cleanup() {
 		}
 		if engine.prepared {
 			if err := tunnel.StopForwarding(context.Background()); err != nil {
-				log.MobileFailure(t.receipt.Generation, log.StageCleanupFailed, err)
+				log.Errorln("[Mobile] generation=%d cleanup-failed: %v", t.receipt.Generation, err)
 				unknown = true
 				t.resource("forwarding", "unknown", 1)
 			} else {
@@ -401,7 +401,7 @@ func (t *Transfer) cleanup() {
 				err = engine.cfg.Discard(context.Background())
 			}
 			if err != nil {
-				log.MobileFailure(t.receipt.Generation, log.StageCleanupFailed, err)
+				log.Errorln("[Mobile] generation=%d cleanup-failed: %v", t.receipt.Generation, err)
 				t.resource("candidate", "unknown", 1)
 			} else {
 				t.resource("candidate", "closed", 0)
@@ -441,9 +441,9 @@ func (t *Transfer) cleanup() {
 	close(t.cleanupDone)
 	t.mu.Unlock()
 	if unknown {
-		log.MobilePhase(t.receipt.Generation, log.StageCleanupFailed)
+		log.Infoln("[Mobile] generation=%d cleanup-failed", t.receipt.Generation)
 	} else {
-		log.MobilePhase(t.receipt.Generation, log.StageStopped)
+		log.Infoln("[Mobile] generation=%d stopped", t.receipt.Generation)
 	}
 }
 func ownerRead(engine *runEngine) *descriptorOwner {
@@ -476,7 +476,7 @@ func (e *runEngine) readPump() {
 		if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EINTR) {
 			if err = system.Poll(e.transfer.ctx, e.transfer.fd.fd, e.wakeRead.fd, false); err != nil {
 				if e.transfer.ctx.Err() == nil {
-					log.MobileFailure(e.transfer.receipt.Generation, log.StageTunRead, err)
+					log.Errorln("[Mobile] generation=%d tun-read: %v", e.transfer.receipt.Generation, err)
 					e.transfer.failure("TUN_READ_POLL")
 				}
 				return
@@ -484,7 +484,7 @@ func (e *runEngine) readPump() {
 			continue
 		}
 		if err != nil || n <= 0 || n > MTU {
-			log.MobileFailure(e.transfer.receipt.Generation, log.StageTunRead, err)
+			log.Errorln("[Mobile] generation=%d tun-read: %v", e.transfer.receipt.Generation, err)
 			e.transfer.failure("TUN_READ")
 			return
 		}
@@ -535,7 +535,7 @@ func (e *runEngine) writePump() {
 		packet.DecRef()
 		if err != nil {
 			if e.transfer.ctx.Err() == nil {
-				log.MobileFailure(e.transfer.receipt.Generation, log.StageTunWrite, err)
+				log.Errorln("[Mobile] generation=%d tun-write: %v", e.transfer.receipt.Generation, err)
 				e.transfer.failure("TUN_WRITE")
 			}
 			return

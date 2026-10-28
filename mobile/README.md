@@ -1,43 +1,15 @@
 # Mobile core boundaries
 
-## Subscription node checkpoint (2026-10-11)
+## Application boundary and node preparation
 
-`mobile/content.Inspect` is the deterministic byte-to-value boundary exported by
-`cb_content_contract_version_v1` and `cb_content_inspect_v1` (contract 1).
-It inspects plaintext URI lists, Base64 URI lists and YAML `proxies` entries.
-Every nonempty list record or YAML node keeps its original position, including
-malformed, unsupported and duplicate-name entries. Entry identity is a digest of
-the original record, independent of the exact canonical `nodeJson` digest; input
-identity is a digest of the complete original bytes. Canonical nodes use the
-explicit `selected-node` alias. Original YAML policy remains separate.
-
-URI conversion currently maps SS, Trojan, VMess, VLESS, AnyTLS and Hysteria2.
-Unmapped URI query/JSON parameters remain explicit converter gaps; this is not
-the engine's protocol admission policy. YAML nodes retain all original fields
-and use the pinned `adapter.ParseProxy` decoder, constructors and errors, including
-SOCKS5/HTTP, all implemented ciphers, IPv6 literals and upstream transport options.
-Unknown YAML fields and weak scalar decoding follow that engine's semantics;
-canonical node bytes keep original values rather than rewriting defaults.
-The protocol label is a bounded opaque identifier, not a six-family enum. ABI 1
-and `mobile-content-1` identities remain unchanged. Constructor success is static
-acceptance, never reachability or complete protocol lifecycle acceptance.
-
-Original plaintext URI credentials are percent-decoded once; both SS Base64
-credential forms retain decoded literal percent signs and `@`. Duplicate fields,
-invalid UTF-8, lone JSON UTF-16 surrogates and malformed encoding stay explicit
-negatives. Bounds remain 1 MiB raw/decoded/node/candidate, 4096 entries and 8 MiB
-receipt. Excess rejects the whole result without truncating entries or parameters.
-Private canonical nodes and original bytes are not display/log values.
-
-The converter preserves explicit empty TLS names, IP certificate names, HTTP/2's
-original TLS flag, ECH query overrides and Hysteria2 port-list spelling. HTTP/2
-keeps upstream forced TLS semantics without changing the raw flag. Plain TCP
-generator host/path values remain inactive `http-opts`; `mobile-uri-opts` retains
-mapped VLESS `quicSecurity` empty/none values. Unmapped URI parameters still
-require a converter implementation. YAML fingerprints, packet encodings and
-other values follow the pinned adapter, including its fallback behavior, while
-the unchanged original input remains authoritative.
-
+Link recognition, URI conversion, import limits and selected-node composition
+belong to the application. Their implementation and tests now live in
+`clashbox-meta/app/nativecore`; this core no longer implements content inspection.
+`mobile/bridge` exports the proxy/platform C ABI. `cmd/mobile` builds that API
+alone; the application imports the bridge into its own shared-library main
+package to compose the unchanged application content ABI. Build explicitly with
+`scripts/build-mobile.ps1 -ApplicationBridge <app/nativecore>`, alongside the
+documented toolchain and cache arguments. The receipt binds both repositories.
 Preparation supplies a deny-only physical dialer and candidate-local proxy lookup.
 `WithPhysicalDialerForAPI` replaces only the final physical transport: upstream
 `dialer-proxy` keeps its actual route and each node retains its IP/interface/mark/
@@ -436,7 +408,7 @@ identified explicitly.
 
 | Internal responsibility | Current implementation | Ownership and failure rule |
 | --- | --- | --- |
-| C boundary | `cmd/mobile/main.go`, `mobile/include/cb_validation.h` | Check pointer/size inputs, copy borrowed bytes, serialize receipt into caller-freed output; no retained caller pointers or engine objects |
+| C boundary | `mobile/bridge/main.go`, `mobile/include/cb_validation.h` | Check pointer/size inputs, copy borrowed bytes, serialize receipt into caller-freed output; no retained caller pointers or engine objects |
 | Validation operation | `mobile/validation/validation.go` | Own one request, digest and receipt; decode with the engine, classify original input scope, invoke supported semantics, return covered/uncovered capabilities |
 | Static semantic construction | `config/mobile_validation.go` | Validate required scalars and supported fields before reusing actual proxy/group/rule constructors; never publish a running configuration |
 | Temporary resource ownership | `component/configresources` | Register constructed resources, close and wait before returning; cleanup failure prevents a passing validation receipt |
@@ -546,7 +518,7 @@ The real node constructor retains upstream protocol, scalar and TLS semantics;
 explicit integration gaps remain incomplete. The existing validation tests keep
 this independent user capability and its truthful coverage boundaries.
 
-`node_policy_runtime_test.go` exercises public inspection → production-shaped
+`node_policy_runtime_test.go` exercises canonical nodes → production-shaped
 composition → Plan/Seal/Validate/BuildCandidate → Start/Stop with real policy,
 upstream defaults, independent candidate ownership and joined resources. Existing
 Trojan runtime tests use that same prepared-policy path with real isolated TLS,
@@ -555,40 +527,31 @@ traffic, failed protection and cancellation. Packet/UDP/DNS/IPv6 tests exercise
 actual gVisor ingress. These host checks do not establish target VPN forwarding,
 external reachability or phone cleanup.
 
-### Safe mobile system logging
+### Original core logging
 
-The OHOS `cmd/mobile` library installs one process-lifetime `log.MobileOutput`
-through `cmd/mobile/log_ohos.go`. It calls the existing SDK's `OH_LOG_Print`
-and links `libhilog_ndk.z.so`, using the application's domain `0x0000`, tag
-`clashoh` and a `CORE` source prefix. It accepts only enum/scalar events: actual
-runtime phase, failed operation, finite error class, observed errno and the
-runtime generation. HiLog process identity plus the application's service
-instance record scopes the generation. No node, endpoint, input, SNI, password,
-certificate detail or original error text is rendered. Unclassified upstream
-format messages are omitted in mobile mode before the ordinary stdout and
-subscriber routes; stopping a generation never reopens those routes. The
-standalone daemon retains its existing text/subscription and error behavior.
+`log/log.go` follows the fixed upstream implementation: ordinary Debug/Info/Warn/
+Error messages reach its subscriber stream with original text, and Fatal keeps
+its original termination behavior. There is no mobile suppression switch or
+typed error replacement. Runtime lifecycle and TUN failures add ordinary log
+events with the original errors.
 
-Physical dial, protection, Trojan TLS/header and first forwarding write attach
-their truthful failed operation without replacing error identity or certificate
-policy. TLS record classification uses the actual `metacubex/tls` type. EOF
-means an incomplete exchange, not an invalid-certificate verdict. Runtime and
-TUN failures and joined cleanup emit their own phase/error observations; no log
-event proves a browser response, per-socket protect timeline, or complete cleanup.
-The value/ownership ABI and business receipts remain independent and unchanged.
+`mobile/logging` subscribes to that stream and `mobile/bridge` exposes
+`cb_log_install_v1` in `mobile/include/cb_log.h`. The host installs one process-
+lifetime callback; normal levels are 0–3, Fatal/Panic are 4–5 and are delivered
+synchronously before termination. Borrowed bytes are valid only during the
+callback; it must return promptly and tolerate concurrent invocation. A terminal
+logrus hook covers the upstream fatal/panic path, which bypasses subscriptions.
+The core does not link HiLog or decide display, filtering, retention or export.
 
-The host entry also selects the `log` package. Public sink tests check finite
-classification, raw text exclusion from process streams/subscriptions,
-concurrent completion and unchanged standalone daemon behavior. Runtime tests
-use real isolated Trojan TLS peers for hostname rejection, EOF, malformed TLS
-record and protection failure with zero physical connections, followed by joined
-Stop. These checks do not establish the OHOS linker/load identity or HiLog output
-on a phone; those require the new mainline native/package/device validation.
-
+The application registers the callback when it loads the library, independently
+of the proxy switch, and owns its HiLog adapter. Core tests cover original long
+text, upstream console-level independence, fatal delivery, actual TLS rejection
+details and normal Stop. Native/target validation belongs to the application;
+host results do not prove phone output or VPN forwarding.
 ### P2 socket protection boundary
 
 `mobile/protection.Gate` owns callback admission and synchronous borrowing.
-`cmd/mobile` initializes one immutable context-aware outbound socket policy;
+`mobile/bridge` initializes one immutable context-aware outbound socket policy;
 registration only changes synchronized Gate state. The versioned C functions
 and scalar ownership are declared in `mobile/include/cb_protection.h`. Validation
 ABI 1 and its buffer ownership remain unchanged. No Go pointer crosses either

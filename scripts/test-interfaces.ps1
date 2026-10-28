@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$ModuleCache)
+param([string]$ModuleCache, [string]$HostSupplementCache, [string]$BuildCache)
 
 $ErrorActionPreference = 'Stop'
 $core = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -40,6 +40,19 @@ require github.com/metacubex/mihomo v1.0.0
 replace github.com/metacubex/mihomo => ../../..
 '@ | Set-Content -LiteralPath (Join-Path $stage 'go.mod') -Encoding utf8NoBOM
 Copy-Item -LiteralPath (Join-Path $core 'go.sum') -Destination (Join-Path $stage 'go.sum')
+$protobuf=@(Get-Content -LiteralPath (Join-Path $core 'go.mod') | Where-Object { $_ -match '^replace google\.golang\.org/protobuf =>' })
+if ($protobuf.Count -ne 1) { throw 'Review core module replacements before testing' }
+$protobuf | Add-Content -LiteralPath (Join-Path $stage 'go.mod') -Encoding utf8NoBOM
+if ($HostSupplementCache) {
+  $supplement=(Resolve-Path -LiteralPath $HostSupplementCache).Path
+  foreach ($module in @('github.com/tailscale/certstore','github.com/tailscale/go-winio')) {
+    $line=@(Get-Content -LiteralPath (Join-Path $core 'go.mod') | Where-Object { $_ -match ('^\s+'+[regex]::Escape($module)+'\s+') })
+    if ($line.Count -ne 1) { throw "Cannot identify pinned dependency $module" }
+    $parts=$line[0].Trim() -split '\s+'
+    $directory=(Resolve-Path -LiteralPath (Join-Path $supplement ($module+'@'+$parts[1]))).Path.Replace('\','/')
+    ('replace '+$module+' => "'+$directory+'"') | Add-Content -LiteralPath (Join-Path $stage 'go.mod') -Encoding utf8NoBOM
+  }
+}
 
 # Include all tracked core Go sources, covering the selected packages and their
 # internal dependencies, notably constant.Connection and outbound constructors.
@@ -58,11 +71,12 @@ $env:CGO_ENABLED = '0'
 $env:GOPATH = Join-Path $core 'local/cache/go-host'
 $env:GOMODCACHE = [IO.Path]::GetFullPath($ModuleCache)
 $env:GOCACHE = Join-Path $core 'local/cache/go-host-cache'
+if ($BuildCache) { $env:GOCACHE=[IO.Path]::GetFullPath($BuildCache) }
 # Tests use local/synthetic resources. Missing cached dependencies fail instead
 # of fetching modules or contacting a checksum service during validation.
 $env:GOPROXY = 'off'
 $env:GOSUMDB = 'off'
-$hostArguments = @('test', '-mod=mod', '-count=1', '-timeout=90s', '-json') + $imports
+$hostArguments = @('test', '-p=2', '-mod=mod', '-count=1', '-timeout=90s', '-json') + $imports
 $listenerArguments = @('test', '-mod=mod', '-count=1', '-timeout=90s', '-json', '-run', '^TestListenerLifecycle') + $listenerImports
 $ohosArguments = @(
   'test', '-mod=mod', '-count=1', '-timeout=90s', '-json', '-tags', 'ohos',

@@ -5,6 +5,7 @@ param(
   [Parameter(Mandatory)][string]$ModuleCache,
   [ValidateSet('arm64-v8a','x86_64')][string]$Architecture='arm64-v8a',
   [string]$BuildCache,
+  [string]$ApplicationBridge,
   [string]$ToolchainBuildReceipt
 )
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,20 @@ $core = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $revision = git -C $core rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify core source' }
 if (@(git -C $core status --porcelain=v1 --untracked-files=all).Count) { throw 'Commit core source before building' }
+$bridgeRevision=$null; $bridgeTree=$null; $bridgeRoot=$null; $bridgeRelative=$null
+if ($ApplicationBridge) {
+  $bridge=(Resolve-Path -LiteralPath $ApplicationBridge).Path
+  $bridgeRoot=git -C $bridge rev-parse --show-toplevel
+  if ($LASTEXITCODE -ne 0) { throw 'Application bridge must belong to a Git repository' }
+  $bridgeRelative=[IO.Path]::GetRelativePath($bridgeRoot,$bridge).Replace('\','/')
+  if (@(git -C $bridgeRoot status --porcelain=v1 --untracked-files=all -- $bridgeRelative).Count) { throw 'Commit application bridge before building' }
+  $bridgeRevision=git -C $bridgeRoot rev-parse HEAD
+  $bridgeTree=git -C $bridgeRoot rev-parse ('HEAD:'+$bridgeRelative)
+  if ($LASTEXITCODE -ne 0) { throw 'Application bridge is not tracked' }
+  $bridgeModule=@(Get-Content -LiteralPath (Join-Path $bridge 'go.mod') | Where-Object { $_ -match '^module ' })
+  if ($bridgeModule.Count -ne 1) { throw 'Cannot identify application bridge module' }
+  $bridgeModule=$bridgeModule[0].Substring(7).Trim()
+}
 $go = (Resolve-Path -LiteralPath $OHOSGo).Path
 $env:GOENV='off'; $env:GOTOOLCHAIN='local'
 $goVersion=& $go version
@@ -73,6 +88,12 @@ replace github.com/metacubex/mihomo => ../../..
 $($protobuf[0])
 "@ | Set-Content -LiteralPath (Join-Path $stage 'go.mod') -Encoding utf8NoBOM
 Copy-Item -LiteralPath (Join-Path $core 'go.sum') -Destination (Join-Path $stage 'go.sum')
+$package='github.com/metacubex/mihomo/cmd/mobile'
+if ($ApplicationBridge) {
+  @("require $bridgeModule v0.0.0", ('replace '+$bridgeModule+' => "'+$bridge.Replace('\','/')+'"')) |
+    Add-Content -LiteralPath (Join-Path $stage 'go.mod') -Encoding utf8NoBOM
+  $package=$bridgeModule+'/cmd/library'
+}
 $env:GOENV='off'; $env:GOTOOLCHAIN='local'; $env:GOOS='linux'; $env:GOARCH=$goArch; $env:CGO_ENABLED='1'
 $env:GOAMD64='v1'
 $env:GOMODCACHE=$cache; $env:GOCACHE=$buildCachePath
@@ -88,8 +109,9 @@ $env:CGO_LDFLAGS="--target=$compilerTarget --sysroot=$sysroot"
 $tlsArguments=@('-tlsmodegd')
 $arguments=@('build','-buildvcs=false','-mod=mod')+$tlsArguments+@('-buildmode','c-shared','-tags','ohos with_gvisor',
   '-ldflags',('-X github.com/metacubex/mihomo/mobile/validation.SourceRevision='+$revision),
-  '-o','libcb_validation.so','github.com/metacubex/mihomo/cmd/mobile')
+  '-o','libcb_validation.so',$package)
 [ordered]@{ sourceRevision=$revision; architecture=$Architecture; goOs='linux'; goArch=$goArch; compilerTarget=$compilerTarget;
+  applicationSourceRevision=$bridgeRevision; applicationBridgeTree=$bridgeTree; applicationBridge=$ApplicationBridge;
   arguments=$arguments; cflags=$env:CGO_CFLAGS; ldflags=$env:CGO_LDFLAGS; goVersion=$goVersion; buildCache=$buildCachePath;
   sourceTreeRevisionAtCoreBuild=$goSourceTreeRevision; toolchainBuildRevision=$toolchainBuildRevision;
   toolchainBuildReceipt=$toolchainReceiptPath; toolchainBuildReceiptSha256=$toolchainReceiptHash; toolchainBuildReceiptCopy=$toolchainReceiptCopy; goSha256=$goHash; goToolSha256=$goTools;
@@ -97,6 +119,9 @@ $arguments=@('build','-buildvcs=false','-mod=mod')+$tlsArguments+@('-buildmode',
   ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'inputs.json') -Encoding utf8NoBOM
 & $go -C $stage @arguments *> (Join-Path $stage 'build.log')
 if ($LASTEXITCODE -ne 0) { throw "Mobile core build failed; inspect $stage/build.log" }
+if ((git -C $core rev-parse HEAD) -cne $revision -or @(git -C $core status --porcelain=v1 --untracked-files=all).Count) { throw 'Core source changed during compilation' }
+if ($ApplicationBridge -and ((git -C $bridgeRoot rev-parse ('HEAD:'+$bridgeRelative)) -cne $bridgeTree -or
+    @(git -C $bridgeRoot status --porcelain=v1 --untracked-files=all -- $bridgeRelative).Count)) { throw 'Application bridge changed during compilation' }
 if ((Get-FileHash -LiteralPath $go -Algorithm SHA256).Hash -ine $goHash) { throw 'OHOS Go changed during core compilation' }
 foreach ($name in $goTools.Keys) {
   if ((Get-FileHash -LiteralPath (Join-Path $goToolDir $name) -Algorithm SHA256).Hash -ine $goTools[$name]) { throw ('OHOS Go tool changed during core compilation: '+$name) }
@@ -105,6 +130,7 @@ $library=Join-Path $stage 'libcb_validation.so'
 $elfIdentity=& (Join-Path $PSScriptRoot 'check-mobile-elf.ps1') -Library $library -NativeSdk $sdk -Architecture $Architecture -ElfOutput (Join-Path $stage 'libcb_validation.so.elf.txt')
 [ordered]@{
   sourceRevision=$revision; abiVersion=1; library=$library
+  applicationSourceRevision=$bridgeRevision; applicationBridgeTree=$bridgeTree; applicationBridge=$ApplicationBridge
   architecture=$Architecture; goOs='linux'; goArch=$goArch; compilerTarget=$compilerTarget; elfMachine=$elfMachine; goAmd64=$env:GOAMD64
   librarySha256=(Get-FileHash -LiteralPath $library -Algorithm SHA256).Hash.ToLowerInvariant()
   goVersion=$goVersion; goSha256=$goHash; goToolSha256=$goTools; goRoot=$goRoot; goToolDir=$goToolDir

@@ -17,7 +17,6 @@ import (
 	"github.com/metacubex/mihomo/component/keepalive"
 	"github.com/metacubex/mihomo/component/mptcp"
 	"github.com/metacubex/mihomo/component/resolver"
-	"github.com/metacubex/mihomo/log"
 )
 
 const (
@@ -233,7 +232,7 @@ func dialContext(ctx context.Context, network string, destination netip.Addr, po
 	}
 
 	conn, err = dialer.DialContext(ctx, network, address)
-	return conn, log.MarkMobileError(log.StagePhysicalDial, err)
+	return conn, err
 }
 
 func ICMPControl(destination netip.Addr) func(network, address string, conn syscall.RawConn) error {

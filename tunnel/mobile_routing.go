@@ -9,7 +9,6 @@ import (
 )
 
 var (
-	ErrMobilePolicyUDPUnsupported = errors.New("MOBILE_POLICY_UDP_UNSUPPORTED")
 	ErrMobilePolicyContextInvalid = errors.New("MOBILE_POLICY_CONTEXT_INVALID")
 )
 

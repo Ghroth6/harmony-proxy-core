@@ -5,6 +5,7 @@ param(
   [Parameter(Mandatory)][string]$ModuleCache,
   [ValidateSet('arm64-v8a','x86_64')][string]$Architecture='arm64-v8a',
   [string]$BuildCache,
+  [string]$ApplicationBridge,
   [string]$ToolchainBuildReceipt
 )
 $ErrorActionPreference='Stop'
@@ -13,6 +14,7 @@ $ErrorActionPreference='Stop'
 $parameters=@{ OHOSGo=$OHOSGo; NativeSdk=$NativeSdk; ModuleCache=$ModuleCache }
 if ($PSBoundParameters.ContainsKey('Architecture')) { $parameters.Architecture=$Architecture }
 if ($BuildCache) { $parameters.BuildCache=$BuildCache }
+if ($ApplicationBridge) { $parameters.ApplicationBridge=$ApplicationBridge }
 if ($ToolchainBuildReceipt) {
   $parameters.ToolchainBuildReceipt=$ToolchainBuildReceipt
   # An actual compiler tool must match the immutable make receipt, independent

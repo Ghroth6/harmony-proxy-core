@@ -61,7 +61,7 @@ func refreshEchoServer(t *testing.T) *C.Metadata {
 }
 
 func TestProviderRefreshImmediatelyChangesActualURLTestDial(t *testing.T) {
-	for _, selection := range []string{"automatic", "legacy", "qualified"} {
+	for _, selection := range []string{"automatic", "legacy"} {
 		t.Run(selection, func(t *testing.T) {
 			old, replacement := refreshProxy("same-name"), refreshProxy("same-name")
 			pd, refresh := selectionProvider(t, "P", map[string][]C.Proxy{
@@ -71,10 +71,6 @@ func TestProviderRefreshImmediatelyChangesActualURLTestDial(t *testing.T) {
 			switch selection {
 			case "legacy":
 				if err := group.Set(old.Name()); err != nil {
-					t.Fatal(err)
-				}
-			case "qualified":
-				if err := group.SetIdentity(old, pd); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -104,7 +100,7 @@ func TestProviderRefreshImmediatelyChangesActualURLTestDial(t *testing.T) {
 			if old.tcpCalls.Load() != 1 || old.udpCalls.Load() != 0 || replacement.tcpCalls.Load() != 1 || replacement.udpCalls.Load() != 1 {
 				t.Fatalf("new calls used stale object: old TCP/UDP=%d/%d, replacement=%d/%d", old.tcpCalls.Load(), old.udpCalls.Load(), replacement.tcpCalls.Load(), replacement.udpCalls.Load())
 			}
-			if group.SelectedProxy() != replacement {
+			if group.Unwrap(nil, false) != replacement {
 				t.Fatal("reported selection disagrees with the new provider object")
 			}
 			if err := live.SetDeadline(time.Now().Add(time.Second)); err != nil {

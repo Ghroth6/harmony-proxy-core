@@ -2,7 +2,6 @@ package tunnel_test
 
 import (
 	"context"
-	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -94,33 +93,14 @@ func originalUDPPolicyRun(t *testing.T, rule string, sourceRouting bool) (C.Tunn
 	return bound, id, protects
 }
 
-func TestBoundMobileOriginalRequiredUDPDoesNotImplicitlyGoDirect(t *testing.T) {
-	peer, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer peer.Close()
-	bound, _, protects := originalUDPPolicyRun(t, "MATCH,original-required", true)
-	packet := &flowPacket{completed: make(chan error, 2)}
-	address := peer.LocalAddr().(*net.UDPAddr).AddrPort()
-	bound.HandleUDPPacket(packet, &C.Metadata{Type: C.TUN, NetWork: C.UDP, SrcIP: packet.LocalAddr().(*net.UDPAddr).AddrPort().Addr(), SrcPort: 51341, DstIP: address.Addr(), DstPort: address.Port()})
-	_ = peer.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
-	if n, _, err := peer.ReadFrom(make([]byte, 128)); err == nil {
-		t.Fatalf("the original required UDP-disabled node silently sent %d bytes through actual DIRECT", n)
-	}
-	stopRun(t)
-	if err = await(t, packet.completed); err != nil || packet.retained.Load() != 1 || packet.drops.Load() != 1 || !packet.closing.Load() || protects.Load() != 0 {
-		t.Fatal("rejected original UDP policy did not close its real packet/flow lease exactly once before any physical dial")
-	}
-}
-
-func TestBoundMobileDeclaredDirectAndUnmarkedFallbackStillReachActualPeer(t *testing.T) {
+func TestBoundMobileUDPUsesUpstreamRuleFallbackAndDeclaredDirect(t *testing.T) {
 	for _, fixture := range []struct {
 		name, rule string
 		marked     bool
 	}{
 		{"original-declared-direct", "MATCH,DIRECT", true},
 		{"unmarked-legacy-fallback", "MATCH,original-required", false},
+		{"mobile-upstream-fallback", "MATCH,original-required", true},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			peer, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -145,7 +125,7 @@ func TestBoundMobileDeclaredDirectAndUnmarkedFallbackStillReachActualPeer(t *tes
 	}
 }
 
-func TestMobileSharedDNSRespectRulesRetainsActualOriginalRunMarker(t *testing.T) {
+func TestMobileSharedDNSUsesUpstreamRuleFallbackWithProtection(t *testing.T) {
 	_, id, protects := originalUDPPolicyRun(t, "MATCH,original-required", true)
 	scope, err := forwarding.Context(id)
 	if err != nil {
@@ -153,23 +133,35 @@ func TestMobileSharedDNSRespectRulesRetainsActualOriginalRunMarker(t *testing.T)
 	}
 	shared := forwarding.SharedManagementNetworkContext(scope)
 	if forwarding.Generation(shared) != 0 || protection.Generation(shared) != id {
-		t.Fatal("actual shared DNS context did not detach only the individual forwarding owner")
+		t.Fatal("shared DNS lost its protection owner")
 	}
+	peer, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
 	dialer := tunnel.NewDNSDialer(resolver.SystemResolver, nil, tunnel.DnsRespectRules)
-	if conn, err := dialer.DialContext(shared, "udp4", "127.0.0.1:53"); conn != nil || !errors.Is(err, tunnel.ErrMobilePolicyUDPUnsupported) {
-		if conn != nil {
-			conn.Close()
-		}
-		t.Fatalf("actual shared DNS DialContext escaped the original UDP rule: %v", err)
+	conn, err := dialer.DialContext(shared, "udp4", peer.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("upstream UDP fallback rejected: %v", err)
 	}
-	if conn, err := dialer.ListenPacket(shared, "udp4", "127.0.0.1:53"); conn != nil || !errors.Is(err, tunnel.ErrMobilePolicyUDPUnsupported) {
-		if conn != nil {
-			conn.Close()
-		}
-		t.Fatalf("actual shared DNS ListenPacket escaped the original UDP rule: %v", err)
+	if _, err = conn.Write([]byte("dns-fallback")); err != nil {
+		t.Fatal(err)
 	}
-	if protects.Load() != 0 {
-		t.Fatal("shared DNS selected an undeclared physical route before reporting the fixed policy error")
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	data := make([]byte, 64)
+	n, _, err := peer.ReadFrom(data)
+	_ = conn.Close()
+	if err != nil || string(data[:n]) != "dns-fallback" {
+		t.Fatalf("fallback did not reach peer: %v", err)
+	}
+	packet, err := dialer.ListenPacket(shared, "udp4", peer.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.Close()
+	if protects.Load() < 2 {
+		t.Fatal("upstream fallback bypassed physical socket protection")
 	}
 }
 

@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][string]$ModuleCache,
-  [string]$HostSupplementCache
+  [string]$HostSupplementCache,
+  [string]$BuildCache
 )
 $ErrorActionPreference = 'Stop'
 $core = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -42,9 +43,10 @@ foreach ($file in $files) { $hashes[$file] = (Get-FileHash -LiteralPath (Join-Pa
 $env:GOENV='off'; $env:GOTOOLCHAIN='local'; $env:GOOS='windows'; $env:GOARCH='amd64'; $env:CGO_ENABLED='0'
 $env:GOMODCACHE=(Resolve-Path -LiteralPath $ModuleCache).Path
 $env:GOPATH=Join-Path $core 'local/cache/go-host'; $env:GOCACHE=Join-Path $core 'local/cache/go-host-cache'
+if ($BuildCache) { $env:GOCACHE=[IO.Path]::GetFullPath($BuildCache) }
 $env:GOPROXY='off'; $env:GOSUMDB='off'
-$packages = @('mobile/runtime', 'mobile/policy', 'mobile/policy/contract', 'mobile/content', 'mobile/network', 'mobile/validation', 'mobile/protection', 'component/platformnetwork', 'component/dialer', 'component/forwarding', 'transport/tuic/common', 'transport/tuic', 'dns', 'tunnel', 'config', 'hub/executor', 'tunnel/statistic', 'log')
-$arguments = @('test', '-mod=mod', '-count=1', '-timeout=90s', '-tags', 'with_gvisor', '-json') + @($packages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })
+$packages = @('mobile/runtime', 'mobile/policy', 'mobile/policy/contract', 'mobile/logging', 'mobile/network', 'mobile/validation', 'mobile/protection', 'component/platformnetwork', 'component/dialer', 'component/forwarding', 'transport/tuic/common', 'transport/tuic', 'dns', 'tunnel', 'config', 'hub/executor', 'tunnel/statistic', 'log')
+$arguments = @('test', '-p=2', '-mod=mod', '-count=1', '-timeout=90s', '-tags', 'with_gvisor', '-json') + @($packages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })
 [ordered]@{sourceRevision=$revision; goVersion=$version; moduleCache=$env:GOMODCACHE; hostSupplementCache=$HostSupplementCache; arguments=$arguments; sourceSha256=$hashes; scope='Windows CGO=0, real gVisor and engine with injected descriptor syscall boundary; no race detector or target TUN execution'} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $stage 'inputs.json') -Encoding utf8NoBOM
 & $go -C $stage @arguments *> (Join-Path $stage 'tests.jsonl')
 $testExit = $LASTEXITCODE

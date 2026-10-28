@@ -1,7 +1,7 @@
-package main
+package bridge
 
 /*
-#include "../../mobile/include/cb_protection.h"
+#include "../include/cb_protection.h"
 static inline int32_t cb_call_protect_v1(cb_protect_socket_fn_v1 callback,
     void *context, uint64_t generation, uint64_t request_id, int32_t fd) {
     return callback(context, generation, request_id, fd);

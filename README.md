@@ -2,21 +2,21 @@
 
 移动端导出、支持范围、配置准备与运行生命周期见 [mobile/README.md](mobile/README.md)。核心独立复核候选并管理自身资源；宿主测试和 ARM64 编译不能代替应用的系统 VPN、真实代理请求与停止验收。
 
-本仓直接派生自 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，维护 OHOS 所需的连接活动、流量分类、事件订阅与平台网络快照适配。以下合同已经宿主测试；原生库交付与设备验收状态以协调仓为准。
+本仓直接派生自 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，维护 OHOS 所需的运行资源生命周期、连接观察与平台网络快照适配。以下合同已经宿主测试；原生库交付与设备验收状态以协调仓为准。
 
 当前服务于独立应用 **clashoh**，应用与整体设计归 [clashbox-meta](https://github.com/Ghroth6/clashbox-meta)，旧 ClashBox 仅作参考。模块设计、交付计划和实际验收分别由应用仓 `docs/design/overview.md`、`docs/delivery/plan.md` 和 `docs/delivery/verification/README.md` 维护。下列后端合同说明接口行为，不表示所有能力都已接入应用或通过真机验收；源码主线、清单获取策略和远端发布分别核对。工程日常清单跟踪本仓 codex/ohos-adaptation 分支，历史验收仍按记录中的精确提交复现；清单源与运行时生效状态见协调仓入口。
 
-`NowTraffic(onlyProxy)` 返回上一秒的字节桶，读取不清零；`TotalTraffic(onlyProxy)` 保留初始化或 Reset 后的累计，包括已关闭连接。proxy 分类依据连接创建时固定的实际出口类型，不依赖名称或组的后续选择；Direct、Compatible、控制出口、组型和未知类型不算代理。内部 `pushToManager=false` 流量仍排除，计数、轮桶和 Reset 共享一个边界。字节上报保留官方 tracker 的缓冲 API 局限，不代表精确的线上传输字节。
+统计沿用固定上游的 `Now/Total/Reset`：包含实际被计数的 DIRECT 和代理连接，累计保留已关闭连接，内部 `pushToManager=false` 流量仍排除。不再维护代理出口子集；基本连接观察和 per-connection 字节统计保留。上游计量口径不等同于线上报文精确字节数。
 
 URLTest、连接创建和 provider 初始化通过可注销订阅发布事件。回调同步执行且可能并发；cancel 不等待已经选中的回调，调用方须排除旧配置事件，不能等待 ApplyConfig 或它持有的应用锁。provider 初始化事件包括成功、失败和配置代际，不代表后续刷新或完整配置成功。
 
 `platformnetwork.Publish` 校验并原子发布完整的网络快照，包含代际、DNS、接口地址/前缀和路由；非法或过期快照不替换现状。OHOS 在首个快照到达前按离线处理，离线不回落到原生接口或隐式公共系统 DNS。接口索引只能使用实测值，未知为零，不能用 NetworkID 代替。
 
-选择组新增 `SetIdentity(proxy, provider)`：静态节点绑定对象，订阅节点绑定 provider 与节点名称，同 provider 刷新保留身份，其他 provider 新增同名节点不能接管选择。Selector 的目标失效时拒绝连接；URLTest/Fallback 保留健康判断及自动切换策略。`SelectedProxy()` 返回实际选择对象；旧 `Set`/`ForceSet`（包括空值）恢复原裸名语义并清除身份绑定。
+选择组沿用上游 `Set(string)` 及失效名称回退语义；无生产调用的 `SetIdentity/SelectedProxy` 扩展已删除。保留 provider 刷新后 URLTest 缓存失效处理，避免新连接继续使用已退休对象。
 
 传统 HTTP、SOCKS、Mixed、Redir、TProxy、SS、VMess、TUIC 的 `ReCreate*` 以及 `PatchTunnel`、`PatchInboundListeners` 返回实际构造、绑定与关闭错误。双协议入口仅在两者都成功后登记；Patch 失败回滚本次新建入口，未变更的原入口保留，已删除或替换的旧入口不自动恢复。已登记入口关闭失败时移出就绪集合，保留待清理所有权供下次停止重试。命名多地址与底层构造失败会关闭本次已取得的资源；若构造器内部回滚的 Close 本身失败，错误一并返回，不能保证资源已释放，也没有成功实例可供调用方重试。重复关闭不把已关闭句柄当作新错误，未知关闭错误仍返回。调用方必须处理错误并决定是否关闭剩余入口，不能把返回错误的配置当作就绪。该合同不覆盖 TUN、DNS/controller 或 provider 后台任务，也不是已接入连接全部结束的屏障。
 
-完整宿主入口为 `scripts/test-interfaces.ps1`（Go 1.24.5，干净工作区；`-ModuleCache` 指定已有依赖缓存）。它离线运行接口包（包括 outboundgroup 选择回归）、限定 `TestListenerLifecycle` 的真实回环监听回归，以及独立进程的 OHOS 初始状态测试，将源码哈希、日志与结果集中写入本仓 `local/runs/<batch>/`，不修改上游 go.mod/go.sum。`scripts/test-statistic.ps1` 仍可单独验证统计包，采用相同的批次布局。两入口默认将 GOPATH、GOCACHE 和 GOMODCACHE 放在 `local/cache/` 下，批次目录中的 `inputs.json`、日志与 `result.json` 保留该次验证事实。旧批次是历史证据，重跑应由脚本生成新批次；缓存可以重建，证据的保留与迁移规则见协调仓的材料说明。Windows 上启用 ohos build tag 不等于 OHOS 二进制或真机验证；两入口均未启用 race detector。
+完整宿主入口为 `scripts/test-interfaces.ps1`（Go 1.24.5，干净工作区；`-ModuleCache` 指定已有依赖缓存，`-HostSupplementCache` 指定锁定 Windows 补充依赖，`-BuildCache` 可指定独立缓存）。它离线运行接口包（包括 outboundgroup 选择回归）、限定 `TestListenerLifecycle` 的真实回环监听回归，以及独立进程的 OHOS 初始状态测试，将源码哈希、日志与结果集中写入本仓 `local/runs/<batch>/`，不修改上游 go.mod/go.sum。`scripts/test-statistic.ps1` 仍可单独验证统计包，采用相同的批次布局。两入口默认将 GOPATH、GOCACHE 和 GOMODCACHE 放在 `local/cache/` 下，批次目录中的 `inputs.json`、日志与 `result.json` 保留该次验证事实。旧批次是历史证据，重跑应由脚本生成新批次；缓存可以重建，证据的保留与迁移规则见协调仓的材料说明。Windows 上启用 ohos build tag 不等于 OHOS 二进制或真机验证；两入口均未启用 race detector。
 
 嵌入应用可显式启用 `tunnel.EnableForwardingLifecycle`，随后按递增代次 Prepare、取得 BoundForwardingTunnel、完成入口构造、Activate。未启用时保留原有入口行为。绑定后的 tunnel 和根请求携带运行上下文，派生出站沿用原归属；显式内部管理上下文不归入转发。Cancel 立即关闭准入，Stop 等待专属资源关闭和已接入工作结束；迟到结果不能登记到新代，无法确认的关闭错误保留并阻止下一次启动。该能力不代替配置任务退休，也不承诺系统 TUN fd 已释放。
 

@@ -13,7 +13,6 @@ import (
 	"github.com/metacubex/mihomo/component/ech"
 	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/jls"
 	"github.com/metacubex/mihomo/transport/restls"
@@ -173,7 +172,6 @@ func (t *Trojan) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.
 			JLS:               t.jlsConfig,
 			Reality:           t.realityConfig,
 		})
-		err = log.MarkMobileError(log.StageTLS, err)
 	}
 	if err != nil {
 		return nil, err
@@ -196,7 +194,6 @@ func (t *Trojan) streamConnContext(ctx context.Context, c net.Conn, metadata *C.
 		command = trojan.CommandUDP
 	}
 	err = trojan.WriteHeader(c, t.hexPassword, command, serializesSocksAddr(metadata))
-	err = log.MarkMobileError(log.StageTrojanHeader, err)
 	return c, err
 }
 

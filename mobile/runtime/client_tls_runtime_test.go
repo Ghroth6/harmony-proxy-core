@@ -20,6 +20,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -286,11 +287,6 @@ entered:
 }
 
 func TestClientTUNFullSourceNodeTLSRejectsCertificatesAndRecoversOriginalPolicy(t *testing.T) {
-	installRuntimeLogs.Do(func() {
-		if !L.InstallMobileOutput(&runtimeLogs) {
-			t.Fatal("mobile output already installed")
-		}
-	})
 	// CA state belongs only to this serial test process, never the OS trust store.
 	trustedRoot, trustedKey := sourceTLSRoot(t)
 	untrustedRoot, untrustedKey := sourceTLSRoot(t)
@@ -352,20 +348,22 @@ func TestClientTUNFullSourceNodeTLSRejectsCertificatesAndRecoversOriginalPolicy(
 	var originalCandidate, coreInstance string
 	var previousGeneration uint64
 	for index, round := range []struct {
-		name  string
-		peer  *sourceTLSPeer
-		class L.MobileClass
+		name      string
+		peer      *sourceTLSPeer
+		errorText string
 	}{
-		{"normal", valid, L.ClassNone},
-		{"authority-rejected", authority, L.ClassCertAuthority},
-		{"authority-recovered", valid, L.ClassNone},
-		{"name-rejected", wrongName, L.ClassCertName},
-		{"name-recovered", valid, L.ClassNone},
+		{"normal", valid, ""},
+		{"authority-rejected", authority, "unknown authority"},
+		{"authority-recovered", valid, ""},
+		{"name-rejected", wrongName, "not " + sourceTLSName},
+		{"name-recovered", valid, ""},
 	} {
 		index, round := index, round // go1.20 range lifetime.
 		if !t.Run(round.name, func(t *testing.T) {
+			events := L.Subscribe()
+			defer L.UnSubscribe(events)
 			input := original
-			if round.class != L.ClassNone {
+			if round.errorText != "" {
 				input = sourceTLSInput(round.peer, nameserver) // Separate complete diagnostic input; only its node port differs.
 			}
 			var protects atomic.Int32
@@ -380,7 +378,7 @@ func TestClientTUNFullSourceNodeTLSRejectsCertificatesAndRecoversOriginalPolicy(
 			if started.CoreInstance != coreInstance || coreInstance == "" {
 				t.Fatal("TLS observations changed their actual core process identity")
 			}
-			if round.class == L.ClassNone {
+			if round.errorText == "" {
 				if originalCandidate == "" {
 					originalCandidate = started.CandidateDigest
 				}
@@ -395,25 +393,26 @@ func TestClientTUNFullSourceNodeTLSRejectsCertificatesAndRecoversOriginalPolicy(
 			}
 			address := answer.Answer[0].(*D.A).A
 			failureEvent := "not-applicable-on-success"
-			if round.class == L.ClassNone {
+			if round.errorText == "" {
 				domainTCPExchange(t, system, address, 443, uint16(54600+index), sourceTLSRequest, sourceTLSResponse)
 			} else {
 				rejectedSourceTLSRequest(t, system, address, uint16(54600+index))
-				if !runtimeLogs.wait(generation, L.StageTLS, round.class) {
-					t.Fatal("actual TLS rejection had no matching typed generation event")
-				}
-				runtimeLogs.Lock()
-				for _, event := range runtimeLogs.events {
-					if event.Generation == generation && event.Stage == L.StageTLS && event.Class == round.class {
-						failureEvent = event.String()
-						break
+				deadline := time.NewTimer(3 * time.Second)
+				defer deadline.Stop()
+				for failureEvent == "not-applicable-on-success" {
+					select {
+					case event := <-events:
+						if strings.Contains(event.Payload, round.errorText) {
+							failureEvent = event.Payload
+						}
+					case <-deadline.C:
+						t.Fatal("actual TLS rejection had no original error log")
 					}
 				}
-				runtimeLogs.Unlock()
 			}
 			select {
 			case handshake := <-round.peer.handshakes:
-				if handshake.sni != sourceTLSName || !handshake.certificateSent || (handshake.err == nil) != (round.class == L.ClassNone) {
+				if handshake.sni != sourceTLSName || !handshake.certificateSent || (handshake.err == nil) != (round.errorText == "") {
 					t.Fatalf("peer did not send the specified certificate under the original SNI: %+v", handshake)
 				}
 			case <-time.After(time.Second):
@@ -429,7 +428,7 @@ func TestClientTUNFullSourceNodeTLSRejectsCertificatesAndRecoversOriginalPolicy(
 			if observed.Phase != "running" || !observed.ForwardingActive || observed.CoreInstance != coreInstance || observed.Generation != generation || observed.CandidateDigest != started.CandidateDigest || observed.FailureCode != "" || observed.DNS == nil || len(observed.DNS.Queries) != 1 || !observed.DNS.Queries[0].FakeIP || observed.DNS.Queries[0].QuestionDigest != domainHash(host) {
 				t.Fatalf("request outcome replaced truthful service/DNS identity: %+v", observed)
 			}
-			if round.class == L.ClassNone {
+			if round.errorText == "" {
 				if len(observed.Connections) != 1 {
 					t.Fatal("successful source-policy TLS flow lacks its actual rule observation")
 				}
@@ -447,7 +446,7 @@ func TestClientTUNFullSourceNodeTLSRejectsCertificatesAndRecoversOriginalPolicy(
 			}
 			select {
 			case err := <-round.peer.closed:
-				if round.class == L.ClassNone && !errors.Is(err, io.EOF) {
+				if round.errorText == "" && !errors.Is(err, io.EOF) {
 					t.Fatalf("normal Stop did not close the real TLS socket with EOF: %v", err)
 				}
 			case <-time.After(time.Second):
