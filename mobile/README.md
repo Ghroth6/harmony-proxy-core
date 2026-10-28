@@ -93,7 +93,22 @@ fresh-process acceptance.
 
 ### Upstream TUN reuse checkpoint
 
-The current runtime has not yet been replaced by `listener/sing_tun.New`.
+The runtime reuses sing-tun's public `NewGVisorStack` and `NewUDPForwarder`,
+including its UDP reply writer. The existing channel endpoint and cancellable
+fd/poll pumps form the OHOS I/O boundary; no dependency cache patch or additional
+TUN fd owner is introduced. We use the public stack constructor rather than the
+opaque `Stack` interface so cleanup can call the actual stack's `Wait`.
+Candidate-local DNS, packet/flow ownership and connection observations remain
+in the mobile adapters. IPv6/UDP admission still follows the accepted runtime
+options; this integration does not add ICMP forwarding.
+
+The TCP ownership adapter still uses gVisor's upstream `tcp.Forwarder` directly.
+Pinned sing-tun's TCP wrapper does not expose failed-handshake completion or a
+join for its asynchronous NewConnection callback. Removing our adapter would
+lose the existing construction/callback stop barriers. It is retained for that
+specific lifecycle gap, not as a replacement TCP protocol implementation.
+
+The runtime does not enter `listener/sing_tun.New`'s native-fd constructor.
 With the pinned sing-tun v0.4.27 on the tested ALN-AL00 / OpenHarmony 7.0.0.105,
 an experimental build reached `fdbased.New`, where `unix.Fstat` on the real
 VPN fd failed with permission denied. The failed listener closed its duplicate;
@@ -103,9 +118,9 @@ platform or protocol restriction. A separate Windows host experiment passed
 IPv4/IPv6 TCP and UDP round trips through the public `GVisorTun` interface and
 the pinned official stack using channel packet I/O; it did not exercise a real
 TUN, Mihomo routing or the candidate DNS service. Keep the small platform I/O
-boundary, candidate-owned DNS, observation and retirement contracts while
-validating upstream protocol-handler reuse. Production deletion requires that
-integration evidence. Fixed artifacts, raw evidence and restoration are recorded
+boundary, candidate-owned DNS, observation and retirement contracts. Integration
+validation is recorded separately from that initial feasibility experiment.
+Fixed artifacts, raw evidence and restoration are recorded
 in the coordinating repository's
 [TUN reuse report](https://github.com/Ghroth6/clashbox-meta/blob/main/docs/delivery/verification/upstream-tun-reuse-2026-10-28.md).
 

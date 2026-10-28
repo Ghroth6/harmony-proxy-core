@@ -29,6 +29,9 @@ const tcpHandshakeBacklog = 1024
 // Only this wrapper has access to inner. It reserves before inner may schedule
 // a callback and mirrors its handshake backlog separately from lifetime slots.
 // A slot stays owned until the callback and forwarding handler actually return.
+// sing-tun v0.4.27's TCPForwarder hides its failed-handshake completion and starts
+// NewConnection in an unjoined goroutine. Keep this ownership adapter over the
+// same upstream tcp.Forwarder until an API can preserve both stop barriers.
 type tcpBook struct {
 	mu           sync.Mutex
 	changed      *sync.Cond

@@ -3,14 +3,12 @@
 package runtime
 
 import (
-	"github.com/metacubex/gvisor/pkg/tcpip"
-	"github.com/metacubex/gvisor/pkg/tcpip/header"
 	"github.com/metacubex/gvisor/pkg/tcpip/link/channel"
-	"github.com/metacubex/gvisor/pkg/tcpip/network/ipv4"
-	"github.com/metacubex/gvisor/pkg/tcpip/network/ipv6"
 	"github.com/metacubex/gvisor/pkg/tcpip/stack"
+	"github.com/metacubex/gvisor/pkg/tcpip/transport/icmp"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/tcp"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/udp"
+	tun "github.com/metacubex/sing-tun"
 )
 
 // All helpers are called by the single runtime owner. Configuration never
@@ -24,31 +22,26 @@ func (e *runEngine) configurePacketStack(target StartRequest) string {
 		e.dns = newDNSBook(e, e.cfg.MobileDNSService())
 	}
 	e.endpoint = channel.New(PacketQueue, MTU, "")
-	networks := []stack.NetworkProtocolFactory{ipv4.NewProtocol}
-	transports := []stack.TransportProtocolFactory{tcp.NewProtocol}
-	routes := []tcpip.Route{{Destination: header.IPv4EmptySubnet, NIC: 1}}
-	if e.options.IPv6 {
-		networks = append(networks, ipv6.NewProtocol)
-		routes = append(routes, tcpip.Route{Destination: header.IPv6EmptySubnet, NIC: 1})
+	// Use the public upstream constructor while retaining the stack handle needed
+	// to join its workers. The OHOS fd/poll owner supplies packets through channel;
+	// it never enters fdbased.New's mandatory fd metadata probe.
+	var err error
+	e.stack, err = tun.NewGVisorStack(e.endpoint)
+	if err != nil {
+		return "STACK_NIC"
 	}
-	if e.options.UDP {
-		transports = append(transports, udp.NewProtocol)
-	}
-	e.stack = stack.New(stack.Options{NetworkProtocols: networks, TransportProtocols: transports})
 	e.transfer.resource("packet-stack", "acquired", -1)
 	e.book = newTCPBook(e)
 	e.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, e.book.handlePacket)
 	if e.options.UDP {
 		e.udp = newUDPBook(e)
 		e.stack.SetTransportProtocolHandler(udp.ProtocolNumber, e.udp.handlePacket)
+	} else {
+		e.stack.SetTransportProtocolHandler(udp.ProtocolNumber, discardTransportPacket)
 	}
-	if err := e.stack.CreateNICWithOptions(1, e.endpoint, stack.NICOptions{}); err != nil {
-		return "STACK_NIC"
-	}
-	e.stack.SetRouteTable(routes)
-	if e.stack.SetSpoofing(1, true) != nil || e.stack.SetPromiscuousMode(1, true) != nil {
-		return "STACK_OPTIONS"
-	}
+	// ICMP forwarding is not part of the current accepted mobile contract.
+	e.stack.SetTransportProtocolHandler(icmp.ProtocolNumber4, discardTransportPacket)
+	e.stack.SetTransportProtocolHandler(icmp.ProtocolNumber6, discardTransportPacket)
 	e.transfer.mu.Lock()
 	if e.options.UDP {
 		e.transfer.receipt.Stack = "gvisor-ipv4-tcp-udp"
@@ -59,6 +52,8 @@ func (e *runEngine) configurePacketStack(target StartRequest) string {
 	e.transfer.mu.Unlock()
 	return ""
 }
+
+func discardTransportPacket(stack.TransportEndpointID, *stack.PacketBuffer) bool { return true }
 
 func (e *runEngine) activateClientIngress() {
 	if e.book != nil {

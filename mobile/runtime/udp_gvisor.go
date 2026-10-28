@@ -9,14 +9,15 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"time"
 
-	"github.com/metacubex/gvisor/pkg/buffer"
-	"github.com/metacubex/gvisor/pkg/tcpip"
-	"github.com/metacubex/gvisor/pkg/tcpip/adapters/gonet"
-	"github.com/metacubex/gvisor/pkg/tcpip/checksum"
 	"github.com/metacubex/gvisor/pkg/tcpip/header"
 	"github.com/metacubex/gvisor/pkg/tcpip/stack"
 	C "github.com/metacubex/mihomo/constant"
+	tun "github.com/metacubex/sing-tun"
+	"github.com/metacubex/sing/common/buf"
+	M "github.com/metacubex/sing/common/metadata"
+	N "github.com/metacubex/sing/common/network"
 )
 
 // Slots follow the actual tunnel NAT source key, not a guessed UDP idle timer.
@@ -37,11 +38,13 @@ type udpBook struct {
 	packets   int
 	writes    int
 	fault     bool
+	forwarder *tun.UDPForwarder
 }
 
 func newUDPBook(engine *runEngine) *udpBook {
 	b := &udpBook{engine: engine, slots: map[netip.AddrPort]*udpSlot{}}
 	b.changed = sync.NewCond(&b.mu)
+	b.forwarder = tun.NewUDPForwarder(engine.root, engine.stack, b)
 	return b
 }
 
@@ -52,54 +55,76 @@ func (b *udpBook) handlePacket(id stack.TransportEndpointID, packet *stack.Packe
 	if !source.IsValid() || !target.IsValid() || source.Is4() != target.Is4() {
 		return true
 	}
-	if b.engine.dns != nil && b.engine.dns.matches(target, id.LocalPort) {
-		return b.engine.dns.handleUDP(id, packet)
-	}
-	key := netip.AddrPortFrom(source, id.RemotePort)
 	b.mu.Lock()
 	if !b.accepting || b.engine.transfer.ctx.Err() != nil || b.packets >= PacketQueue {
 		b.mu.Unlock()
 		return true
 	}
+	b.packets++ // Reserve before upstream copies the payload, including DNS.
+	b.mu.Unlock()
+	return b.forwarder.HandlePacket(id, packet)
+}
+
+// Only NewPacket is called by the upstream UDP forwarder. Its payload and
+// reply writer are transferred into the actual Mihomo packet/flow lifetime.
+func (b *udpBook) NewPacket(_ context.Context, key netip.AddrPort, payload *buf.Buffer, metadata M.Metadata, init func(N.PacketConn) N.PacketWriter) {
+	writer := init(nil) // gVisor's writer is stateless with respect to a NAT conn.
+	if b.engine.dns != nil && b.engine.dns.matches(metadata.Destination.Addr, metadata.Destination.Port) {
+		b.engine.dns.handleUDP(key, metadata.Destination.AddrPort(), payload, writer)
+		return
+	}
+	b.mu.Lock()
 	slot := b.slots[key]
 	if slot == nil {
 		slot = &udpSlot{}
 		b.slots[key] = slot
 	}
-	if slot.closing || slot.unknown {
+	if !b.accepting || b.engine.transfer.ctx.Err() != nil || slot.closing || slot.unknown {
+		b.reclaimLocked(key, slot)
 		b.mu.Unlock()
-		return true
+		payload.Release()
+		b.releasePacket()
+		return
 	}
 	slot.packets++
-	b.packets++
 	b.mu.Unlock()
-	// ToBuffer clones the validated payload view; the forwarding queue owns an
-	// independent copy, so neither gVisor nor a physical receive pool can reuse it.
-	views := packet.Data().ToBuffer()
-	payload := make([]byte, 0, int(views.Size()))
-	views.Apply(func(view *buffer.View) { payload = append(payload, view.AsSlice()...) })
-	views.Release()
-	owned := &clientUDPPacket{book: b, slot: slot, source: key, target: netip.AddrPortFrom(target, id.LocalPort), payload: payload}
-	metadata := &C.Metadata{Type: C.TUN, NetWork: C.UDP, SrcIP: source, SrcPort: id.RemotePort, DstIP: target, DstPort: id.LocalPort, RequestContext: b.engine.root}
-	metadata.RawDstAddr = net.UDPAddrFromAddrPort(owned.target)
-	b.engine.bound.HandleUDPPacket(owned, metadata)
-	return true
+	owned := &clientUDPPacket{book: b, slot: slot, source: key, target: metadata.Destination.AddrPort(), payload: payload, writer: writer}
+	request := &C.Metadata{Type: C.TUN, NetWork: C.UDP, SrcIP: key.Addr(), SrcPort: key.Port(), DstIP: owned.target.Addr(), DstPort: owned.target.Port(), RequestContext: b.engine.root}
+	request.RawDstAddr = net.UDPAddrFromAddrPort(owned.target)
+	b.engine.bound.HandleUDPPacket(owned, request)
 }
+
+func (b *udpBook) releasePacket() {
+	b.mu.Lock()
+	b.packets--
+	b.changed.Broadcast()
+	b.mu.Unlock()
+}
+
+func (*udpBook) PrepareConnection(string, M.Socksaddr, M.Socksaddr, tun.DirectRouteContext, time.Duration) (tun.DirectRouteDestination, error) {
+	return nil, errors.ErrUnsupported
+}
+func (*udpBook) NewConnection(_ context.Context, conn net.Conn, _ M.Metadata) error {
+	_ = conn.Close()
+	return errors.ErrUnsupported
+}
+func (b *udpBook) NewError(context.Context, error) { b.engine.transfer.failure("UDP_FORWARDER") }
 
 type clientUDPPacket struct {
 	book    *udpBook
 	slot    *udpSlot
 	source  netip.AddrPort
 	target  netip.AddrPort
-	payload []byte
+	payload *buf.Buffer
+	writer  N.PacketWriter
 	drop    sync.Once
 }
 
-func (p *clientUDPPacket) Data() []byte        { return p.payload }
+func (p *clientUDPPacket) Data() []byte        { return p.payload.Bytes() }
 func (p *clientUDPPacket) LocalAddr() net.Addr { return net.UDPAddrFromAddrPort(p.source) }
 func (p *clientUDPPacket) Drop() {
 	p.drop.Do(func() {
-		p.payload = nil
+		p.payload.Release()
 		b := p.book
 		b.mu.Lock()
 		p.slot.packets--
@@ -158,10 +183,10 @@ func (p *clientUDPPacket) RetainUDPFlow() (func(), func(error), bool) {
 // WriteBack survives Drop: its tuple and slot are immutable and independent of
 // the original payload. Nil source preserves the original fake-IP destination.
 func (p *clientUDPPacket) WriteBack(data []byte, from net.Addr) (int, error) {
-	return p.book.writeBack(p.source, p.target, p.slot, data, from)
+	return p.book.writeBack(p.source, p.target, p.slot, p.writer, data, from)
 }
 
-func (b *udpBook) writeBack(client, target netip.AddrPort, slot *udpSlot, data []byte, from net.Addr) (int, error) {
+func (b *udpBook) writeBack(client, target netip.AddrPort, slot *udpSlot, writer N.PacketWriter, data []byte, from net.Addr) (int, error) {
 	source := target
 	if from != nil {
 		addr, ok := from.(*net.UDPAddr)
@@ -177,9 +202,7 @@ func (b *udpBook) writeBack(client, target netip.AddrPort, slot *udpSlot, data [
 	if !source.IsValid() || len(data) > math.MaxUint16-header.UDPMinimumSize {
 		return 0, errors.New("invalid UDP reply bounds")
 	}
-	proto := header.IPv4ProtocolNumber
 	if client.Addr().Is6() {
-		proto = header.IPv6ProtocolNumber
 		if source.Addr().Is4() {
 			source = netip.AddrPortFrom(netip.AddrFrom16(source.Addr().As16()), source.Port())
 		}
@@ -197,29 +220,13 @@ func (b *udpBook) writeBack(client, target netip.AddrPort, slot *udpSlot, data [
 	// This synchronous write retains its caller's owner. The real gVisor link
 	// queue bounds buffered replies and returns a transport error when full;
 	// counting writers is a stop barrier, not a second packet-admission ceiling.
-	route, routeErr := b.engine.stack.FindRoute(1, stackAddress(source.Addr()), stackAddress(client.Addr()), proto, false)
-	if routeErr != nil {
-		return 0, gonet.TranslateNetstackError(routeErr)
+	packet := buf.NewSize(len(data))
+	_, _ = packet.Write(data)
+	// Destination is validated above; the upstream writer releases this buffer
+	// on every route/write result and owns IP/UDP encoding and checksums.
+	if err := writer.WritePacket(packet, M.SocksaddrFromNetIP(source)); err != nil {
+		return 0, err
 	}
-	defer route.Release()
-	packet := stack.NewPacketBuffer(stack.PacketBufferOptions{ReserveHeaderBytes: header.UDPMinimumSize + int(route.MaxHeaderLength()), Payload: buffer.MakeWithData(append([]byte{}, data...))})
-	defer packet.DecRef()
-	packet.TransportProtocolNumber = header.UDPProtocolNumber
-	udpHeader := header.UDP(packet.TransportHeader().Push(header.UDPMinimumSize))
-	length := uint16(packet.Size())
-	udpHeader.Encode(&header.UDPFields{SrcPort: source.Port(), DstPort: client.Port(), Length: length})
-	if route.RequiresTXTransportChecksum() {
-		xsum := udpHeader.CalculateChecksum(checksum.Combine(route.PseudoHeaderChecksum(header.UDPProtocolNumber, length), packet.Data().Checksum()))
-		if xsum != math.MaxUint16 {
-			xsum = ^xsum
-		}
-		udpHeader.SetChecksum(xsum)
-	}
-	if err := route.WritePacket(stack.NetworkHeaderParams{Protocol: header.UDPProtocolNumber, TTL: route.DefaultTTL()}, packet); err != nil {
-		route.Stats().UDP.PacketSendErrors.Increment()
-		return 0, gonet.TranslateNetstackError(err)
-	}
-	route.Stats().UDP.PacketsSent.Increment()
 	return len(data), nil
 }
 
@@ -260,10 +267,3 @@ func (b *udpBook) counts() (flows, packets, writes int) {
 }
 
 func (b *udpBook) isFault() bool { b.mu.Lock(); defer b.mu.Unlock(); return b.fault }
-
-func stackAddress(ip netip.Addr) tcpip.Address {
-	if ip.Is4() {
-		return tcpip.AddrFrom4(ip.As4())
-	}
-	return tcpip.AddrFrom16(ip.As16())
-}

@@ -8,9 +8,9 @@ import (
 	"net/netip"
 	"sync"
 
-	"github.com/metacubex/gvisor/pkg/buffer"
-	"github.com/metacubex/gvisor/pkg/tcpip/stack"
 	"github.com/metacubex/mihomo/component/resolver"
+	"github.com/metacubex/sing/common/buf"
+	N "github.com/metacubex/sing/common/network"
 )
 
 // Each DNS waiter captures this candidate's Service. Its lifetime includes the
@@ -58,39 +58,34 @@ func (b *dnsBook) finish() {
 	b.mu.Unlock()
 }
 
-func (b *dnsBook) handleUDP(id stack.TransportEndpointID, packet *stack.PacketBuffer) bool {
+func (b *dnsBook) handleUDP(source, target netip.AddrPort, payload *buf.Buffer, writer N.PacketWriter) {
 	b.mu.Lock()
 	u := b.engine.udp
 	u.mu.Lock()
-	if !u.accepting || u.packets >= PacketQueue || !b.admit() {
+	if !u.accepting || !b.admit() {
 		u.mu.Unlock()
 		b.mu.Unlock()
-		return true
+		payload.Release()
+		u.releasePacket()
+		return
 	}
-	u.packets++ // shares the actual packet-buffer bound with ordinary client UDP.
 	u.mu.Unlock()
 	b.mu.Unlock()
-	views := packet.Data().ToBuffer()
-	payload := make([]byte, 0, int(views.Size()))
-	views.Apply(func(view *buffer.View) { payload = append(payload, view.AsSlice()...) })
-	views.Release()
-	source := netip.AddrPortFrom(address(id.RemoteAddress), id.RemotePort)
-	target := netip.AddrPortFrom(address(id.LocalAddress), id.LocalPort)
 	go func() {
 		defer b.finish()
-		defer func() { u.mu.Lock(); u.packets--; u.changed.Broadcast(); u.mu.Unlock() }()
+		defer u.releasePacket()
+		defer payload.Release()
 		ctx, cancel := context.WithTimeout(b.engine.root, resolver.DefaultDnsRelayTimeout)
 		defer cancel()
 		size := MTU - 28
 		if source.Addr().Is6() {
 			size = MTU - 48
 		}
-		reply, err := resolver.RelayDnsPacketWithService(ctx, payload, make([]byte, size), observedDNSService{b, "udp"})
+		reply, err := resolver.RelayDnsPacketWithService(ctx, payload.Bytes(), make([]byte, size), observedDNSService{b, "udp"})
 		if err == nil && ctx.Err() == nil {
-			_, _ = u.writeBack(source, target, nil, reply, nil)
+			_, _ = u.writeBack(source, target, nil, writer, reply, nil)
 		}
 	}()
-	return true
 }
 
 type dnsClientConn struct {
