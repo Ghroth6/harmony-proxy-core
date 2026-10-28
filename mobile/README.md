@@ -91,6 +91,26 @@ fresh-process acceptance.
 
 ## Mobile runtime contract
 
+### Upstream TUN reuse checkpoint
+
+The current runtime has not yet been replaced by `listener/sing_tun.New`.
+With the pinned sing-tun v0.4.27 on the tested ALN-AL00 / OpenHarmony 7.0.0.105,
+an experimental build reached `fdbased.New`, where `unix.Fstat` on the real
+VPN fd failed with permission denied. The failed listener closed its duplicate;
+the mobile runtime retained and cleaned up its original ownership normally.
+This is a measured constructor obstacle in that app context, not a blanket
+platform or protocol restriction. A separate Windows host experiment passed
+IPv4/IPv6 TCP and UDP round trips through the public `GVisorTun` interface and
+the pinned official stack using channel packet I/O; it did not exercise a real
+TUN, Mihomo routing or the candidate DNS service. Keep the small platform I/O
+boundary, candidate-owned DNS, observation and retirement contracts while
+validating upstream protocol-handler reuse. Production deletion requires that
+integration evidence. Fixed artifacts, raw evidence and restoration are recorded
+in the coordinating repository's
+[TUN reuse report](https://github.com/Ghroth6/clashbox-meta/blob/main/docs/delivery/verification/upstream-tun-reuse-2026-10-28.md).
+
+### Current wire contract
+
 `mobile/include/cb_runtime.h` and `mobile/runtime/contract.go` are the versioned
 runtime value boundary. `cb_runtime_contract_version_v1` returns 5 for a build
 with the explicitly selected gVisor runtime, independently of the validation ABI;
