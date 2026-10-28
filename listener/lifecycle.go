@@ -54,16 +54,15 @@ func closeAndClear[T interface {
 	return closeRetired(slot, old)
 }
 
-// The pair is either fully registered or absent. A partial previous pair is
-// discarded, and a failed UDP bind also closes the new TCP socket. Replacing a
-// listener does not restore the previous address when the new bind fails.
+// SOCKS/Mixed require both transports. Redir/TProxy retain a working TCP
+// listener when UDP is unavailable, as in the upstream implementation.
 func recreatePair[T interface {
 	C.Listener
 	comparable
 }, U interface {
 	C.Listener
 	comparable
-}](tcp *T, udp *U, addr string, newTCP func() (T, error), newUDP func() (U, error)) error {
+}](tcp *T, udp *U, addr string, requireUDP bool, newTCP func() (T, error), newUDP func() (U, error)) error {
 	var zeroTCP T
 	var zeroUDP U
 	if *tcp != zeroTCP && *udp != zeroUDP && (*tcp).RawAddress() == addr && (*udp).RawAddress() == addr {
@@ -82,6 +81,9 @@ func recreatePair[T interface {
 	nextUDP, err := newUDP()
 	if err != nil {
 		*tcp = nextTCP
+		if !requireUDP {
+			return err
+		}
 		return errors.Join(err, closeAndClear(tcp))
 	}
 	*tcp, *udp = nextTCP, nextUDP

@@ -133,7 +133,7 @@ func ReCreateSocks(port int, tunnel C.Tunnel) (err error) {
 	defer socksMux.Unlock()
 	defer logListenerError("SOCKS", &err)
 	addr := genAddr(bindAddress, port, allowLan)
-	err = recreatePair(&socksListener, &socksUDPListener, addr,
+	err = recreatePair(&socksListener, &socksUDPListener, addr, true,
 		func() (*socks.Listener, error) { return socks.New(addr, tunnel) },
 		func() (*socks.UDPListener, error) { return socks.NewUDP(addr, tunnel) })
 	if err == nil && socksListener != nil {
@@ -147,7 +147,7 @@ func ReCreateRedir(port int, tunnel C.Tunnel) (err error) {
 	defer redirMux.Unlock()
 	defer logListenerError("Redir", &err)
 	addr := genAddr(bindAddress, port, allowLan)
-	err = recreatePair(&redirListener, &redirUDPListener, addr,
+	err = recreatePair(&redirListener, &redirUDPListener, addr, false,
 		func() (*redir.Listener, error) { return redir.New(addr, tunnel) },
 		func() (*tproxy.UDPListener, error) { return tproxy.NewUDP(addr, tunnel) })
 	if err == nil && redirListener != nil {
@@ -251,7 +251,7 @@ func ReCreateTProxy(port int, tunnel C.Tunnel) (err error) {
 	defer tproxyMux.Unlock()
 	defer logListenerError("TProxy", &err)
 	addr := genAddr(bindAddress, port, allowLan)
-	err = recreatePair(&tproxyListener, &tproxyUDPListener, addr,
+	err = recreatePair(&tproxyListener, &tproxyUDPListener, addr, false,
 		func() (*tproxy.Listener, error) { return tproxy.New(addr, tunnel) },
 		func() (*tproxy.UDPListener, error) { return tproxy.NewUDP(addr, tunnel) })
 	if err == nil && tproxyListener != nil {
@@ -265,7 +265,7 @@ func ReCreateMixed(port int, tunnel C.Tunnel) (err error) {
 	defer mixedMux.Unlock()
 	defer logListenerError("Mixed(http+socks)", &err)
 	addr := genAddr(bindAddress, port, allowLan)
-	err = recreatePair(&mixedListener, &mixedUDPLister, addr,
+	err = recreatePair(&mixedListener, &mixedUDPLister, addr, true,
 		func() (*mixed.Listener, error) { return mixed.New(addr, tunnel) },
 		func() (*socks.UDPListener, error) { return socks.NewUDP(addr, tunnel) })
 	if err == nil && mixedListener != nil {
@@ -363,67 +363,44 @@ func PatchTunnel(tunnels []LC.Tunnel, tunnel C.Tunnel) (err error) {
 			delete(tunnelUDPListeners, key)
 		}
 	}
-	if len(errs) != 0 {
-		return errors.Join(errs...)
-	}
-
-	tcpCreated := make(map[string]*LT.Listener)
-	udpCreated := make(map[string]*LT.PacketConn)
 	lc := inbound.NewListenConfig()
 	for _, key := range sortedKeys(tcpWanted) {
 		if _, exists := tunnelTCPListeners[key]; exists {
+			continue
+		}
+		if _, pending := pendingListenerCloses.Load(tunnelCloseKey{"tcp", key}); pending {
 			continue
 		}
 		config := tcpWanted[key]
 		l, err := LT.New(config.Address, config.Target, config.Proxy, lc, tunnel)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("bind TCP tunnel %s: %w", key, err))
-			break
+			continue
 		}
-		tcpCreated[key] = l
-	}
-	if len(errs) == 0 {
-		for _, key := range sortedKeys(udpWanted) {
-			if _, exists := tunnelUDPListeners[key]; exists {
-				continue
-			}
-			config := udpWanted[key]
-			l, err := LT.NewUDP(config.Address, config.Target, config.Proxy, lc, tunnel)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("bind UDP tunnel %s: %w", key, err))
-				break
-			}
-			udpCreated[key] = l
-		}
-	}
-	if len(errs) != 0 {
-		for key, l := range tcpCreated {
-			if err := closeRetired(tunnelCloseKey{"tcp", key}, l); err != nil {
-				errs = append(errs, fmt.Errorf("rollback TCP tunnel %s: %w", key, err))
-			}
-		}
-		for key, l := range udpCreated {
-			if err := closeRetired(tunnelCloseKey{"udp", key}, l); err != nil {
-				errs = append(errs, fmt.Errorf("rollback UDP tunnel %s: %w", key, err))
-			}
-		}
-		return errors.Join(errs...)
-	}
-	for key, l := range tcpCreated {
 		tunnelTCPListeners[key] = l
 		log.Infoln("Tunnel(tcp/%s) listening at: %s", key, l.Address())
 	}
-	for key, l := range udpCreated {
+	for _, key := range sortedKeys(udpWanted) {
+		if _, exists := tunnelUDPListeners[key]; exists {
+			continue
+		}
+		if _, pending := pendingListenerCloses.Load(tunnelCloseKey{"udp", key}); pending {
+			continue
+		}
+		config := udpWanted[key]
+		l, err := LT.NewUDP(config.Address, config.Target, config.Proxy, lc, tunnel)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("bind UDP tunnel %s: %w", key, err))
+			continue
+		}
 		tunnelUDPListeners[key] = l
 		log.Infoln("Tunnel(udp/%s) listening at: %s", key, l.Address())
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
-// PatchInboundListeners reports real Listen/Close results. A failed batch rolls
-// back its new listeners, preserving only unchanged existing listeners. Objects
-// whose Close failed are kept separately for the next cleanup attempt, never as
-// ready listeners. Callers must not treat an error as a usable configuration.
+// PatchInboundListeners reports each failure while retaining successful
+// listeners. A failed close only blocks replacement of that same listener.
 func PatchInboundListeners(newListenerMap map[string]C.InboundListener, tunnel C.Tunnel, dropOld bool) (err error) {
 	inboundMux.Lock()
 	defer inboundMux.Unlock()
@@ -448,36 +425,26 @@ func PatchInboundListeners(newListenerMap map[string]C.InboundListener, tunnel C
 			closeNamed(name, old)
 		}
 	}
-	if len(errs) != 0 {
-		return errors.Join(errs...)
-	}
-	created := make(map[string]C.InboundListener)
 	for _, name := range sortedKeys(newListenerMap) {
 		if _, exists := inboundListeners[name]; exists {
+			continue
+		}
+		if _, pending := inboundPendingClose[name]; pending {
 			continue
 		}
 		next := newListenerMap[name]
 		if next == nil {
 			errs = append(errs, fmt.Errorf("listener %s is nil", name))
-			break
+			continue
 		}
 		if err := next.Listen(tunnel); err != nil {
 			errs = append(errs, fmt.Errorf("listen %s: %w", name, err))
 			closeNamed(name, next)
-			break
+			continue
 		}
-		created[name] = next
+		inboundListeners[name] = next
 	}
-	if len(errs) != 0 {
-		for _, name := range sortedKeys(created) {
-			closeNamed(name, created[name])
-		}
-		return errors.Join(errs...)
-	}
-	for name, l := range created {
-		inboundListeners[name] = l
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // GetPorts return the ports of proxy servers

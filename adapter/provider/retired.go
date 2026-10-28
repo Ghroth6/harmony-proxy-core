@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 )
 
 // Native parser results own their adapters and expose graceful retirement.
@@ -105,10 +106,10 @@ func (pp *proxySetProvider) finishRetiredProxy(entry *retiredProxy) {
 		delete(pp.retired, entry)
 	}
 	pp.mutex.Unlock()
+	// Preserve the error for inspection/stop without disabling this provider's
+	// independent refresh schedule because an old node failed to close.
 	if err != nil {
-		// Further refreshes must not keep allocating after an unknown cleanup.
-		// This runs outside both provider locks and the Fetcher commit fence.
-		pp.Fetcher.Cancel()
+		log.Errorln("Provider %s retired proxy %s close error: %s", pp.Name(), entry.name, err)
 	}
 	close(entry.done)
 }

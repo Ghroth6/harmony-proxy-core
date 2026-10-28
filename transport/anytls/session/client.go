@@ -187,12 +187,9 @@ func (c *Client) createSession(ctx context.Context) (*Session, error) {
 		c.sessionsLock.Lock()
 		if session.closeErr == nil {
 			delete(c.sessions, session.seq)
-		} else {
-			// Preserve the failed session and its underlying handle. Further
-			// creation is unsafe; Client.Close will return the retained error.
-			c.closed = true
-			c.dieCancel()
 		}
+		// A failed session remains owned for Close to report. It is no longer
+		// reusable, but does not cancel unrelated sessions or future creation.
 		c.sessionsLock.Unlock()
 	}()
 	if closed || err != nil || ctx.Err() != nil {

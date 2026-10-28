@@ -218,11 +218,33 @@ func TestHistoricalCloseTimeoutAndErrorRemainOwnedAcrossProviderWait(t *testing.
 			t.Fatalf("historical error forgotten: %v", err)
 		}
 	}
-	if _, _, err := pd.SideUpdate([]byte("another")); !errors.Is(err, raw.err) {
-		t.Fatalf("update hid historical retirement error: %v", err)
+	if _, _, err := pd.SideUpdate([]byte("another")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("explicitly cancelled provider accepted another update: %v", err)
 	}
 	if raw.closes.Load() != 1 || len(pd.retiredProxies()) != 1 {
 		t.Fatal("unknown cleanup was retried or ownership was discarded")
+	}
+}
+
+func TestHistoricalCleanupFailureDoesNotCancelProviderUpdates(t *testing.T) {
+	current, raw := ownedProviderProxy(t, "old")
+	next, _ := ownedProviderProxy(t, "new")
+	raw.err = errors.New("old node cleanup failed")
+	pd := refreshingProvider(t, current, next)
+	if _, _, err := pd.SideUpdate([]byte("next")); err != nil {
+		t.Fatal(err)
+	}
+	for _, retired := range pd.retiredProxies() {
+		awaitRetirement(t, retired.done)
+	}
+	if err := pd.Context().Err(); err != nil {
+		t.Fatalf("refresh was cancelled: %v", err)
+	}
+	if _, _, err := pd.SideUpdate([]byte("another")); err != nil {
+		t.Fatalf("independent update failed: %v", err)
+	}
+	if err := pd.Close(); !errors.Is(err, raw.err) {
+		t.Fatalf("close lost historical failure: %v", err)
 	}
 }
 

@@ -166,12 +166,11 @@ func (pp *proxySetProvider) Name() string {
 
 func (pp *proxySetProvider) Update() error {
 	_, _, err := pp.Fetcher.Update()
-	return errors.Join(err, pp.retirementError())
+	return err
 }
 
 func (pp *proxySetProvider) SideUpdate(buf []byte) ([]C.Proxy, bool, error) {
-	proxies, same, err := pp.Fetcher.SideUpdate(buf)
-	return proxies, same, errors.Join(err, pp.retirementError())
+	return pp.Fetcher.SideUpdate(buf)
 }
 
 func (pp *proxySetProvider) Initial() error {

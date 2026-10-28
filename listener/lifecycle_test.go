@@ -179,30 +179,33 @@ func TestListenerLifecycleInvalidProtocolConfig(t *testing.T) {
 	}
 }
 
-func TestListenerLifecycleNamedBatchRollback(t *testing.T) {
+func TestListenerLifecycleNamedBatchRetainsSuccessfulEntries(t *testing.T) {
 	first := reserveTCP(t)
 	firstAddr := first.Addr().String()
 	firstPort := listenerPort(t, first.Addr())
 	_ = first.Close()
 	blocker := reserveTCP(t)
+	last := reserveTCP(t)
+	lastPort := listenerPort(t, last.Addr())
+	_ = last.Close()
 	next := map[string]C.InboundListener{
 		"a": namedHTTP(t, "a", firstPort),
 		"b": namedHTTP(t, "b", listenerPort(t, blocker.Addr())),
+		"c": namedHTTP(t, "c", lastPort),
 	}
 	t.Cleanup(func() { _ = PatchInboundListeners(nil, nil, true) })
 	if err := PatchInboundListeners(next, nil, true); err == nil {
 		t.Fatal("failed batch reported ready")
 	}
-	if len(inboundListeners) != 0 {
-		t.Fatal("partial batch registered")
+	if len(inboundListeners) != 2 || inboundListeners["a"] != next["a"] || inboundListeners["c"] != next["c"] {
+		t.Fatal("successful entries before/after failure were not retained")
 	}
-	assertTCPReleased(t, firstAddr)
 	_ = blocker.Close()
 	for i := 0; i < 2; i++ {
 		if err := PatchInboundListeners(next, nil, true); err != nil {
 			t.Fatalf("restart %d: %v", i, err)
 		}
-		if len(inboundListeners) != 2 {
+		if len(inboundListeners) != 3 {
 			t.Fatal("successful batch missing listeners")
 		}
 		if err := PatchInboundListeners(nil, nil, true); err != nil {
@@ -297,7 +300,7 @@ func TestListenerLifecycleCloseFailureRetainsCleanupOwnership(t *testing.T) {
 	}
 }
 
-func TestListenerLifecycleTunnelRollbackAndRestart(t *testing.T) {
+func TestListenerLifecycleTunnelPartialSuccessAndRestart(t *testing.T) {
 	blocker := reserveUDP(t)
 	addr := blocker.LocalAddr().String()
 	config := []LC.Tunnel{{Network: []string{"tcp", "udp"}, Address: addr, Target: "127.0.0.1:9", Proxy: "DIRECT"}}
@@ -305,10 +308,9 @@ func TestListenerLifecycleTunnelRollbackAndRestart(t *testing.T) {
 	if err := PatchTunnel(config, nil); err == nil {
 		t.Fatal("occupied UDP tunnel reported ready")
 	}
-	if len(tunnelTCPListeners) != 0 || len(tunnelUDPListeners) != 0 {
-		t.Fatal("partial tunnel registered")
+	if len(tunnelTCPListeners) != 1 || len(tunnelUDPListeners) != 0 {
+		t.Fatal("UDP failure discarded the working TCP tunnel")
 	}
-	assertTCPReleased(t, addr)
 	_ = blocker.Close()
 	for i := 0; i < 2; i++ {
 		if err := PatchTunnel(config, nil); err != nil {

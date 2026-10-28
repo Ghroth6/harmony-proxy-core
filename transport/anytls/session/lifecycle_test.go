@@ -331,13 +331,24 @@ func TestClientRetainsSpontaneousSessionCloseFailure(t *testing.T) {
 	left, right := net.Pipe()
 	want := errors.New("peer disconnected but local close failed")
 	physical := &lifecycleConn{Conn: left, closeErr: want, closeStarted: make(chan struct{})}
-	c := NewClient(context.Background(), func(context.Context) (net.Conn, error) { return physical, nil }, lifecyclePadding(), "test", time.Hour, time.Hour, 0, false)
+	nextLeft, nextRight := net.Pipe()
+	defer nextRight.Close()
+	var dials atomic.Int32
+	c := NewClient(context.Background(), func(context.Context) (net.Conn, error) {
+		if dials.Add(1) == 1 {
+			return physical, nil
+		}
+		return nextLeft, nil
+	}, lifecyclePadding(), "test", time.Hour, time.Hour, 0, false)
 	if _, err := c.CreateStream(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	_ = right.Close()
 	lifecycleWait(t, physical.closeStarted)
-	lifecycleWait(t, c.die.Done()) // Failure closes admission, not just the idle pool.
+	c.reaping.Wait()
+	if _, err := c.CreateStream(context.Background()); err != nil {
+		t.Fatalf("an unrelated new session was disabled: %v", err)
+	}
 	if err := c.Close(); !errors.Is(err, want) {
 		t.Fatalf("Close forgot earlier failure: %v", err)
 	}
