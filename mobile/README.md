@@ -704,8 +704,8 @@ and depth 64, each record 65536 decoder visits/1 MiB expanded bytes, database
 Bad pointers/types/tree/separator and small shared-pointer expansion attacks
 fail preparation; validation never re-encodes a resource or changes its digest.
 
-`Fetcher.InitialPrepared` loads verified bytes without a watcher, request or
-timer. Explicit runtime activation starts one original HTTP-provider scheduler;
+For prepared rule resources, `Fetcher.InitialPrepared` loads verified bytes
+without a watcher, request or timer. Runtime activation starts one scheduler;
 its first tick waits a full configured interval. Actual updates preserve the
 original URL, headers, proxy and strategy, use the accepted protection/network
 generation and count every actual GET, including each redirect. The resource
@@ -715,16 +715,20 @@ origin change, including later same-origin hops. Each attempt owns a fresh
 connection; ordinary upstream HTTP clients keep their existing behavior.
 Only a final 200 with complete bounded EOF and returned Close can be adopted.
 Intermediate or final Close errors retain the real object and block clean
-retirement. Updates check dependency closure and reserve
-the total adopted-resource budget before saving. A completed temporary file is
+retirement. Updates check dependency closure and the source's size-limit before
+saving, without a separate total-resource quota. A completed temporary file is
 synced, closed, re-hashed and atomically published without replacing an immutable
 file; only then can the actual provider strategy adopt it. The ledger separates
 initial candidate/manifest identity from acquired, saved and adopted versions.
 Its process-wide acquisition count never resets. Cancellation joins scheduler,
 physical dial racers and close workers; a Close failure retains the real object
 and prevents successful cleanup. Closing the Engine refuses a candidate that
-still owns its trusted root. Geodata auto-update is explicitly unsupported with
-`POLICY_GEODATA_UPDATE_UNSUPPORTED`; a declared enabled updater cannot be ready.
+still owns its trusted root. GEO auto-update uses the official stale-first and
+interval schedule with this run's context. Verified bytes rebuild all active
+country matchers before replacing the candidate's readers; failure keeps the
+old version and retirement cancels and joins the updater. Proxy providers use
+their official Initial/cache/payload path instead of InitialPrepared; their
+initialization and refresh failures retain the official partial-success policy.
 
 The original DNS candidate constructs its own inactive ResolverOwner, real
 resolver, enhancer and captured service. Original nameserver policy, fallback,
