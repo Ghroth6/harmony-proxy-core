@@ -387,6 +387,14 @@ then callbacks/forwarding before Stack.Wait and fd close. Caller timeout leaves
 the worker and ownership intact. Every independent safe close and candidate
 retirement starts even if another close remains pending or fails.
 
+TUIC adapter retirement calls the explicit pool Close, which cancels admitted
+construction and joins the protocol clients and their workers. An idle client
+is removed from selection before its Close runs outside the pool mutex; slow
+cleanup must not block unrelated requests or prevent stop cancellation. That
+cleanup remains registered with the pool, so final Close still waits for its
+actual return and includes its error. The upstream 30-minute idle criterion,
+stream selection and stream-limit retry behavior are unchanged.
+
 Every Start independently validates `preparedPolicy` and builds fresh owned
 resources through `mobile/policy.Engine.BuildCandidate`. Static validation's
 M1b/V2 labels never select a runtime implementation. `executor.PublishMobilePolicy`
