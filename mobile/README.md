@@ -788,3 +788,9 @@ Platform-specific process ownership and other stated adaptations still need
 their own target evidence. `profile.tracing` is a retained client field absent as
 a runtime switch in pinned Mihomo; platform connection observations remain
 owned independently. These checkpoints do not complete #25/#26.
+# 应用节点目录接入
+
+Go 嵌入方通过 `bridge.SetPolicyReady` 在首次运行前登记本地选择恢复：provider 初始化结束后、客户端入口开放前调用。`bridge.WithActivePolicy` 按核心进程、运行代次及候选摘要借用当前 `config.Config`；回调不得保留图引用或停止该 manager。运行退休等待借用结束，取消后拒绝新借用。页面、持久化及 C/ArkTS 节点协议归应用桥，不加入 Mihomo 业务层。
+
+选择沿用 `Selector.Set/ForceSet` 的名称语义；仅为选择字符串增加并发读写保护。`Fetcher.LastResult` 公开最近一次完成的更新/未变化/失败及时间，不保存历史，不改变下载调度、失败处理或原始日志。provider 内容发布仍使用已有 `Commit`，只在短回调内读取或选择，不在其中进行网络、文件写入或连接关闭。
+

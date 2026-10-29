@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
@@ -17,6 +18,7 @@ type Selector struct {
 	*GroupBase
 	disableUDP bool
 	selected   string
+	selectedMu sync.RWMutex
 	testUrl    string
 }
 
@@ -83,7 +85,9 @@ func (s *Selector) Now() string {
 func (s *Selector) Set(name string) error {
 	for _, proxy := range s.GetProxies(false) {
 		if proxy.Name() == name {
+			s.selectedMu.Lock()
 			s.selected = name
+			s.selectedMu.Unlock()
 			return nil
 		}
 	}
@@ -92,6 +96,8 @@ func (s *Selector) Set(name string) error {
 }
 
 func (s *Selector) ForceSet(name string) {
+	s.selectedMu.Lock()
+	defer s.selectedMu.Unlock()
 	s.selected = name
 }
 
@@ -102,8 +108,11 @@ func (s *Selector) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 
 func (s *Selector) selectedProxy(touch bool) C.Proxy {
 	proxies := s.GetProxies(touch)
+	s.selectedMu.RLock()
+	selected := s.selected
+	s.selectedMu.RUnlock()
 	for _, proxy := range proxies {
-		if proxy.Name() == s.selected {
+		if proxy.Name() == selected {
 			return proxy
 		}
 	}

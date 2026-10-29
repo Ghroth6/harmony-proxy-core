@@ -38,6 +38,7 @@ type Fetcher[V any] struct {
 	vehicle       P.Vehicle
 	bundleFile    BundleFile
 	updatedAt     time.Time
+	lastResult    FetchResult
 	hash          utils.HashType
 	parser        Parser[V]
 	interval      time.Duration
@@ -179,7 +180,8 @@ func (f *Fetcher[V]) recordCleanupError(err error) bool {
 	return true
 }
 
-func (f *Fetcher[V]) Initial() (V, error) {
+func (f *Fetcher[V]) Initial() (value V, err error) {
+	defer func() { f.recordResult(false, err) }()
 	f.startMutex.Lock()
 	prepared := f.prepared
 	f.startMutex.Unlock()
@@ -263,7 +265,8 @@ func (f *Fetcher[V]) setInitialTime(modTime time.Time) error {
 	})
 }
 
-func (f *Fetcher[V]) Update() (V, bool, error) {
+func (f *Fetcher[V]) Update() (value V, same bool, err error) {
+	defer func() { f.recordResult(same, err) }()
 	if err := f.begin(); err != nil {
 		return lo.Empty[V](), false, err
 	}
@@ -307,7 +310,8 @@ func (f *Fetcher[V]) update() (V, bool, error) {
 	}
 	return f.loadBufContext(ctx, buf, hash, f.vehicle.Type() != P.File)
 }
-func (f *Fetcher[V]) SideUpdate(buf []byte) (V, bool, error) {
+func (f *Fetcher[V]) SideUpdate(buf []byte) (value V, same bool, err error) {
+	defer func() { f.recordResult(same, err) }()
 	if err := f.begin(); err != nil {
 		return lo.Empty[V](), false, err
 	}

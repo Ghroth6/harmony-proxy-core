@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/mobile/network"
 	"github.com/metacubex/mihomo/mobile/policy"
 	"github.com/metacubex/mihomo/mobile/protection"
@@ -21,10 +22,12 @@ type Manager struct {
 	fault          bool
 	gate           *protection.Gate
 	policy         *policy.Engine
+	policyReady    func(uint64, *config.Config) error
 }
 type Transfer struct {
 	manager         *Manager
 	mu              sync.Mutex
+	policyMu        sync.Mutex
 	receipt         Receipt
 	fd              *descriptorOwner
 	ctx             context.Context

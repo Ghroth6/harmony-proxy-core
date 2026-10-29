@@ -253,6 +253,10 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		t.failure("ENTRY_ACTIVATE")
 		return
 	}
+	if err = t.manager.preparePolicy(target.Generation, engine.cfg); err != nil {
+		t.failure("APPLICATION_POLICY_PREPARE")
+		return
+	}
 	t.mu.Lock()
 	if t.ctx.Err() != nil {
 		t.mu.Unlock()
@@ -298,6 +302,8 @@ func (t *Transfer) stop() {
 	t.cleanupOnce.Do(func() { go func() { <-t.buildDone; t.cleanup() }() })
 }
 func (t *Transfer) cleanup() {
+	t.policyMu.Lock()
+	defer t.policyMu.Unlock()
 	engine := t.engine
 	unknown := false
 	if engine != nil {
