@@ -200,11 +200,6 @@ func NewHysteria(option HysteriaOption) (*Hysteria, error) {
 	if option.HopInterval == 0 {
 		option.HopInterval = DefaultHopInterval
 	}
-	if option.Protocol == "faketcp" {
-		if err := option.CheckResource("PROXY_RAW_SOCKET_NOT_IMPLEMENTED"); err != nil {
-			return nil, err
-		}
-	}
 	hopInterval := time.Duration(int64(option.HopInterval)) * time.Second
 	if option.ReceiveWindow == 0 {
 		quicConfig.InitialStreamReceiveWindow = DefaultStreamReceiveWindow / 10

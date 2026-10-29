@@ -107,7 +107,8 @@ $env:CGO_LDFLAGS="--target=$compilerTarget --sysroot=$sysroot"
 # Both OHOS architectures require the fork's dynamic TLS mode. The actual ELF
 # gate below rejects a compiler that accepts this flag but still emits IE TLS.
 $tlsArguments=@('-tlsmodegd')
-$arguments=@('build','-buildvcs=false','-mod=mod')+$tlsArguments+@('-buildmode','c-shared','-tags','ohos with_gvisor',
+$buildTags='ohos with_gvisor no_fake_tcp'
+$arguments=@('build','-buildvcs=false','-mod=mod')+$tlsArguments+@('-buildmode','c-shared','-tags',$buildTags,
   '-ldflags',('-X github.com/metacubex/mihomo/mobile/validation.SourceRevision='+$revision),
   '-o','libcb_validation.so',$package)
 [ordered]@{ sourceRevision=$revision; architecture=$Architecture; goOs='linux'; goArch=$goArch; compilerTarget=$compilerTarget;
@@ -117,6 +118,11 @@ $arguments=@('build','-buildvcs=false','-mod=mod')+$tlsArguments+@('-buildmode',
   toolchainBuildReceipt=$toolchainReceiptPath; toolchainBuildReceiptSha256=$toolchainReceiptHash; toolchainBuildReceiptCopy=$toolchainReceiptCopy; goSha256=$goHash; goToolSha256=$goTools;
   scope='Requested real OHOS core compilation; no successful artifact established yet' } |
   ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'inputs.json') -Encoding utf8NoBOM
+# Check the target file selection, not the Windows host's implicit !linux stub.
+& $go -C $stage list -mod=mod -tags $buildTags -json github.com/metacubex/mihomo/transport/hysteria/conns/faketcp > (Join-Path $stage 'faketcp-source.json')
+if ($LASTEXITCODE -ne 0) { throw 'Cannot identify target fake-TCP sources' }
+$fakeTcpSource=Get-Content -LiteralPath (Join-Path $stage 'faketcp-source.json') -Raw | ConvertFrom-Json
+if (@($fakeTcpSource.GoFiles).Count -ne 1 -or $fakeTcpSource.GoFiles[0] -cne 'tcp_stub.go') { throw 'OHOS build must select the upstream no_fake_tcp stub' }
 & $go -C $stage @arguments *> (Join-Path $stage 'build.log')
 if ($LASTEXITCODE -ne 0) { throw "Mobile core build failed; inspect $stage/build.log" }
 if ((git -C $core rev-parse HEAD) -cne $revision -or @(git -C $core status --porcelain=v1 --untracked-files=all).Count) { throw 'Core source changed during compilation' }
@@ -141,6 +147,7 @@ $elfIdentity=& (Join-Path $PSScriptRoot 'check-mobile-elf.ps1') -Library $librar
   buildCache=$buildCachePath; goFlags=$env:GOFLAGS; goMaxProcs=$env:GOMAXPROCS
   sdk=(Get-Content -LiteralPath (Join-Path $sdk 'oh-uni-package.json') -Raw | ConvertFrom-Json)
   arguments=$arguments; cflags=$env:CGO_CFLAGS; ldflags=$env:CGO_LDFLAGS
+  fakeTcpGoFiles=$fakeTcpSource.GoFiles
   moduleSha256=(Get-FileHash -LiteralPath (Join-Path $stage 'go.mod') -Algorithm SHA256).Hash
   sumSha256=(Get-FileHash -LiteralPath (Join-Path $stage 'go.sum') -Algorithm SHA256).Hash
   scope=($Architecture+' OHOS compile only; runtime loading, target behavior and side effects unverified')

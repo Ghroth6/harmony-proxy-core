@@ -54,12 +54,13 @@ stale-first schedule with a runtime context; new complete bytes are validated,
 saved and substituted into the active scoped matchers. Failed updates keep the
 previous matcher and stopping joins the updater.
 
-Hysteria fake-TCP remains an explicit integration gap
-(`PROXY_RAW_SOCKET_NOT_IMPLEMENTED`). The pinned Linux implementation directly
-opens raw IP and TCP sockets and invokes iptables outside the injected dialer.
-The OHOS build targets Linux, so compiling that code does not establish app
-privileges or VPN protection. No phone/root/network permission claim follows
-from host verification. Other Hysteria modes are independent.
+OHOS builds select the upstream `no_fake_tcp` option and verify that its
+`tcp_stub.go` is compiled instead of the Linux raw-socket implementation.
+Hysteria fake-TCP nodes can be prepared alongside usable nodes; actual connection,
+URL test or health-check attempts return the upstream unsupported-platform error.
+There is no extra constructor-level configuration rejection. Full phone fake-TCP
+integration is deferred: raw-socket permission and protected socket ownership
+remain unverified. Other Hysteria modes are independent.
 Public host regressions cover authenticated two-hop SOCKS5 bytes/destinations,
 one protected physical socket, closed preparation admission, upstream group
 expansion/selection identity, real file errors and refusal before unowned side
