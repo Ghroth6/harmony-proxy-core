@@ -479,6 +479,20 @@ context. This core has no MASQUE, SSH or OpenVPN inbound service. Host fixtures
 verify connection ownership and selected protocol paths, not external service
 interoperability, every dependency worker join, or phone acceptance.
 
+WireGuard uses the pinned upstream device, IP stacks and ClientBind directly.
+ClientBind owns the shared UDP socket and its cancellation context; individual
+TCP/UDP requests need no extra shared-dial wrapper. Stack startup rollback and
+Adapter.Close follow upstream. With the pinned MIPS dependency, Start only fails
+on an already-closed stack; gVisor supplies its own tun.Device and bypasses that
+startup branch, so a separate candidate cleanup set adds no required ownership.
+DNS syntax validation remains before stack/device allocation: upstream ordering
+leaves device workers behind when invalid DNS rejects the constructor. Host
+tests cover MIPS/gVisor, one/two peers, inner IPv4/IPv6 TCP/UDP, request isolation,
+socket closure and pending reads. This core has no WireGuard inbound; test peers
+use the pinned wireguard-go device. Device.Close joins WireGuard workers, while
+MIPS.Close initiates stack shutdown without joining every socket actor. This is
+not phone, external-server, AmneziaWG or a complete dependency-worker acceptance.
+
 Every Start independently validates `preparedPolicy` and builds fresh owned
 resources through `mobile/policy.Engine.BuildCandidate`. Static validation's
 M1b/V2 labels never select a runtime implementation. `executor.PublishMobilePolicy`

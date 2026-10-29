@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
-	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/component/resolver"
@@ -282,13 +281,15 @@ func newWireguardDevice(stack ipStack) (wireguardDevice, error) {
 	if wgDevice, ok := stack.(wireguardDevice); ok {
 		return wgDevice, nil
 	}
-	device := &ipStackWireguardDevice{
+	// mipstack must start at here
+	err := stack.Start()
+	if err != nil {
+		return nil, err
+	}
+	return &ipStackWireguardDevice{
 		ipStack: stack,
 		events:  make(chan tun.Event, 1),
-	}
-	// Keep the device's ownership even when Start fails so the caller can join
-	// cleanup and retain an unfinished close, rather than lose the stack.
-	return device, stack.Start()
+	}, nil
 }
 
 type wgSingErrorHandler struct {
@@ -478,11 +479,8 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	}
 	outbound.tunDevice, err = newWireguardDevice(stack)
 	if err != nil {
-		var candidate configresources.Set
-		candidate.AddAdapter(outbound)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return nil, errors.Join(E.Cause(err, "create WireGuard device"), candidate.Close(ctx))
+		_ = stack.Close()
+		return nil, E.Cause(err, "create WireGuard device")
 	}
 
 	logger := &device.Logger{
@@ -790,18 +788,8 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 func (w *WireGuard) Close() error {
 	if w.device != nil {
 		w.device.Close()
-		return nil
 	}
-	// A rejected construction may own a stack before a WireGuard device takes
-	// responsibility for closing both the stack and bind.
-	var err error
-	if w.tunDevice != nil {
-		err = w.tunDevice.Close()
-	}
-	if w.bind != nil {
-		err = errors.Join(err, w.bind.Close())
-	}
-	return err
+	return nil
 }
 
 func (w *WireGuard) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
