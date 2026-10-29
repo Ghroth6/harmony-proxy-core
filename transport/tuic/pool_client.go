@@ -118,8 +118,17 @@ func (t *PoolClient) getClient(udp, forceNew bool) (Client, error) {
 		next := it.Next()
 		client := it.Value
 		if client != best && client.OpenStreams() == 0 && time.Since(client.LastVisited()) > 30*time.Minute {
-			t.closeErr = errors.Join(t.closeErr, client.Close())
 			clients.Remove(it)
+			// Retain cleanup until pool shutdown, but never wait for protocol
+			// workers while holding the lock needed by new requests and Close.
+			t.pending.Add(1)
+			go func(client Client) {
+				defer t.pending.Done()
+				err := client.Close()
+				t.mu.Lock()
+				t.closeErr = errors.Join(t.closeErr, err)
+				t.mu.Unlock()
+			}(client)
 		}
 		it = next
 	}
@@ -150,15 +159,14 @@ func (t *PoolClient) Close() error {
 		}
 		t.mu.Unlock()
 		var wg sync.WaitGroup
-		var errMu sync.Mutex
 		for _, client := range clients {
 			wg.Add(1)
 			go func(client Client) {
 				defer wg.Done()
 				err := client.Close()
-				errMu.Lock()
+				t.mu.Lock()
 				t.closeErr = errors.Join(t.closeErr, err)
-				errMu.Unlock()
+				t.mu.Unlock()
 			}(client)
 		}
 		wg.Wait()
