@@ -7,6 +7,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -24,11 +25,13 @@ import (
 )
 
 type Listener struct {
-	closed    bool
-	config    LC.Hysteria2RealmServer
-	listeners []net.Listener
-	server    *server
-	cancel    func()
+	closeMu    sync.Mutex
+	config     LC.Hysteria2RealmServer
+	listeners  []net.Listener
+	servers    []*http.Server
+	server     *server
+	cancel     func()
+	reaperDone chan struct{}
 }
 
 const (
@@ -111,24 +114,35 @@ func New(config LC.Hysteria2RealmServer, lc C.InboundListenConfig, tunnel C.Tunn
 			Handler:           s.routes(),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
+		sl.servers = append(sl.servers, srv)
 
 		go srv.Serve(l)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	sl.cancel = cancel
-	go s.reaper(ctx)
+	sl.reaperDone = make(chan struct{})
+	go func() {
+		defer close(sl.reaperDone)
+		s.reaper(ctx)
+	}()
 
 	return sl, nil
 }
 
 func (l *Listener) Close() error {
-	l.closed = true
+	l.closeMu.Lock()
+	defer l.closeMu.Unlock()
 	var errs []error
 	var err error
 	l.listeners, err = lifecycle.CloseAll(l.listeners)
 	errs = append(errs, err)
+	// Listener.Close only stops admission. HTTP owns accepted keep-alive and
+	// event-stream connections, so use its existing Close to end them too.
+	l.servers, err = lifecycle.CloseAll(l.servers)
+	errs = append(errs, err)
 	if l.cancel != nil {
 		l.cancel()
+		<-l.reaperDone
 	}
 	return errors.Join(errs...)
 }

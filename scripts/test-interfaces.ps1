@@ -19,7 +19,7 @@ $packages = @(
   'hub/executor', 'config', 'component/configresources', 'component/platformnetwork', 'component/iface',
   'component/dialer', 'dns', 'component/forwarding', 'component/http',
   'tunnel', 'hub/route', 'listener/sing_tun',
-  'listener/sing_hysteria2', 'transport/anytls/session', 'transport/anytls/util', 'transport/tuic',
+  'listener/sing_hysteria2', 'listener/hysteria2_realm', 'transport/anytls/session', 'transport/anytls/util', 'transport/tuic',
   'transport/shadowquic', 'transport/kcptun', 'component/resource',
   'adapter/provider', 'rules/provider', 'component/updater', 'component/geodata'
 )

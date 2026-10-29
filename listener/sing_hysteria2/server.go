@@ -324,18 +324,20 @@ func (l *Listener) Close() error {
 	if l.cancel != nil {
 		l.cancel()
 	}
-	var errs []error
 	var err error
 	// The pinned quic-go Listener.Close only ends admission. Closing the UDP
 	// transport first makes its read loop destroy every accepted connection;
 	// wait for their real contexts before closing the service listener. Doing
 	// this in the opposite order can leave unauthenticated sessions alive.
 	l.udpListeners, err = lifecycle.CloseAll(l.udpListeners)
-	errs = append(errs, err)
+	if err != nil {
+		// A failed close may leave QUIC sessions live. Return the real error
+		// with their socket/service ownership intact so Close can be retried.
+		return err
+	}
 	l.sessions.Wait()
 	l.services, err = lifecycle.CloseAll(l.services)
-	errs = append(errs, err)
-	return errors.Join(errs...)
+	return err
 }
 
 func (l *Listener) Config() string {

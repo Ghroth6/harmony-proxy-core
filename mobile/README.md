@@ -412,6 +412,22 @@ application callbacks. Neither path supplies the worker-join API missing from
 the pinned KCP/smux dependencies, or proves every dependency-internal Close
 error is propagated.
 
+Hysteria2 reuses the pinned sing-quic client and its CloseWithError. The physical
+packet dialer detaches established shared transports from a single request;
+logical TCP/UDP operations keep their upstream behavior. Realm's HTTP transport
+uses the same shared-dial boundary. TLS resources remain configuration-owned.
+The separate Hysteria2 listener closes UDP before waiting for observed QUIC
+connection contexts: the upstream listener Close alone leaves accepted sessions
+alive. If UDP Close fails, it returns that error and retains the socket/service
+for a later Close, rather than waiting indefinitely on that still-live socket.
+Realm control listeners retain their HTTP servers and call the existing HTTP
+Close to terminate accepted event streams, then join their local reaper.
+These hooks do not add a protocol implementation or configuration restriction.
+The dependency's pending client handshake and Realm workers do not expose a
+complete join/error contract; a returned Close is not proof of all internal
+tasks finishing. Host TCP/UDP and event-stream regressions are not phone or
+external Realm/STUN acceptance.
+
 Every Start independently validates `preparedPolicy` and builds fresh owned
 resources through `mobile/policy.Engine.BuildCandidate`. Static validation's
 M1b/V2 labels never select a runtime implementation. `executor.PublishMobilePolicy`
