@@ -221,7 +221,7 @@ func (s *Server) handleAssociation(assoc *association) {
 				data:  packet.data,
 				rAddr: rAddr,
 			}, additions...)
-		case <-assoc.closed:
+		case <-assoc.ctx.Done():
 			return
 		}
 	}

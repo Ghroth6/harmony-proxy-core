@@ -1,6 +1,7 @@
 package shadowquic
 
 import (
+	"context"
 	"net"
 	"os"
 	"sync"
@@ -26,7 +27,8 @@ type association struct {
 	recvIDSet  map[uint16]struct{}
 	uniStreams map[string]*quic.SendStream
 
-	closed    chan struct{}
+	ctx       context.Context
+	cancel    context.CancelFunc
 	closeOnce sync.Once
 	closeErr  error
 
@@ -35,6 +37,7 @@ type association struct {
 }
 
 func newAssociation(parent *connState, control *quic.Stream, mode udpMode) *association {
+	ctx, cancel := context.WithCancel(parent.ctx)
 	a := &association{
 		parent:        parent,
 		mode:          mode,
@@ -44,13 +47,14 @@ func newAssociation(parent *connState, control *quic.Stream, mode udpMode) *asso
 		sendIDSet:     make(map[uint16]struct{}),
 		recvIDSet:     make(map[uint16]struct{}),
 		uniStreams:    make(map[string]*quic.SendStream),
-		closed:        make(chan struct{}),
+		ctx:           ctx,
+		cancel:        cancel,
 		readDeadline:  deadline.MakePipeDeadline(),
 		writeDeadline: deadline.MakePipeDeadline(),
 	}
 	parent.goTask(a.readControl)
 	parent.goTask(func() {
-		<-parent.ctx.Done()
+		<-a.ctx.Done()
 		_ = a.Close()
 	})
 	return a
@@ -74,7 +78,7 @@ func (a *association) readControl() {
 func (a *association) deliver(packet receivedPacket) {
 	select {
 	case a.input <- packet:
-	case <-a.closed:
+	case <-a.ctx.Done():
 	default:
 	}
 }
@@ -83,7 +87,7 @@ func (a *association) ReadFrom(p []byte) (int, net.Addr, error) {
 	select {
 	case packet := <-a.input:
 		return copy(p, packet.data), packet.addr, nil
-	case <-a.closed:
+	case <-a.ctx.Done():
 		return 0, nil, net.ErrClosed
 	case <-a.readDeadline.Wait():
 		return 0, nil, os.ErrDeadlineExceeded
@@ -94,7 +98,7 @@ func (a *association) WaitReadFrom() ([]byte, func(), net.Addr, error) {
 	select {
 	case packet := <-a.input:
 		return packet.data, nil, packet.addr, nil
-	case <-a.closed:
+	case <-a.ctx.Done():
 		return nil, nil, nil, net.ErrClosed
 	case <-a.readDeadline.Wait():
 		return nil, nil, nil, os.ErrDeadlineExceeded
@@ -106,7 +110,7 @@ func (a *association) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 		return 0, errPacketTooLarge
 	}
 	select {
-	case <-a.closed:
+	case <-a.ctx.Done():
 		return 0, net.ErrClosed
 	case <-a.writeDeadline.Wait():
 		return 0, os.ErrDeadlineExceeded
@@ -139,11 +143,18 @@ func (a *association) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	switch a.mode {
 	case udpModeStream:
 		stream := a.uniStreams[key]
-		if stream == nil {
-			stream, err = a.parent.quicConn.OpenUniStreamSync(a.parent.ctx)
+		newStream := stream == nil
+		if newStream {
+			stream, err = a.parent.quicConn.OpenUniStreamSync(a.ctx)
 			if err != nil {
 				return 0, err
 			}
+		}
+		// Close must wake a flow-controlled writer before taking a.mu. QUIC's
+		// stream Close sends FIN but does not interrupt a blocked Write.
+		stop := context.AfterFunc(a.ctx, func() { _ = stream.SetWriteDeadline(time.Now()) })
+		defer stop()
+		if newStream {
 			if err = WritePacketStreamHeader(stream, id); err != nil {
 				_ = stream.Close()
 				return 0, err
@@ -168,7 +179,7 @@ func (a *association) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 
 func (a *association) Close() error {
 	a.closeOnce.Do(func() {
-		close(a.closed)
+		a.cancel()
 		a.closeErr = a.close()
 	})
 	return a.closeErr

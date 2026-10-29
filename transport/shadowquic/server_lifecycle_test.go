@@ -12,15 +12,22 @@ import (
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/forwarding"
+	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/socks5"
 )
 
 func TestShadowQUICSessionStopWaitsForAcceptedHandler(t *testing.T) {
+	for i, mode := range []string{"tcp", "udp-datagram", "udp-stream"} {
+		t.Run(mode, func(t *testing.T) { testShadowQUICHandlerStop(t, uint64(2*i+1), mode) })
+	}
+}
+
+func testShadowQUICHandlerStop(t *testing.T, generation uint64, mode string) {
 	forwarding.Enable()
-	if err := forwarding.Start(context.Background(), 1); err != nil {
+	if err := forwarding.Start(context.Background(), generation); err != nil {
 		t.Fatal(err)
 	}
-	scope, _ := forwarding.Context(1)
+	scope, _ := forwarding.Context(generation)
 	certPEM, keyPEM, _, err := ca.NewRandomTLSKeyPair(ca.KeyPairTypeP256)
 	if err != nil {
 		t.Fatal(err)
@@ -42,6 +49,12 @@ func TestShadowQUICSessionStopWaitsForAcceptedHandler(t *testing.T) {
 			<-release
 			return conn.Close()
 		},
+		HandleUdpFn: func(_ socks5.Addr, packet C.UDPPacket, _ ...inbound.Addition) error {
+			close(entered)
+			<-release
+			packet.Drop()
+			return nil
+		},
 	}, p)
 	if err != nil {
 		t.Fatal(err)
@@ -60,12 +73,25 @@ func TestShadowQUICSessionStopWaitsForAcceptedHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.CloseWithError(0, "")
-	stream, err := conn.OpenStreamSync(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteRequest(stream, CommandConnect, socks5.ParseAddr("destination.test:443")); err != nil {
-		t.Fatal(err)
+	if mode == "tcp" {
+		stream, err := conn.OpenStreamSync(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteRequest(stream, CommandConnect, socks5.ParseAddr("destination.test:443")); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		client := NewClient(&ClientOption{UDPOverStream: mode == "udp-stream", Dial: func(context.Context) (*quic.Conn, error) { return conn, nil }})
+		defer client.Close()
+		packet, err := client.ListenPacket(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer packet.Close()
+		if _, err := packet.WriteTo([]byte("pending callback"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1234}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	select {
 	case <-entered:
@@ -82,7 +108,7 @@ func TestShadowQUICSessionStopWaitsForAcceptedHandler(t *testing.T) {
 	if err := forwarding.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := forwarding.Prepare(context.Background(), 2); err != nil {
+	if err := forwarding.Prepare(context.Background(), generation+1); err != nil {
 		t.Fatal(err)
 	}
 	if err := forwarding.Stop(ctx); err != nil {

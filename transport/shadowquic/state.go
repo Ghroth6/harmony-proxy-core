@@ -65,10 +65,6 @@ func newConnState(quicConn *quic.Conn, sessions ...*session.Session) *connState 
 	}
 	state.goTask(state.handleDatagrams)
 	state.goTask(state.handleUniStreams)
-	state.goTask(func() {
-		<-quicConn.Context().Done()
-		cancel()
-	})
 	return state
 }
 

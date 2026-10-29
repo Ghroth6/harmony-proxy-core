@@ -428,6 +428,21 @@ complete join/error contract; a returned Close is not proof of all internal
 tasks finishing. Host TCP/UDP and event-stream regressions are not phone or
 external Realm/STUN acceptance.
 
+ShadowQUIC retains the upstream QUIC connection/stream and UDP wire formats.
+Client.Close cancels pending shared-transport construction before taking the
+publication lock; a late successful dial is closed rather than published.
+Each UDP association uses its own cancellable context. Closing it cancels a
+pending OpenUniStreamSync and interrupts flow-controlled writes through QUIC's
+existing write-deadline API, without closing the connection used by other
+requests. Its cancellation worker exits with the association, not only with the
+whole connection; the state context already inherits QUIC cancellation without
+an extra watcher. Server session accounting still joins accepted TCP/UDP
+handlers for forwarding.Stop, while Server.Close ends admission and closes
+transports. Listener Close serializes resource-list updates and recognizes the
+upstream closed-listener error directly. Client Close is not a complete join
+of every protocol/dependency worker, and dependency-internal socket close errors
+are not all exposed; local loopback tests do not establish phone acceptance.
+
 Every Start independently validates `preparedPolicy` and builds fresh owned
 resources through `mobile/policy.Engine.BuildCandidate`. Static validation's
 M1b/V2 labels never select a runtime implementation. `executor.PublishMobilePolicy`

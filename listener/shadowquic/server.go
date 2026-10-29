@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -31,7 +32,7 @@ import (
 const ServerMaxIncomingStreams = (1 << 32) - 1
 
 type Listener struct {
-	closed       bool
+	closeMu      sync.Mutex
 	config       LC.ShadowQuicServer
 	udpListeners []net.PacketConn
 	servers      []*shadowquic.Server
@@ -196,7 +197,7 @@ func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, 
 
 		go func() {
 			err := server.Serve()
-			if err != nil && !sl.closed {
+			if err != nil && !errors.Is(err, net.ErrClosed) {
 				log.Warnln("ShadowQuic server closed: %s", err)
 			}
 		}()
@@ -220,7 +221,8 @@ func defaultJLSServerName(upstreamAddr string) string {
 }
 
 func (l *Listener) Close() error {
-	l.closed = true
+	l.closeMu.Lock()
+	defer l.closeMu.Unlock()
 	var errs []error
 	var err error
 	l.servers, err = lifecycle.CloseAll(l.servers)

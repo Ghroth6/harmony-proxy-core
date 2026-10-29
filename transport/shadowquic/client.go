@@ -30,18 +30,20 @@ type Client struct {
 
 	mu     sync.Mutex
 	conn   *connState
-	closed bool
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func NewClient(option *ClientOption) *Client {
-	return &Client{option: option}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Client{option: option, ctx: ctx, cancel: cancel}
 }
 
 func (c *Client) getConn(ctx context.Context) (*connState, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.closed {
+	if c.ctx.Err() != nil {
 		return nil, net.ErrClosed
 	}
 	if c.conn != nil && !c.conn.closed() {
@@ -52,9 +54,17 @@ func (c *Client) getConn(ctx context.Context) (*connState, error) {
 	}
 	ctx, release := forwarding.SharedDialContext(ctx)
 	defer release()
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.ctx, cancel)
+	defer stop()
 	quicConn, err := c.option.Dial(ctx)
 	if err != nil {
+		cancel()
 		return nil, err
+	}
+	if c.ctx.Err() != nil {
+		cancel()
+		return nil, errors.Join(net.ErrClosed, quicConn.CloseWithError(0, "client closed"))
 	}
 	SetCongestionController(quicConn, c.option.CongestionController, c.option.CWND, c.option.BBRProfile)
 	c.conn = newConnState(quicConn)
@@ -141,10 +151,11 @@ func (c *Client) ListenPacket(ctx context.Context, metadata *C.Metadata) (net.Pa
 }
 
 func (c *Client) Close() error {
+	// Cancel an in-flight dial before waiting for its publication lock.
+	c.cancel()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.closed = true
 	if c.conn != nil {
 		return c.conn.closeWithError(0, "client closed")
 	}
