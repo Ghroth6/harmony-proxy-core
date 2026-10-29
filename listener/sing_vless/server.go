@@ -33,6 +33,7 @@ import (
 )
 
 type Listener struct {
+	cert       *lifecycle.Certificate
 	closed     bool
 	config     LC.VlessServer
 	listeners  []net.Listener
@@ -83,6 +84,10 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		IdleTimeout: 30 * time.Second,
 		Protocols:   new(http.Protocols),
 	}
+	certificate := &lifecycle.Certificate{}
+	sl.cert = certificate
+	defer lifecycle.Rollback(certificate, &err)
+
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	var shadowTLSBuilder *shadowtls.Builder
 	var restlsBuilder *restls.Builder
@@ -90,7 +95,7 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	var realityBuilder *reality.Builder
 
 	if config.Certificate != "" && config.PrivateKey != "" {
-		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+		certLoader, err := certificate.Load(config.Certificate, config.PrivateKey)
 		if err != nil {
 			return nil, err
 		}
@@ -298,7 +303,7 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var errs []error
+	errs := []error{l.cert.Close()}
 	var err error
 	l.listeners, err = lifecycle.CloseAll(l.listeners)
 	errs = append(errs, err)

@@ -32,6 +32,7 @@ import (
 )
 
 type Listener struct {
+	cert      *lifecycle.Certificate
 	closed    bool
 	config    LC.AnyTLSServer
 	listeners []net.Listener
@@ -53,9 +54,12 @@ func New(config LC.AnyTLSServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 	var shadowTLSBuilder *shadowtls.Builder
 	var restlsBuilder *restls.Builder
 	var jlsBuilder *jls.Builder
+	certificate := &lifecycle.Certificate{}
+	defer lifecycle.Rollback(certificate, &err)
+
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	if config.Certificate != "" && config.PrivateKey != "" {
-		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+		certLoader, err := certificate.Load(config.Certificate, config.PrivateKey)
 		if err != nil {
 			return nil, err
 		}
@@ -119,6 +123,7 @@ func New(config LC.AnyTLSServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 	}
 
 	sl = &Listener{
+		cert:      certificate,
 		config:    config,
 		tlsConfig: tlsConfig,
 		userMap:   make(map[[32]byte]string),
@@ -188,7 +193,7 @@ func New(config LC.AnyTLSServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var errs []error
+	errs := []error{l.cert.Close()}
 	var err error
 	l.listeners, err = lifecycle.CloseAll(l.listeners)
 	errs = append(errs, err)

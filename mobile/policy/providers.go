@@ -12,7 +12,6 @@ import (
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/rules"
-	RC "github.com/metacubex/mihomo/rules/common"
 	RP "github.com/metacubex/mihomo/rules/provider"
 	"go.yaml.in/yaml/v3"
 )
@@ -54,19 +53,7 @@ func (e *Engine) prepareProviders(raw *config.RawConfig, prepared contract.Prepa
 		behavior, _ := P.ParseBehavior(behaviorName)
 		format, _ := P.ParseRuleFormat(formatName)
 		decode := func(input []byte) ([]string, error) {
-			payload, code := providerPayload(input, formatName, behaviorName)
-			if code != "" {
-				return nil, errors.New(code)
-			}
-			if behavior == P.Classical {
-				for _, line := range payload {
-					tp, value, target, params := RC.ParseRulePayload(line, false)
-					if _, err := inputs.ParseRule(tp, value, target, params, nil); err != nil {
-						return nil, errors.New("POLICY_RESOURCE_PAYLOAD_INVALID")
-					}
-				}
-			}
-			return payload, nil
+			return RP.RuleSetPayload(input, behavior, format, inputs.ParseRule)
 		}
 		if mapping["type"] == "inline" {
 			data, err := yaml.Marshal(map[string]any{"payload": mapping["payload"]})
@@ -98,7 +85,7 @@ func (e *Engine) prepareProviders(raw *config.RawConfig, prepared contract.Prepa
 		if mapping["type"] == "file" {
 			vehicle.kind = P.File
 		}
-		provider, err := RP.NewPreparedRuleSetProvider(name, behavior, format, time.Duration(interval)*time.Second, vehicle, resource.bytes, inputs.ParseRule, decode)
+		provider, err := RP.NewPreparedRuleSetProvider(name, behavior, format, time.Duration(interval)*time.Second, vehicle, resource.bytes, inputs.ParseRule)
 		if provider != nil {
 			inputs.RuleProviders[name] = provider
 		}

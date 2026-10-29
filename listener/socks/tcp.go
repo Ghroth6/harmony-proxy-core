@@ -25,6 +25,7 @@ import (
 )
 
 type Listener struct {
+	cert     *lifecycle.Certificate
 	listener net.Listener
 	addr     string
 	closed   bool
@@ -43,7 +44,7 @@ func (l *Listener) Address() string {
 // Close implements C.Listener
 func (l *Listener) Close() error {
 	l.closed = true
-	return l.listener.Close()
+	return errors.Join(lifecycle.Close(l.listener), l.cert.Close())
 }
 
 func defaultConfig(addr string) LC.AuthServer {
@@ -72,11 +73,14 @@ func NewWithConfig(config LC.AuthServer, lc C.InboundListenConfig, tunnel C.Tunn
 
 	defer func() { lifecycle.Rollback(l, &err) }()
 
+	certificate := &lifecycle.Certificate{}
+	defer lifecycle.Rollback(certificate, &err)
+
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	var realityBuilder *reality.Builder
 
 	if config.Certificate != "" && config.PrivateKey != "" {
-		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+		certLoader, err := certificate.Load(config.Certificate, config.PrivateKey)
 		if err != nil {
 			return nil, err
 		}
@@ -124,6 +128,7 @@ func NewWithConfig(config LC.AuthServer, lc C.InboundListenConfig, tunnel C.Tunn
 	}
 
 	sl := &Listener{
+		cert:     certificate,
 		listener: l,
 		addr:     config.Listen,
 	}

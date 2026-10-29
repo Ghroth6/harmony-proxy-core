@@ -1,21 +1,18 @@
 package policy
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
-	"unicode/utf8"
-
 	"github.com/metacubex/mihomo/common/orderedmap"
 	"github.com/metacubex/mihomo/common/structure"
+	"github.com/metacubex/mihomo/component/age"
 	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
@@ -54,7 +51,7 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 		receipt.Code = "POLICY_RESOURCE_OWNER_RETIRED"
 		return
 	}
-	raw, document, code := decodePolicy(input)
+	raw, code := decodePolicy(input)
 	if code != "" {
 		receipt.Category = "invalid"
 		receipt.Code = code
@@ -80,7 +77,7 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 		return
 	}
 	receipt.Groups = groups
-	requirements, code := planRequirements(raw, document, receipt.InputDigest)
+	requirements, code := planRequirements(raw, receipt.InputDigest)
 	if code != "" {
 		receipt.Category = "unsupported"
 		receipt.Code = code
@@ -138,7 +135,7 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 		}
 	}
 	if len(providerRules) != 0 {
-		requirements, code = planRequirements(raw, document, receipt.InputDigest, providerRules)
+		requirements, code = planRequirements(raw, receipt.InputDigest, providerRules)
 		if code != "" {
 			receipt.Category = "invalid"
 			receipt.Code = code
@@ -211,52 +208,17 @@ func safeOperation(value string) bool {
 	return true
 }
 
-func decodePolicy(input []byte) (*config.RawConfig, *yaml.Node, string) {
-	if !utf8.Valid(input) || len(bytes.TrimSpace(input)) == 0 {
-		return nil, nil, "POLICY_FORMAT_INVALID"
-	}
-	decoder := yaml.NewDecoder(bytes.NewReader(input))
-	var document, extra yaml.Node
-	if decoder.Decode(&document) != nil || document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
-		return nil, nil, "POLICY_FORMAT_INVALID"
-	}
-	if decoder.Decode(&extra) != io.EOF {
-		return nil, nil, "POLICY_DOCUMENTS_INVALID"
-	}
-	if err := strictYAML(document.Content[0], 0); err != nil {
-		return nil, nil, "POLICY_STRUCTURE_INVALID"
-	}
+func decodePolicy(input []byte) (*config.RawConfig, string) {
+	// Reuse upstream decryption and YAML semantics, including aliases, merge
+	// keys and ignored extension fields. Do not impose another schema here.
 	raw := config.DefaultRawConfig()
 	// Mobile defaults must not inherit a previously published mutable global.
 	raw.GeodataMode = false
-	decoder = yaml.NewDecoder(bytes.NewReader(input))
-	decoder.KnownFields(true)
-	if decoder.Decode(raw) != nil {
-		return nil, nil, "POLICY_FORMAT_INVALID"
+	input, err := age.DecryptBytes(input)
+	if err != nil || yaml.Unmarshal(input, raw) != nil {
+		return nil, "POLICY_FORMAT_INVALID"
 	}
-	return raw, document.Content[0], ""
-}
-
-func strictYAML(node *yaml.Node, depth int) error {
-	if depth > 32 || node.Kind == yaml.AliasNode || node.Anchor != "" || node.Tag == "!!merge" {
-		return errors.New("policy structure")
-	}
-	if node.Kind == yaml.MappingNode {
-		seen := map[string]bool{}
-		for index := 0; index < len(node.Content); index += 2 {
-			key := node.Content[index]
-			if key.Kind != yaml.ScalarNode || key.Tag != "!!str" || key.Value == "<<" || seen[key.Value] {
-				return errors.New("policy mapping")
-			}
-			seen[key.Value] = true
-		}
-	}
-	for _, child := range node.Content {
-		if err := strictYAML(child, depth+1); err != nil {
-			return err
-		}
-	}
-	return nil
+	return raw, ""
 }
 
 // Planning and runtime use the same real upstream proxy graph. The candidate
@@ -344,7 +306,7 @@ func allSubRules(raw *config.RawConfig) []string {
 	return result
 }
 
-func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest string, preparedRules ...[]string) ([]contract.Requirement, string) {
+func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules ...[]string) ([]contract.Requirement, string) {
 	result := []contract.Requirement{}
 	add := func(kind, format, logical, sourceKind, uri, headers, path, proxy string, interval, maxBytes int64) {
 		description := map[string]any{"kind": kind, "format": format, "sourceKind": sourceKind, "sourceUri": uri, "sourceHeadersJson": headers, "originalPath": path, "downloadProxy": proxy, "intervalSeconds": interval, "maxBytes": maxBytes}
@@ -358,11 +320,6 @@ func planRequirements(raw *config.RawConfig, document *yaml.Node, inputDigest st
 	sort.Strings(logicalNames)
 	for _, name := range logicalNames {
 		value := raw.RuleProvider[name]
-		for key := range value {
-			if !strings.Contains(" type behavior path url proxy format interval size-limit payload header path-in-bundle ", " "+key+" ") {
-				return nil, "POLICY_RESOURCE_FIELD_UNSUPPORTED"
-			}
-		}
 		kind, _ := value["type"].(string)
 		behavior, _ := value["behavior"].(string)
 		format, _ := value["format"].(string)

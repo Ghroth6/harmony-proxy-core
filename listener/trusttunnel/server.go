@@ -23,6 +23,7 @@ import (
 )
 
 type Listener struct {
+	cert         *lifecycle.Certificate
 	closed       bool
 	config       LC.TrustTunnelServer
 	listeners    []net.Listener
@@ -31,10 +32,9 @@ type Listener struct {
 	services     []*trusttunnel.Service
 }
 
-func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (_ *Listener, err error) {
 	lc = forwarding.WrapListenConfig(lc)
 	var sl *Listener
-	var err error
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-TRUSTTUNNEL"),
@@ -42,9 +42,12 @@ func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 		}
 	}
 
+	certificate := &lifecycle.Certificate{}
+	defer lifecycle.Rollback(certificate, &err)
+
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	if config.Certificate != "" && config.PrivateKey != "" {
-		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+		certLoader, err := certificate.Load(config.Certificate, config.PrivateKey)
 		if err != nil {
 			return nil, err
 		}
@@ -74,6 +77,7 @@ func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 	}
 
 	sl = &Listener{
+		cert:      certificate,
 		config:    config,
 		tlsConfig: tlsConfig,
 	}
@@ -154,7 +158,7 @@ func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var errs []error
+	errs := []error{l.cert.Close()}
 	var err error
 	l.services, err = lifecycle.CloseAll(l.services)
 	errs = append(errs, err)

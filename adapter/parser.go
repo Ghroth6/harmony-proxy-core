@@ -46,7 +46,6 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (_ C.Proxy, retE
 		DialerForAPI:         opt.DialerForAPI,
 		PhysicalDialerForAPI: opt.PhysicalDialerForAPI,
 		ProxyLookupForAPI:    opt.ProxyLookupForAPI,
-		ResourcePolicyForAPI: opt.ResourcePolicyForAPI,
 		ResourceOwner:        resources,
 		DNSServiceForAPI:     opt.DNSServiceForAPI,
 		TunnelForAPI:         opt.TunnelForAPI,
@@ -307,7 +306,6 @@ type proxyOption struct {
 	PhysicalDialerForAPI    func([]dialer.Option) C.Dialer
 	ProxyLookupForAPI       proxydialer.ProxyLookup
 	ResourceOwner           *lifecycle.Group
-	ResourcePolicyForAPI    func(string) error
 	DNSServiceForAPI        func() resolver.Service
 	WrapAdapter             func(outbound.ProxyAdapter) outbound.ProxyAdapter
 }
@@ -340,10 +338,6 @@ func WithPhysicalDialerForAPI(factory func([]dialer.Option) C.Dialer) ProxyOptio
 
 func WithProxyLookupForAPI(lookup proxydialer.ProxyLookup) ProxyOption {
 	return func(opt *proxyOption) { opt.ProxyLookupForAPI = lookup }
-}
-
-func WithResourcePolicyForAPI(policy func(string) error) ProxyOption {
-	return func(opt *proxyOption) { opt.ResourcePolicyForAPI = policy }
 }
 
 func WithDNSServiceForAPI(service func() resolver.Service) ProxyOption {

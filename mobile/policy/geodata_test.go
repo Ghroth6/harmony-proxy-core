@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/metacubex/mihomo/component/geodata/router"
+	"github.com/metacubex/mihomo/component/mmdb"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/mobile/policy"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
@@ -237,6 +238,41 @@ func TestOriginalMMDBWithEmptyDescriptionKeepsActualCountryAndRejectsMalformedDa
 	invalid := engine.Plan("mmdb-original-bad-data", input, []contract.Resource{bad})
 	if invalid.Category != "invalid" || invalid.Code != "POLICY_RESOURCE_PAYLOAD_INVALID" || invalid.ResourcesComplete || engine.ResourceAcquireCount() != baseline {
 		t.Fatal("descriptive metadata compatibility must not weaken actual data/tree verification or fetch resources")
+	}
+}
+
+func TestOriginalMMDBHasNoExtraFileSizeQuota(t *testing.T) {
+	base := publicCountryMMDB(t)
+	marker := bytes.LastIndex(base, []byte("\xab\xcd\xefMaxMind.com"))
+	// Unindexed data need not be decoded. Keep the original tree and record,
+	// padding the data section past the former 128 MiB admission quota.
+	body := make([]byte, (128<<20)+len(base))
+	copy(body, base[:marker])
+	copy(body[len(body)-(len(base)-marker):], base[marker:])
+	for _, open := range []struct {
+		name string
+		read func([]byte) (*maxminddb.Reader, error)
+	}{
+		{"upstream", maxminddb.FromBytes},
+		{"prepared", func(b []byte) (*maxminddb.Reader, error) {
+			r, err := mmdb.NewPreparedIP(b)
+			if err != nil {
+				return nil, err
+			}
+			return r.Reader, nil
+		}},
+	} {
+		t.Run(open.name, func(t *testing.T) {
+			r, err := open.read(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			var country string
+			if err = r.Lookup(netip.MustParseAddr("192.0.2.1").AsSlice(), &country); err != nil || country != "zz" {
+				t.Fatalf("original record lost: %q / %v", country, err)
+			}
+		})
 	}
 }
 

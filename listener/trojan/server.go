@@ -35,6 +35,7 @@ import (
 )
 
 type Listener struct {
+	cert       *lifecycle.Certificate
 	closed     bool
 	config     LC.TrojanServer
 	listeners  []net.Listener
@@ -80,12 +81,16 @@ func New(config LC.TrojanServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 			return nil, err
 		}
 	}
-	sl = &Listener{false, config, nil, keys, pickCipher, h}
+	sl = &Listener{config: config, keys: keys, pickCipher: pickCipher, handler: h}
 
 	httpServer := http.Server{
 		IdleTimeout: 30 * time.Second,
 		Protocols:   new(http.Protocols),
 	}
+	certificate := &lifecycle.Certificate{}
+	sl.cert = certificate
+	defer lifecycle.Rollback(certificate, &err)
+
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	var shadowTLSBuilder *shadowtls.Builder
 	var restlsBuilder *restls.Builder
@@ -93,7 +98,7 @@ func New(config LC.TrojanServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 	var realityBuilder *reality.Builder
 
 	if config.Certificate != "" && config.PrivateKey != "" {
-		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+		certLoader, err := certificate.Load(config.Certificate, config.PrivateKey)
 		if err != nil {
 			return nil, err
 		}
@@ -247,7 +252,7 @@ func New(config LC.TrojanServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var errs []error
+	errs := []error{l.cert.Close()}
 	var err error
 	l.listeners, err = lifecycle.CloseAll(l.listeners)
 	errs = append(errs, err)

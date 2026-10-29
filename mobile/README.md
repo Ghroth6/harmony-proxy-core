@@ -800,15 +800,19 @@ receives raw bytes plus a strict available-resource array;
 `cb_policy_validate_v1` receives the independently sealed prepared context;
 `cb_policy_resources_v1` observes the accepted run's actual resource ledger.
 Raw/control/result lengths must fit the signed C.int ABI (INT32_MAX). No group, member, resource-count or aggregate-resource admission quota is imposed. Resource byte lengths retain exact JSON integers; explicit source size-limit is honored. No resource
-bytes or caller-chosen root cross the runtime request. Empty raw has a typed
-invalid result and its actual digest. Unknown/missing/null/duplicate fields,
-malformed Unicode and trailing JSON are rejected before typed preparation.
+bytes or caller-chosen root cross the runtime request. Full policy YAML uses
+the upstream AGE decoding and yaml.Unmarshal behavior: aliases, merge keys and
+unknown descriptive fields are not separately forbidden. Typed control JSON
+still rejects unknown/missing/null/duplicate fields, malformed Unicode and
+trailing data; this is the application ABI schema, not a YAML field whitelist.
 
 Fixed resources use exact `immutable/<digest>/<kind>.<format>` paths inside the
 captured trusted root. Preparation checks regular files, byte bounds, full EOF,
 Close and independent digests before compiling all provider rules and geodata.
-Classical payloads are checked in full before the upstream parser can skip or
-log an invalid rule. GEOIP/MMDB/ASN/GEOSITE readers and matcher caches belong to
+Rule resources use the upstream format decoder and strategy, including its
+log-and-skip behavior for invalid individual rules. An update whose entries
+are all invalid can therefore publish an empty matcher, as upstream does.
+GEOIP/MMDB/ASN/GEOSITE readers and matcher caches belong to
 the candidate's resource manifest; changing a policy cannot reuse a country
 matcher from a different manifest or enter upstream download/global caches.
 
@@ -819,8 +823,11 @@ or embedded data targets are preserved; upstream `Reader.Verify`'s stricter
 sequential layout is not a format requirement. Tree DAG memoization bounds
 repeated branches and rejects cycles/depth beyond the IP width. Decoding is
 bounded before reflection allocation: metadata 128 KiB, containers 4096 items
-and depth 64, each record 65536 decoder visits/1 MiB expanded bytes, database
-64 Mi visits/256 MiB expanded bytes and 1 Mi distinct reachable records.
+and depth 64, each record 65536 decoder visits/1 MiB expanded bytes. Metadata
+also has an 8192-visit budget. These are additional prepared-parser limits,
+not upstream compatibility guarantees. There is no separate file-size,
+tree-size, record-count or whole-database expansion quota; bounds against the
+actual file and tree depth still apply.
 Bad pointers/types/tree/separator and small shared-pointer expansion attacks
 fail preparation; validation never re-encodes a resource or changes its digest.
 

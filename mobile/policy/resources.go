@@ -1,15 +1,12 @@
 package policy
 
 import (
-	"bytes"
 	"errors"
 	"io"
-	"net/netip"
 	"os"
 	"path"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
@@ -18,7 +15,6 @@ import (
 	RC "github.com/metacubex/mihomo/rules/common"
 	"github.com/metacubex/mihomo/rules/logic"
 	RP "github.com/metacubex/mihomo/rules/provider"
-	"go.yaml.in/yaml/v3"
 )
 
 type fixedResource struct {
@@ -93,70 +89,21 @@ func matchResource(requirement contract.Requirement, resource fixedResource) str
 }
 
 func providerPayload(data []byte, format, behavior string) ([]string, string) {
-	if format == "mrs" {
-		kind, err := P.ParseBehavior(behavior)
-		if err != nil || RP.ValidateRuleSet(data, kind, P.MrsRule, preflightProviderRule) != nil {
-			return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
-		}
-		return nil, ""
+	kind, err := P.ParseBehavior(behavior)
+	if err != nil {
+		return nil, "POLICY_RESOURCE_BEHAVIOR_UNSUPPORTED"
 	}
-	if !utf8.Valid(data) || len(data) > contract.MaxResourceBytes {
-		return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
-	}
-	var payload []string
-	switch format {
-	case "yaml":
-		decoder := yaml.NewDecoder(bytes.NewReader(data))
-		var document, extra yaml.Node
-		if decoder.Decode(&document) != nil || document.Kind != yaml.DocumentNode || len(document.Content) != 1 || strictYAML(document.Content[0], 0) != nil || decoder.Decode(&extra) != io.EOF {
-			return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
-		}
-		var value struct {
-			Payload []string `yaml:"payload"`
-		}
-		decoder = yaml.NewDecoder(bytes.NewReader(data))
-		decoder.KnownFields(true)
-		if decoder.Decode(&value) != nil || value.Payload == nil {
-			return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
-		}
-		payload = value.Payload
-	case "text":
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			payload = append(payload, line)
-		}
-	default:
+	encoding, err := P.ParseRuleFormat(format)
+	if err != nil {
 		return nil, "POLICY_RESOURCE_FORMAT_UNSUPPORTED"
 	}
-	for _, line := range payload {
-		if strings.TrimSpace(line) == "" {
-			return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
-		}
-		switch behavior {
-		case "classical":
-			tp, value, target, params := RC.ParseRulePayload(line, false)
-			if _, err := preflightProviderRule(tp, value, target, params, nil); err != nil {
-				return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
-			}
-		case "domain":
-			if !domainPayload.MatchString(line) {
-				return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
-			}
-		case "ipcidr":
-			if _, err := netip.ParsePrefix(line); err != nil {
-				return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
-			}
-		default:
-			return nil, "POLICY_RESOURCE_BEHAVIOR_UNSUPPORTED"
-		}
+	payload, err := RP.RuleSetPayload(data, kind, encoding, preflightProviderRule)
+	if err != nil {
+		return nil, "POLICY_RESOURCE_PAYLOAD_INVALID"
 	}
 	return payload, ""
 }
 
-var domainPayload = regexp.MustCompile(`^(?:\+\.|\*\.|\.)?[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.?$`)
 var geoPayload = regexp.MustCompile(`^!?[A-Za-z0-9_-]+(?:@[A-Za-z0-9_-]+)?$`)
 
 // Planning can validate a geodata reference's syntax and discover its bytes,

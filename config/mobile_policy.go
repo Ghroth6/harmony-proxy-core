@@ -113,16 +113,12 @@ func BuildMobileProxyCandidate(raw *RawConfig) (cfg *Config, err error) {
 	}()
 	wrap := func(a C.ProxyAdapter) C.ProxyAdapter { return &mobilePolicyBuiltin{ProxyAdapter: a, fence: fence} }
 	lookup := &mobilePolicyProxyLookup{candidate: cfg}
-	cfg.Proxies, cfg.Providers, err = parseProxiesWithBuiltins(raw, owned, wrap, adapter.WithPhysicalDialerForAPI(fence.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithResourceOwner(cfg.mobileAdapterResources), adapter.WithDNSServiceForAPI(cfg.mobileAdapterDNSService), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
+	cfg.Proxies, cfg.Providers, err = parseProxiesWithBuiltins(raw, owned, wrap, adapter.WithPhysicalDialerForAPI(fence.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourceOwner(cfg.mobileAdapterResources), adapter.WithDNSServiceForAPI(cfg.mobileAdapterDNSService), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
 		return &mobilePolicyBuiltin{ProxyAdapter: a, fence: fence}
 	}))
 	if err != nil {
 		if errors.Is(err, adapter.ErrUnsupportedProxyType) {
 			return cfg, &MobileValidationError{Code: "PROXY_TYPE_UNSUPPORTED", cause: err}
-		}
-		var gap *outbound.APIIntegrationError
-		if errors.As(err, &gap) {
-			return cfg, &MobileValidationError{Code: gap.Code, cause: err}
 		}
 		var semantic *semanticParseError
 		if errors.As(err, &semantic) {

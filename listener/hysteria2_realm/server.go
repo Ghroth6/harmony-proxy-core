@@ -25,6 +25,7 @@ import (
 )
 
 type Listener struct {
+	cert       *lifecycle.Certificate
 	closeMu    sync.Mutex
 	config     LC.Hysteria2RealmServer
 	listeners  []net.Listener
@@ -63,9 +64,12 @@ func New(config LC.Hysteria2RealmServer, lc C.InboundListenConfig, tunnel C.Tunn
 		realmIDPattern: pat,
 	})
 
+	certificate := &lifecycle.Certificate{}
+	defer lifecycle.Rollback(certificate, &err)
+
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	if config.Certificate != "" && config.PrivateKey != "" {
-		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+		certLoader, err := certificate.Load(config.Certificate, config.PrivateKey)
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +98,7 @@ func New(config LC.Hysteria2RealmServer, lc C.InboundListenConfig, tunnel C.Tunn
 		tlsConfig.ClientCAs = pool
 	}
 
-	sl := &Listener{config: config, server: s}
+	sl := &Listener{config: config, server: s, cert: certificate}
 	defer lifecycle.Rollback(sl, &err)
 
 	for _, addr := range strings.Split(config.Listen, ",") {
@@ -132,7 +136,7 @@ func New(config LC.Hysteria2RealmServer, lc C.InboundListenConfig, tunnel C.Tunn
 func (l *Listener) Close() error {
 	l.closeMu.Lock()
 	defer l.closeMu.Unlock()
-	var errs []error
+	errs := []error{l.cert.Close()}
 	var err error
 	l.listeners, err = lifecycle.CloseAll(l.listeners)
 	errs = append(errs, err)

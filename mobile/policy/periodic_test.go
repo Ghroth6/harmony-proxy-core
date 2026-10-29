@@ -31,9 +31,9 @@ func TestOriginalProviderActivationWaitsFullIntervalSavesAndAdoptsActualBytes(t 
 			t.Error("original resource headers were lost")
 		}
 		if requests.Load() == 1 {
-			fmt.Fprint(w, "payload:\n - DOMAIN-SUFFIX,updated.example\n")
+			fmt.Fprint(w, "payload:\n - DOMAIN-SUFFIX,updated.example\n - DOMAIN-SUFFIX\n")
 		} else if requests.Load() == 2 {
-			fmt.Fprint(w, "payload:\n - DOMAIN-SUFFIX\n")
+			w.WriteHeader(http.StatusServiceUnavailable)
 		} else {
 			fmt.Fprint(w, "payload:\n - GEOSITE,missing-documentation-group\n")
 		}
@@ -167,18 +167,18 @@ func TestOriginalProviderActivationWaitsFullIntervalSavesAndAdoptsActualBytes(t 
 		time.Sleep(10 * time.Millisecond)
 	}
 	if observed.ResourceAcquireCount != count(2) || observed.Events[len(observed.Events)-1].Stage != "failed" || observed.Adopted[0].ContentDigest != contract.Digest(actual) || protected.Load() < 2 {
-		t.Fatal("invalid acquired payload must count the attempt, retain old actual strategy and use protection")
+		t.Fatal("failed HTTP acquisition must count the attempt, retain old actual strategy and use protection")
 	}
 	deadline = time.Now().Add(4 * time.Second)
 	for time.Now().Before(deadline) {
 		observed = engine.QueryResources("periodic-geo-closure", generation)
-		if observed.ResourceAcquireCount == count(3) && len(observed.Events) > 0 && observed.Events[len(observed.Events)-1].Stage == "failed" {
+		if observed.ResourceAcquireCount == count(3) && len(observed.Events) > 0 && observed.Events[len(observed.Events)-1].Stage == "adopted" {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if observed.ResourceAcquireCount != count(3) || observed.Events[len(observed.Events)-1].Stage != "failed" || observed.Adopted[0].ContentDigest != contract.Digest(actual) {
-		t.Fatal("a syntactically valid new geodata dependency must fail closed without implicit download or bad strategy adoption")
+	if observed.ResourceAcquireCount != count(3) || observed.Events[len(observed.Events)-1].Stage != "adopted" || observed.Adopted[0].ContentDigest == contract.Digest(actual) || cfg.RuleProviders["PublicRules"].Count() != 0 {
+		t.Fatal("unavailable GEO entry must follow upstream log-and-skip without an implicit acquisition")
 	}
 	cancel()
 	if err = executor.CancelConfigTasks(nil); err != nil {

@@ -205,23 +205,9 @@ type BasicOption struct {
 	PhysicalDialerForAPI func([]dialer.Option) C.Dialer `proxy:"-"`
 	ProxyLookupForAPI    proxydialer.ProxyLookup        `proxy:"-"`
 	ResourceOwner        *lifecycle.Group               `proxy:"-"`
-	ResourcePolicyForAPI func(string) error             `proxy:"-"`
 	DNSServiceForAPI     func() resolver.Service        `proxy:"-"`
 	TunnelForAPI         C.Tunnel                       `proxy:"-"`
 	ProviderName         string                         `proxy:"-"`
-}
-
-// APIIntegrationError identifies a concrete operation whose owner has not been
-// supplied by an embedded runtime. It is not a protocol admission list.
-type APIIntegrationError struct{ Code string }
-
-func (e *APIIntegrationError) Error() string { return e.Code }
-
-func (b *BasicOption) CheckResource(operation string) error {
-	if b.ResourcePolicyForAPI != nil {
-		return b.ResourcePolicyForAPI(operation)
-	}
-	return nil
 }
 
 func (b *BasicOption) NewDialer(opts []dialer.Option) C.Dialer {

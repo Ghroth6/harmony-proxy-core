@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter"
-	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/component/configresources"
 	"github.com/metacubex/mihomo/component/dialer"
 	C "github.com/metacubex/mihomo/constant"
@@ -69,7 +68,7 @@ func ValidateMobileNode(node map[string]any, networkObserver func()) (err error)
 			err = &MobileValidationError{Code: "PREPARATION_NETWORK_FORBIDDEN", cause: err}
 		}
 	}()
-	proxy, parseErr := adapter.ParseProxy(node, adapter.WithPhysicalDialerForAPI(func([]dialer.Option) C.Dialer { return guard }), adapter.WithProxyLookupForAPI(&preparationProxyLookup{guard: guard}), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithResourceOwner(resources))
+	proxy, parseErr := adapter.ParseProxy(node, adapter.WithPhysicalDialerForAPI(func([]dialer.Option) C.Dialer { return guard }), adapter.WithProxyLookupForAPI(&preparationProxyLookup{guard: guard}), adapter.WithResourceOwner(resources))
 	if proxy != nil {
 		owned.AddProxy(proxy)
 	}
@@ -77,17 +76,9 @@ func ValidateMobileNode(node map[string]any, networkObserver func()) (err error)
 		if errors.Is(parseErr, adapter.ErrUnsupportedProxyType) {
 			return &MobileValidationError{Code: "PROXY_TYPE_UNSUPPORTED", cause: parseErr}
 		}
-		var gap *outbound.APIIntegrationError
-		if errors.As(parseErr, &gap) {
-			return &MobileValidationError{Code: gap.Code, cause: parseErr}
-		}
 		return &MobileValidationError{Code: "PROXY_INVALID", cause: parseErr}
 	}
 	return nil
-}
-
-func mobileResourcePolicy(operation string) error {
-	return &outbound.APIIntegrationError{Code: operation}
 }
 
 // MobileNodeFields retains the existing public validation entrypoint. Original

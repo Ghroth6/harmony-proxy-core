@@ -157,16 +157,12 @@ func BuildMobileSelectedCandidate(raw *RawConfig) (cfg *Config, err error) {
 		return cfg, &MobileValidationError{Code: "CAPABILITY_NOT_COVERED"}
 	}
 	lookup := &mobilePolicyProxyLookup{candidate: cfg}
-	cfg.Proxies, cfg.Providers, err = parseProxiesInto(raw, owned, adapter.WithPhysicalDialerForAPI(gate.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourcePolicyForAPI(mobileResourcePolicy), adapter.WithResourceOwner(cfg.mobileAdapterResources), adapter.WithDNSServiceForAPI(cfg.mobileAdapterDNSService), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
+	cfg.Proxies, cfg.Providers, err = parseProxiesInto(raw, owned, adapter.WithPhysicalDialerForAPI(gate.newPhysical), adapter.WithProxyLookupForAPI(lookup), adapter.WithTunnelForAPI(nil), adapter.WithResourceOwner(cfg.mobileAdapterResources), adapter.WithDNSServiceForAPI(cfg.mobileAdapterDNSService), adapter.WithAdapterWrapper(func(a outbound.ProxyAdapter) outbound.ProxyAdapter {
 		return &mobilePolicyBuiltin{ProxyAdapter: a, fence: gate}
 	}))
 	if err != nil {
 		if errors.Is(err, adapter.ErrUnsupportedProxyType) {
 			return cfg, &MobileValidationError{Code: "PROXY_TYPE_UNSUPPORTED", cause: err}
-		}
-		var gap *outbound.APIIntegrationError
-		if errors.As(err, &gap) {
-			return cfg, &MobileValidationError{Code: gap.Code, cause: err}
 		}
 		return cfg, &MobileValidationError{Code: "PROXY_OR_GROUP_INVALID", cause: err}
 	}

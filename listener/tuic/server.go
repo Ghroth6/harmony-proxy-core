@@ -30,6 +30,7 @@ import (
 const ServerMaxIncomingStreams = (1 << 32) - 1
 
 type Listener struct {
+	cert         *lifecycle.Certificate
 	closed       bool
 	config       LC.TuicServer
 	udpListeners []net.PacketConn
@@ -58,11 +59,14 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 		return nil, err
 	}
 
+	certificate := &lifecycle.Certificate{}
+	defer lifecycle.Rollback(certificate, &err)
+
 	tlsConfig := &tls.Config{
 		Time:       ntp.Now,
 		MinVersion: tls.VersionTLS13,
 	}
-	certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+	certLoader, err := certificate.Load(config.Certificate, config.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +187,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 		option.Users = users
 	}
 
-	sl := &Listener{false, config, nil, nil}
+	sl := &Listener{config: config, cert: certificate}
 	defer lifecycle.Rollback(sl, &err)
 
 	for _, addr := range strings.Split(config.Listen, ",") {
@@ -224,7 +228,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 
 func (l *Listener) Close() error {
 	l.closed = true
-	var errs []error
+	errs := []error{l.cert.Close()}
 	var err error
 	l.servers, err = lifecycle.CloseAll(l.servers)
 	errs = append(errs, err)

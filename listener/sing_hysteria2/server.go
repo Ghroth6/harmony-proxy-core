@@ -38,6 +38,7 @@ import (
 )
 
 type Listener struct {
+	cert         *lifecycle.Certificate
 	closed       bool
 	config       LC.Hysteria2Server
 	udpListeners []net.PacketConn
@@ -81,11 +82,15 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 	sl = &Listener{config: config, cancel: cancel}
 	defer lifecycle.Rollback(sl, &err)
 
+	certificate := &lifecycle.Certificate{}
+	sl.cert = certificate
+	defer lifecycle.Rollback(certificate, &err)
+
 	tlsConfig := &tls.Config{
 		Time:       ntp.Now,
 		MinVersion: tls.VersionTLS13,
 	}
-	certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+	certLoader, err := certificate.Load(config.Certificate, config.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +342,7 @@ func (l *Listener) Close() error {
 	}
 	l.sessions.Wait()
 	l.services, err = lifecycle.CloseAll(l.services)
-	return err
+	return errors.Join(err, l.cert.Close())
 }
 
 func (l *Listener) Config() string {

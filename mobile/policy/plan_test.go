@@ -7,9 +7,89 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/mobile/policy"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 )
+
+func TestPolicyYAMLUsesUpstreamSemantics(t *testing.T) {
+	for name, input := range map[string]string{
+		"unknown-fields":    "ipv6: false\nx-description: public note\ndns: {enable: false, x-note: unused}\nrules: ['MATCH,DIRECT']\n",
+		"anchors-and-merge": "ipv6: false\nx-default: &group {type: select, proxies: [DIRECT]}\nproxy-groups:\n - {<<: *group, name: selected}\nrules: ['MATCH,selected']\n",
+		"deep-ignored-data": "ipv6: false\nx-note: " + strings.Repeat("[", 40) + "value" + strings.Repeat("]", 40) + "\nrules: ['MATCH,DIRECT']\n",
+		"duplicate-key":     "ipv6: false\nipv6: true\n",
+		"invalid-alias":     "rules: *missing\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, officialErr := config.UnmarshalRawConfig([]byte(input))
+			engine, err := policy.NewEngine(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer engine.Close()
+			plan := engine.Plan("yaml-parity", []byte(input), nil)
+			if officialErr != nil {
+				if plan.Category == "planned" {
+					t.Fatal("accepted malformed upstream YAML")
+				}
+				return
+			}
+			if plan.Category != "planned" || !plan.ResourcesComplete {
+				t.Fatalf("upstream accepted but plan rejected: %+v", plan)
+			}
+			prepared, err := contract.Seal(plan.InputDigest, nil, publicPlatform(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := engine.BuildCandidate([]byte(input), prepared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cfg.Discard(context.Background())
+			if len(cfg.Rules) != len(raw.Rule) {
+				t.Fatal("rule contents changed during preparation")
+			}
+			for _, group := range raw.ProxyGroup {
+				if cfg.Proxies[group["name"].(string)] == nil {
+					t.Fatal("merged group was lost")
+				}
+			}
+		})
+	}
+}
+
+func TestRuleProviderExtraFieldsFollowUpstreamDecoder(t *testing.T) {
+	engine, err := policy.NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	input := []byte(`ipv6: false
+dns: {enable: false}
+rule-providers:
+  local:
+    type: inline
+    behavior: domain
+    payload: [example.com]
+    x-description: user documentation
+rules: ['RULE-SET,local,DIRECT', 'MATCH,DIRECT']
+`)
+	plan := engine.Plan("provider-extra-field", input, nil)
+	if plan.Category != "planned" || !plan.ResourcesComplete {
+		t.Fatalf("plan: %+v", plan)
+	}
+	prepared, err := contract.Seal(plan.InputDigest, nil, publicPlatform(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := engine.BuildCandidate(input, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Discard(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestPolicyEngineCannotCloseWhileAcceptedCandidateOwnsResources(t *testing.T) {
 	engine, err := policy.NewEngine(t.TempDir())

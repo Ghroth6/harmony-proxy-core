@@ -10,13 +10,9 @@ import (
 )
 
 const (
-	preparedMaxBytes         = 128 << 20
-	preparedMaxMetadata      = 128 << 10
-	preparedMaxRecordValues  = 65536
-	preparedMaxRecordBytes   = 1 << 20
-	preparedMaxValues        = 64 << 20
-	preparedMaxExpandedBytes = 256 << 20
-	preparedMaxRecords       = 1 << 20
+	preparedMaxMetadata     = 128 << 10
+	preparedMaxRecordValues = 65536
+	preparedMaxRecordBytes  = 1 << 20
 )
 
 var preparedMarker = []byte("\xab\xcd\xefMaxMind.com")
@@ -37,8 +33,8 @@ func openPreparedReader(buffer []byte) (reader *maxminddb.Reader, err error) {
 		}
 	}()
 	marker := bytes.LastIndex(buffer, preparedMarker)
-	if len(buffer) > preparedMaxBytes || marker < 0 {
-		return nil, errors.New("invalid prepared MMDB size or metadata")
+	if marker < 0 {
+		return nil, errors.New("invalid prepared MMDB metadata")
 	}
 	metadataBytes := buffer[marker+len(preparedMarker):]
 	if len(metadataBytes) == 0 || len(metadataBytes) > preparedMaxMetadata {
@@ -65,11 +61,11 @@ func openPreparedReader(buffer []byte) (reader *maxminddb.Reader, err error) {
 		return nil, errors.New("unsupported prepared MMDB metadata")
 	}
 	nodeBytes := metadata.RecordSize / 4
-	if metadata.NodeCount > uint(marker)/nodeBytes || metadata.NodeCount > preparedMaxBytes/nodeBytes {
+	if metadata.NodeCount > uint(marker)/nodeBytes {
 		return nil, errors.New("invalid prepared MMDB node count")
 	}
 	treeSize := uint64(metadata.NodeCount) * uint64(nodeBytes)
-	if treeSize+16 > uint64(marker) || treeSize > preparedMaxBytes {
+	if treeSize+16 > uint64(marker) {
 		return nil, errors.New("invalid prepared MMDB search tree bounds")
 	}
 	for _, value := range buffer[treeSize : treeSize+16] {
@@ -84,7 +80,6 @@ func openPreparedReader(buffer []byte) (reader *maxminddb.Reader, err error) {
 	verifier := preparedTree{
 		reader: reader, tree: buffer[:treeSize], data: buffer[treeSize+16 : marker],
 		heights: make([]uint8, metadata.NodeCount), records: map[uint32]bool{},
-		budget: preparedBudget{values: preparedMaxValues, bytes: preparedMaxExpandedBytes},
 	}
 	_, err = verifier.node(0, 0)
 	if err != nil {
@@ -120,7 +115,6 @@ type preparedTree struct {
 	data    []byte
 	heights []uint8 // 0 unvisited, 255 active; otherwise longest remaining depth.
 	records map[uint32]bool
-	budget  preparedBudget
 }
 
 func (v *preparedTree) node(pointer uint32, depth uint) (uint8, error) {
@@ -139,10 +133,8 @@ func (v *preparedTree) node(pointer uint32, depth uint) (uint8, error) {
 		if v.records[offset] {
 			return 0, nil
 		}
-		if len(v.records) >= preparedMaxRecords {
-			return 0, errors.New("prepared MMDB record capacity exceeded")
-		}
-		visitor := preparedVisitor{data: v.data, budget: &v.budget}
+		budget := preparedBudget{values: preparedMaxRecordValues, bytes: preparedMaxRecordBytes}
+		visitor := preparedVisitor{data: v.data, budget: &budget}
 		if err := v.reader.Decode(uintptr(offset), &visitor); err != nil {
 			return 0, errors.New("invalid prepared MMDB reachable record")
 		}

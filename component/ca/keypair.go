@@ -29,6 +29,12 @@ func NewTLSKeyPairLoader(certificate, privateKey string) (func() (*tls.Certifica
 	return newTLSKeyPairLoader(certificate, privateKey, nil)
 }
 
+// NewTLSKeyPairLoaderWithOwner keeps file watching in the caller's resource
+// lifetime. The caller activates and closes the owner; inline keys need no watcher.
+func NewTLSKeyPairLoaderWithOwner(certificate, privateKey string, owner *lifecycle.Group) (func() (*tls.Certificate, error), error) {
+	return newTLSKeyPairLoader(certificate, privateKey, owner)
+}
+
 func newTLSKeyPairLoader(certificate, privateKey string, owner *lifecycle.Group) (func() (*tls.Certificate, error), error) {
 	if certificate == "" && privateKey == "" {
 		var err error

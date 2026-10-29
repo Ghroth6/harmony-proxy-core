@@ -16,6 +16,8 @@ URLTest、连接创建和 provider 初始化通过可注销订阅发布事件。
 
 传统 HTTP、SOCKS、Mixed、Redir、TProxy、SS、VMess、TUIC 的 `ReCreate*` 以及 `PatchTunnel`、`PatchInboundListeners` 返回实际构造、绑定与关闭错误。双协议入口仅在两者都成功后登记；Patch 失败回滚本次新建入口，未变更的原入口保留，已删除或替换的旧入口不自动恢复。已登记入口关闭失败时移出就绪集合，保留待清理所有权供下次停止重试。命名多地址与底层构造失败会关闭本次已取得的资源；若构造器内部回滚的 Close 本身失败，错误一并返回，不能保证资源已释放，也没有成功实例可供调用方重试。重复关闭不把已关闭句柄当作新错误，未知关闭错误仍返回。调用方必须处理错误并决定是否关闭剩余入口，不能把返回错误的配置当作就绪。该合同不覆盖 TUN、DNS/controller 或 provider 后台任务，也不是已接入连接全部结束的屏障。
 
+普通 TLS 入站的证书文件 watcher 复用现有 lifecycle.Group 和 owned watcher，由监听实例 Close 或构造失败回滚显式关闭，不再依赖实例被 GC 后清理；文件更新监视启动失败仍按官方行为保留已加载证书并记录警告。此归属覆盖 AnyTLS、HTTP/SOCKS/Mixed、两种 Hysteria2、VLESS/VMess、Trojan、TrustTunnel、TUIC。管理 controller 仍沿用官方进程生命周期。整轮转发停止会关闭已接入的握手 socket；这不等于等待所有第三方服务内部 callback/worker。
+
 完整宿主入口为 `scripts/test-interfaces.ps1`（Go 1.24.5，干净工作区；`-ModuleCache` 指定已有依赖缓存，`-HostSupplementCache` 指定锁定 Windows 补充依赖，`-BuildCache` 可指定独立缓存）。它离线运行接口包（包括 outboundgroup 选择回归）、限定 `TestListenerLifecycle` 的真实回环监听回归，以及独立进程的 OHOS 初始状态测试，将源码哈希、日志与结果集中写入本仓 `local/runs/<batch>/`，不修改上游 go.mod/go.sum。`scripts/test-statistic.ps1` 仍可单独验证统计包，采用相同的批次布局。两入口默认将 GOPATH、GOCACHE 和 GOMODCACHE 放在 `local/cache/` 下，批次目录中的 `inputs.json`、日志与 `result.json` 保留该次验证事实。旧批次是历史证据，重跑应由脚本生成新批次；缓存可以重建，证据的保留与迁移规则见协调仓的材料说明。Windows 上启用 ohos build tag 不等于 OHOS 二进制或真机验证；两入口均未启用 race detector。
 
 嵌入应用可显式启用 `tunnel.EnableForwardingLifecycle`，随后按递增代次 Prepare、取得 BoundForwardingTunnel、完成入口构造、Activate。未启用时保留原有入口行为。绑定后的 tunnel 和根请求携带运行上下文，派生出站沿用原归属；显式内部管理上下文不归入转发。Cancel 立即关闭准入，Stop 等待专属资源关闭和已接入工作结束；迟到结果不能登记到新代，无法确认的关闭错误保留并阻止下一次启动。该能力不代替配置任务退休，也不承诺系统 TUN fd 已释放。

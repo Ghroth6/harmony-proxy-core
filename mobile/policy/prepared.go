@@ -137,7 +137,7 @@ func (e *Engine) verify(input []byte, prepared contract.PreparedContext) (*prepa
 	if !plan.ResourcesComplete {
 		return nil, "POLICY_RESOURCES_MISSING"
 	}
-	raw, _, code := decodePolicy(input)
+	raw, code := decodePolicy(input)
 	if code != "" {
 		return nil, code
 	}

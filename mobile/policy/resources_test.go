@@ -122,7 +122,7 @@ func TestFixedOriginalPolicyBuildsRealBoundProviderWithoutPreparationNetwork(t *
 	}
 }
 
-func TestFixedProviderRejectsForbiddenAndInlineRulesWithoutSkipping(t *testing.T) {
+func TestFixedProviderUsesUpstreamInvalidEntrySkipping(t *testing.T) {
 	root := t.TempDir()
 	engine, err := policy.NewEngine(root)
 	if err != nil {
@@ -131,17 +131,31 @@ func TestFixedProviderRejectsForbiddenAndInlineRulesWithoutSkipping(t *testing.T
 	defer engine.Close()
 	input := []byte(providerPolicy)
 	plan := engine.Plan("forbidden-plan", input, nil)
-	resource := savePublicResource(t, root, plan.Requirements[0], []byte("payload:\n - MATCH\n"))
-	if receipt := engine.Plan("forbidden-match", input, []contract.Resource{resource}); receipt.Category == "planned" || receipt.Code != "POLICY_RESOURCE_PAYLOAD_INVALID" {
-		t.Fatal("provider MATCH cannot be silently skipped by the actual strategy")
+	resource := savePublicResource(t, root, plan.Requirements[0], []byte("rules:\n - MATCH\n - DOMAIN-SUFFIX,example.com\n"))
+	if receipt := engine.Plan("skipped-match", input, []contract.Resource{resource}); receipt.Category != "planned" || !receipt.ResourcesComplete {
+		t.Fatalf("upstream rules alias and partial valid payload rejected: %+v", receipt)
+	}
+	platform := publicPlatform()
+	platform.RuntimeOptions.ResourceDownloads = true
+	prepared, err := contract.Seal(plan.InputDigest, []contract.Resource{resource}, platform, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := engine.BuildCandidate(input, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cfg.Discard(context.Background())
+	if cfg.RuleProviders["PublicRules"].Count() != 1 {
+		t.Fatal("invalid MATCH was not skipped or valid rule was lost")
 	}
 	inline := []byte("ipv6: false\ndns: {enable: false}\nrule-providers:\n PublicRules: {type: inline, behavior: classical, payload: ['DOMAIN-SUFFIX']}\nrules: ['RULE-SET,PublicRules,DIRECT', 'MATCH,DIRECT']\n")
-	if receipt := engine.Plan("forbidden-inline", inline, nil); receipt.Category == "planned" || receipt.Code != "POLICY_RESOURCE_PAYLOAD_INVALID" {
-		t.Fatal("inline rules also need whole-payload strict validation")
+	if receipt := engine.Plan("skipped-inline", inline, nil); receipt.Category != "planned" {
+		t.Fatal("an invalid inline entry must follow the upstream log-and-skip behavior")
 	}
 }
 
-func TestFixedPolicyPlanVerifiesActualImmutableBytesAndStrictProviderPayload(t *testing.T) {
+func TestFixedPolicyPlanVerifiesActualImmutableBytesAndUpstreamPayload(t *testing.T) {
 	root := t.TempDir()
 	engine, err := policy.NewEngine(root)
 	if err != nil {
@@ -168,8 +182,8 @@ func TestFixedPolicyPlanVerifiesActualImmutableBytesAndStrictProviderPayload(t *
 	}
 	invalid := savePublicResource(t, root, first.Requirements[0], []byte("payload:\n - DOMAIN-SUFFIX\n"))
 	badPayload := engine.Plan("fixed-invalid-rule", input, []contract.Resource{invalid})
-	if badPayload.Category == "planned" || badPayload.Code != "POLICY_RESOURCE_PAYLOAD_INVALID" {
-		t.Fatal("malformed provider rules must reject the complete resource, never log and skip")
+	if badPayload.Category != "planned" || !badPayload.ResourcesComplete {
+		t.Fatal("malformed individual entries must follow the upstream strategy")
 	}
 	escape := resource
 	escape.RelativePath = "../outside.yaml"
