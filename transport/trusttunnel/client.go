@@ -15,7 +15,6 @@ import (
 	"github.com/metacubex/mihomo/common/httputils"
 	"github.com/metacubex/mihomo/common/once"
 	"github.com/metacubex/mihomo/component/dialer"
-	"github.com/metacubex/mihomo/component/forwarding"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/vmess"
 
@@ -45,6 +44,7 @@ type ClientOptions struct {
 
 type Client struct {
 	ctx              context.Context
+	cancel           context.CancelFunc
 	dialer           C.Dialer
 	dialOptions      DialOptionsFunc
 	server           string
@@ -59,7 +59,7 @@ type Client struct {
 func NewClient(ctx context.Context, options ClientOptions) (client *Client, err error) {
 	client = &Client{
 		ctx:         ctx,
-		dialer:      forwarding.SharedDialer(options.Dialer),
+		dialer:      options.Dialer,
 		dialOptions: options.DialOptions,
 		server:      options.Server,
 		auth:        buildAuth(options.Username, options.Password),
@@ -85,6 +85,7 @@ func NewClient(ctx context.Context, options ClientOptions) (client *Client, err 
 	if options.HealthCheck {
 		client.healthCheck = true
 	}
+	client.ctx, client.cancel = context.WithCancel(ctx)
 	return client, nil
 }
 
@@ -250,6 +251,7 @@ func (c *Client) ListenICMP(ctx context.Context) (*IcmpConn, error) {
 }
 
 func (c *Client) Close() error {
+	c.cancel()
 	httputils.CloseTransport(c.roundTripper)
 	if c.healthCheckTimer != nil {
 		c.healthCheckTimer.Stop()

@@ -20,11 +20,12 @@ $packages = @(
   'component/dialer', 'dns', 'component/forwarding', 'component/http',
   'tunnel', 'hub/route', 'listener/sing_tun',
   'listener/sing_hysteria2', 'listener/hysteria2_realm', 'transport/anytls/session', 'transport/anytls/util', 'transport/tuic',
-  'transport/shadowquic', 'transport/kcptun', 'transport/gun', 'transport/xhttp', 'component/resource',
+  'transport/shadowquic', 'transport/kcptun', 'transport/gun', 'transport/xhttp',
+  'transport/trusttunnel', 'transport/openvpn', 'component/resource',
   'adapter/provider', 'rules/provider', 'component/updater', 'component/geodata'
 )
 $imports = @($packages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })
-$listenerPackages = @('listener', 'listener/inbound', 'listener/http', 'listener/tproxy')
+$listenerPackages = @('listener', 'listener/inbound', 'listener/http', 'listener/tproxy', 'listener/trusttunnel')
 $listenerImports = @($listenerPackages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })
 $stage = Join-Path $core ('local/runs/interface-tests-' + (Get-Date -AsUTC -Format 'yyyyMMddTHHmmssfffffffZ'))
 if (Test-Path -LiteralPath $stage) { throw 'Existing test evidence; choose a new batch' }

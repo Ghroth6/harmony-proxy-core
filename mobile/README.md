@@ -465,6 +465,20 @@ and HTTP/2, not an HTTP/3 UDP server. Host transport reuse/close tests and actua
 inbound round trips do not establish every outer listener's callback join or
 phone acceptance.
 
+TrustTunnel uses the upstream HTTP/2 pool directly, with SharedDialer limited
+to QUIC's physical socket. Client.Close cancels its own context so an enabled
+health-check loop does not remain parked after its timer stops. Server protocol
+handling is upstream; listener ownership, partial-start rollback and retryable
+close errors remain at the existing boundary. MASQUE still needs both physical
+dial wrappers: its HTTP/2 NewClientConn bypasses the ordinary pool's detached
+context, and QUIC also receives a temporary construction context. Parse node
+DNS before allocating its stack to avoid leaking an unreturned candidate.
+SSH and OpenVPN retain their shared physical dial contexts and upstream Close
+paths. OpenVPN's successful handshake must outlive the run/handshake timeout
+context. This core has no MASQUE, SSH or OpenVPN inbound service. Host fixtures
+verify connection ownership and selected protocol paths, not external service
+interoperability, every dependency worker join, or phone acceptance.
+
 Every Start independently validates `preparedPolicy` and builds fresh owned
 resources through `mobile/policy.Engine.BuildCandidate`. Static validation's
 M1b/V2 labels never select a runtime implementation. `executor.PublishMobilePolicy`
