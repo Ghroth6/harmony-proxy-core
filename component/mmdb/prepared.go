@@ -1,13 +1,12 @@
 package mmdb
 
-import (
-	"errors"
-)
+import "github.com/oschwald/maxminddb-golang"
 
-// Prepared readers own verified bytes. They never enter global sync.Once,
-// reload paths, downloads or fatal logging, and are closed by the candidate.
+// Prepared readers use the same opening and type dispatch as IPInstance and
+// ASNInstance. Only ownership differs: no global sync.Once or fatal logging;
+// each candidate closes its own reader. Records are decoded on lookup.
 func NewPreparedIP(buffer []byte) (*IPReader, error) {
-	r, err := openPreparedReader(buffer)
+	r, err := maxminddb.FromBytes(buffer)
 	if err != nil {
 		return nil, err
 	}
@@ -17,25 +16,16 @@ func NewPreparedIP(buffer []byte) (*IPReader, error) {
 		reader.databaseType = typeSing
 	case "Meta-geoip0":
 		reader.databaseType = typeMetaV0
-	case "GeoLite2-Country", "GeoIP2-Country", "DBIP-Country-Lite (compat=GeoLite2-Country)":
-		reader.databaseType = typeMaxmind
 	default:
-		_ = r.Close()
-		return nil, errors.New("unsupported IP database type")
+		reader.databaseType = typeMaxmind
 	}
 	return reader, nil
 }
 
 func NewPreparedASN(buffer []byte) (*ASNReader, error) {
-	r, err := openPreparedReader(buffer)
+	r, err := maxminddb.FromBytes(buffer)
 	if err != nil {
 		return nil, err
 	}
-	switch r.Metadata.DatabaseType {
-	case "GeoLite2-ASN", "DBIP-ASN-Lite (compat=GeoLite2-ASN)", "ipinfo generic_asn_free.mmdb":
-		return &ASNReader{Reader: r}, nil
-	default:
-		_ = r.Close()
-		return nil, errors.New("unsupported ASN database type")
-	}
+	return &ASNReader{Reader: r}, nil
 }

@@ -816,20 +816,16 @@ GEOIP/MMDB/ASN/GEOSITE readers and matcher caches belong to
 the candidate's resource manifest; changing a policy cannot reuse a country
 matcher from a different manifest or enter upstream download/global caches.
 
-Prepared MMDB verifies the original metadata and separator, every reachable
-search-tree path and every reachable data record using the pinned reader's
-decoder and Mihomo's actual country/ASN types. Optional description and shared
-or embedded data targets are preserved; upstream `Reader.Verify`'s stricter
-sequential layout is not a format requirement. Tree DAG memoization bounds
-repeated branches and rejects cycles/depth beyond the IP width. Decoding is
-bounded before reflection allocation: metadata 128 KiB, containers 4096 items
-and depth 64, each record 65536 decoder visits/1 MiB expanded bytes. Metadata
-also has an 8192-visit budget. These are additional prepared-parser limits,
-not upstream compatibility guarantees. There is no separate file-size,
-tree-size, record-count or whole-database expansion quota; bounds against the
-actual file and tree depth still apply.
-Bad pointers/types/tree/separator and small shared-pointer expansion attacks
-fail preparation; validation never re-encodes a resource or changes its digest.
+Prepared MMDB uses maxminddb.FromBytes and the same IP/ASN reader dispatch as
+ordinary Mihomo. It does not pre-scan the tree, expand unrelated record fields,
+call Reader.Verify, impose extra record/metadata budgets or whitelist database
+type names. The candidate owns and closes its reader instead of entering the
+global singleton. A successful preparation means the bytes can be opened by
+the pinned reader, not that every record has been decoded. The original reader
+handles metadata and lookup errors, including its own decoder-depth checks;
+Mihomo's existing lookup behavior remains unchanged. Initial MMDB/ASN downloads
+use the same open-time validation before atomic publication. Resource bytes,
+digest verification and candidate-scoped GEO matchers remain unchanged.
 
 For prepared rule resources, `Fetcher.InitialPrepared` loads verified bytes
 without a watcher, request or timer. Runtime activation starts one scheduler;

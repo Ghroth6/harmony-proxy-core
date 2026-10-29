@@ -199,7 +199,7 @@ func TestOriginalMMDBReachableSharedFieldMatchesWithoutRewritingBytes(t *testing
 	}
 }
 
-func TestOriginalMMDBWithEmptyDescriptionKeepsActualCountryAndRejectsMalformedData(t *testing.T) {
+func TestOriginalMMDBWithEmptyDescriptionKeepsActualCountryAndRejectsMalformedMetadata(t *testing.T) {
 	root := t.TempDir()
 	engine, err := policy.NewEngine(root)
 	if err != nil {
@@ -232,12 +232,11 @@ func TestOriginalMMDBWithEmptyDescriptionKeepsActualCountryAndRejectsMalformedDa
 	if err = candidate.Discard(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	broken := append([]byte(nil), body...)
-	broken[22] = 0xff // malformed actual data record, with intact metadata/tree.
+	broken := body[:bytes.LastIndex(body, []byte("\xab\xcd\xefMaxMind.com"))+15]
 	bad := savePublicResource(t, root, plan.Requirements[0], broken)
 	invalid := engine.Plan("mmdb-original-bad-data", input, []contract.Resource{bad})
 	if invalid.Category != "invalid" || invalid.Code != "POLICY_RESOURCE_PAYLOAD_INVALID" || invalid.ResourcesComplete || engine.ResourceAcquireCount() != baseline {
-		t.Fatal("descriptive metadata compatibility must not weaken actual data/tree verification or fetch resources")
+		t.Fatal("malformed metadata must fail official opening without fetching resources")
 	}
 }
 
@@ -276,19 +275,7 @@ func TestOriginalMMDBHasNoExtraFileSizeQuota(t *testing.T) {
 	}
 }
 
-func TestOriginalMMDBRejectsCorruptReachableGraphAndBoundedExpansion(t *testing.T) {
-	base := publicEmbeddedCountryMMDB(t, []byte{0xe1, 0x41, 'k', 0x42, 'z', 'z', 0x20, 3}, 6)
-	changed := func(index int, value byte) []byte {
-		result := append([]byte(nil), base...)
-		result[index] = value
-		return result
-	}
-	deepTree := make([]byte, 34*6)
-	for index := 0; index < 34; index++ {
-		deepTree[index*6+2], deepTree[index*6+5] = byte(index+1), 50
-	}
-	deepTree[33*6+2] = 50
-	deep := publicMMDBEnvelope(deepTree, 34, "sing-geoip", []byte{0x42, 'z', 'z'})
+func TestOriginalMMDBIgnoresUnrelatedSharedExpansion(t *testing.T) {
 	// Each small array references its predecessor twice. An unrelated field
 	// points at that DAG: a raw-byte cap cannot bound its expanded work. The
 	// original typed country reader can still resolve the actual country.
@@ -321,43 +308,33 @@ func TestOriginalMMDBRejectsCorruptReachableGraphAndBoundedExpansion(t *testing.
 		t.Fatal("expansion fixture must have a readable country", err)
 	}
 	_ = reader.Close()
-	metadataEnd := bytes.LastIndex(base, []byte("\xab\xcd\xefMaxMind.com")) + 14
-	badMetadata := append(append([]byte(nil), base[:metadataEnd]...), 0xfe, 0xff, 0xff)
-	countOffset := bytes.Index(base, []byte("node_count")) + len("node_count")
-	overflowCount := append(append([]byte(nil), base[:countOffset]...), 0x08, 0x02, 0x20, 0, 0, 0, 0, 0, 0, 0)
-	overflowCount = append(overflowCount, base[countOffset+2:]...)
-	sizeOffset := bytes.Index(overflowCount, []byte("record_size")) + len("record_size")
-	overflowCount[sizeOffset+1] = 32
-	for _, fixture := range []struct {
-		name string
-		body []byte
-	}{
-		{"tree-cycle", changed(2, 0)},
-		{"tree-depth", deep},
-		{"reserved-tree-pointer", changed(2, 2)},
-		{"separator", changed(6, 1)},
-		{"record-type", changed(25, 0xff)},
-		{"data-pointer-cycle", changed(29, 6)},
-		{"data-pointer-bounds", changed(29, 254)},
-		{"metadata-container-allocation", badMetadata},
-		{"metadata-tree-size-overflow", overflowCount},
-		{"shared-data-expansion", expanding},
-	} {
-		t.Run(fixture.name, func(t *testing.T) {
-			root := t.TempDir()
-			engine, err := policy.NewEngine(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer engine.Close()
-			input := []byte("ipv6: false\ndns: {enable: false}\nrules: ['GEOIP,ZZ,REJECT,no-resolve', 'MATCH,DIRECT']\n")
-			plan := engine.Plan("bounded-mmdb-plan", input, nil)
-			resource := savePublicResource(t, root, plan.Requirements[0], fixture.body)
-			baseline := engine.ResourceAcquireCount()
-			invalid := engine.Plan("bounded-mmdb-invalid", input, []contract.Resource{resource})
-			if invalid.Category != "invalid" || invalid.Code != "POLICY_RESOURCE_PAYLOAD_INVALID" || invalid.ResourcesComplete || engine.ResourceAcquireCount() != baseline {
-				t.Fatal("untrusted reachable MMDB graph must fail bounded and without acquisitions")
-			}
-		})
+	root := t.TempDir()
+	engine, err := policy.NewEngine(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	input := []byte("ipv6: false\ndns: {enable: false}\nrules: ['GEOIP,ZZ,REJECT,no-resolve', 'MATCH,DIRECT']\n")
+	plan := engine.Plan("mmdb-shared-plan", input, nil)
+	resource := savePublicResource(t, root, plan.Requirements[0], expanding)
+	baseline := engine.ResourceAcquireCount()
+	ready := engine.Plan("mmdb-shared-ready", input, []contract.Resource{resource})
+	if ready.Category != "planned" || !ready.ResourcesComplete {
+		t.Fatalf("officially readable field was rejected: %+v", ready)
+	}
+	prepared, err := contract.Seal(plan.InputDigest, []contract.Resource{resource}, publicPlatform(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := engine.BuildCandidate(input, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.Discard(context.Background())
+	if match, target := candidate.Rules[0].Match(&C.Metadata{DstIP: netip.MustParseAddr("192.0.2.1")}, C.RuleMatchHelper{}); !match || target != "REJECT" {
+		t.Fatal("official typed lookup changed")
+	}
+	if engine.ResourceAcquireCount() != baseline {
+		t.Fatal("candidate lookup acquired new data")
 	}
 }

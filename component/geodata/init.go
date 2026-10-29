@@ -184,7 +184,9 @@ func validateMMDBDownload(data []byte) error {
 	if err != nil {
 		return err
 	}
-	return errors.Join(reader.Verify(), reader.Close())
+	// Mihomo's mmdb.Verify checks that the database opens. Reader.Verify is a
+	// separate, stricter full-database scan that the ordinary path does not use.
+	return reader.Close()
 }
 
 func InitGeoSite() error {

@@ -12,8 +12,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// VerifyPrepared checks the actual complete binary payload before a plan may
-// mark it ready. Construction and matching below retain instance-scoped bytes.
+// VerifyPrepared checks resource loading before a plan may mark it ready.
+// MMDB follows upstream open-time validation, with record decoding at lookup.
+// Construction and matching below retain instance-scoped bytes.
 func VerifyPrepared(kind string, data []byte) error {
 	switch kind {
 	case "mmdb":

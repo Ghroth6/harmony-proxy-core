@@ -1,6 +1,7 @@
 package geodata
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -271,6 +272,36 @@ func mmdbDownloadFixture(t *testing.T) []byte {
 	return b
 }
 
+func TestMMDBDownloadUsesUpstreamOpenValidation(t *testing.T) {
+	downloadNetwork(t)
+	body := mmdbDownloadFixture(t)
+	// Empty description is readable by Open/FromBytes, but Reader.Verify
+	// imposes a different metadata requirement. The ordinary Mihomo loader
+	// never invokes that full-database verifier.
+	end := bytes.Index(body, []byte("description")) + len("description")
+	body = append(append([]byte(nil), body[:end]...), 0xe0)
+	r, err := maxminddb.FromBytes(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Verify(); err == nil {
+		t.Fatal("fixture must distinguish Open from Verify")
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(body) }))
+	defer server.Close()
+	target := filepath.Join(t.TempDir(), "country.mmdb")
+	if err := downloadToPath(server.URL, target, validateMMDBDownload); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatal("original candidate bytes were not published", err)
+	}
+}
+
 func TestGeodataInitializersRejectInvalid200ThenPublishValidCandidate(t *testing.T) {
 	downloadNetwork(t)
 	oldHome := C.Path.HomeDir()
@@ -315,12 +346,6 @@ func TestGeodataInitializersRejectInvalid200ThenPublishValidCandidate(t *testing
 				var serveValid atomic.Bool
 				var requests atomic.Int32
 				invalid := []byte("<html>invalid geodata</html>")
-				if name == "MMDB" || name == "ASN" {
-					// Metadata still decodes, but the tree points outside the data
-					// section. Opening alone must not validate this candidate.
-					invalid = append([]byte(nil), valid...)
-					invalid[0], invalid[1], invalid[2] = 0xff, 0xff, 0xff
-				}
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					requests.Add(1)
 					if serveValid.Load() {
