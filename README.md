@@ -28,7 +28,7 @@ URLTest、连接创建和 provider 初始化通过可注销订阅发布事件。
 
 节点、订阅列表与完整配置解析失败会清理本次候选资源，清理超时保留同一次操作、真实错误持续返回；成功发布转交所有权，已退休的 Config 不能再次发布。应用入口在重载与 Shutdown 时等待这些结果。
 
-原生 parser 的节点适配器按实际使用登记租约，覆盖在途 TCP/UDP 创建及返回连接的完整 Close；半关闭不释放租约。provider 刷新关闭旧节点的新请求准入，现有连接自然结束后只关闭一次节点池；测速回调也属于待收尾任务。成功收尾的历史记录立即移除，错误保留并停止后续刷新。provider 取消时强制收尾仍活跃的历史节点，当前列表仍由 executor 按复用身份管理。URLTest 组在使用缓存前检查当前成员，避免新请求继续选中刷新前的对象。自定义 Parser 返回不具备 Retire/ForceRetire/WaitRetired 合同的借用对象维持上游行为，provider 不擅自取消其测速或关闭资源。
+原生 parser 的节点适配器按实际使用登记租约，覆盖在途 TCP/UDP 创建及返回连接的完整 Close；半关闭不释放租约。provider 刷新关闭旧节点的新请求准入，现有连接自然结束后只关闭一次节点池；测速回调也属于待收尾任务。成功收尾的历史记录立即移除，失败记录及真实错误保留用于检查和停止；旧节点清理失败不取消该 provider 的独立刷新调度。provider 取消时强制收尾仍活跃的历史节点，当前列表仍由 executor 按复用身份管理。URLTest 组在使用缓存前检查当前成员，避免新请求继续选中刷新前的对象。自定义 Parser 返回不具备 Retire/ForceRetire/WaitRetired 合同的借用对象维持上游行为，provider 不擅自取消其测速或关闭资源。
 
 租约完成证明已登记调用、连接 Close 及 adapter.Close 已返回，不等于所有协议内部任务或系统句柄均已验收。AnyTLS 客户端等待在途创建、idle routine、session recvLoop、deadline watcher 与 session 清理，并保留关闭错误；网络切换后按代次排除旧池会话，不靠重试掩盖旧连接复用。服务端外部回调的完成不在该客户端合同内。smux/KCP 依赖缺少完整 worker 等待，部分关闭错误未上报。WireGuard 依赖等待 worker，但 Close 返回 void；QUIC 依赖也未完整传播 UDP Close 错误。详细剩余项与实际验证范围由协调仓设计和阶段检查点记录。
 
