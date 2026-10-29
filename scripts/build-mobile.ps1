@@ -122,7 +122,7 @@ $arguments=@('build','-buildvcs=false','-mod=mod')+$tlsArguments+@('-buildmode',
 & $go -C $stage list -mod=mod -tags $buildTags -json github.com/metacubex/mihomo/transport/hysteria/conns/faketcp > (Join-Path $stage 'faketcp-source.json')
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify target fake-TCP sources' }
 $fakeTcpSource=Get-Content -LiteralPath (Join-Path $stage 'faketcp-source.json') -Raw | ConvertFrom-Json
-if (@($fakeTcpSource.GoFiles).Count -ne 1 -or $fakeTcpSource.GoFiles[0] -cne 'tcp_stub.go') { throw 'OHOS build must select the upstream no_fake_tcp stub' }
+if ($fakeTcpSource.GoFiles -cnotcontains 'tcp_stub.go' -or $fakeTcpSource.GoFiles -ccontains 'tcp_linux.go') { throw 'OHOS build must select the upstream no_fake_tcp stub' }
 & $go -C $stage @arguments *> (Join-Path $stage 'build.log')
 if ($LASTEXITCODE -ne 0) { throw "Mobile core build failed; inspect $stage/build.log" }
 if ((git -C $core rev-parse HEAD) -cne $revision -or @(git -C $core status --porcelain=v1 --untracked-files=all).Count) { throw 'Core source changed during compilation' }
