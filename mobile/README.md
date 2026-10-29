@@ -443,6 +443,16 @@ upstream closed-listener error directly. Client Close is not a complete join
 of every protocol/dependency worker, and dependency-internal socket close errors
 are not all exposed; local loopback tests do not establish phone acceptance.
 
+SingMux uses the pinned sing-mux client and the unchanged upstream
+listener/sing service. Only the physical dialer is adapted for a shared pool:
+the dependency's construction timeout and a single request's cancellation must
+not become the lifetime of an established transport. Logical streams retain
+upstream behavior. Adapter.Close follows upstream, closing the mux client and
+then the underlying adapter; the pinned mux Client.Close always returns nil,
+so an extra error join adds no propagation. Its pool reset does not expose all
+session close errors or a complete worker join. The service starts stream
+handlers independently, so its return is not proof all callbacks have exited.
+
 Every Start independently validates `preparedPolicy` and builds fresh owned
 resources through `mobile/policy.Engine.BuildCandidate`. Static validation's
 M1b/V2 labels never select a runtime implementation. `executor.PublishMobilePolicy`
