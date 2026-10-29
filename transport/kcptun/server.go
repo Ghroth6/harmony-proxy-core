@@ -64,16 +64,6 @@ func (s *Server) Serve(pc net.PacketConn, handler func(net.Conn)) error {
 		if err != nil {
 			return err
 		}
-		owned, err := s.sessions.Begin(func() error {
-			err := conn.Close()
-			if errors.Is(err, io.ErrClosedPipe) {
-				return nil
-			}
-			return err
-		})
-		if err != nil {
-			continue
-		}
 		conn.SetStreamMode(true)
 		conn.SetWriteDelay(false)
 		conn.SetNoDelay(s.config.NoDelay, s.config.Interval, s.config.Resend, s.config.NoCongestion)
@@ -87,23 +77,34 @@ func (s *Server) Serve(pc net.PacketConn, handler func(net.Conn)) error {
 			netConn = NewCompStream(netConn)
 		}
 
-		owned.Run(func() {
-			// stream multiplex
-			smuxConfig := smux.DefaultConfig()
-			smuxConfig.Version = s.config.SmuxVer
-			smuxConfig.MaxReceiveBuffer = s.config.SmuxBuf
-			smuxConfig.MaxStreamBuffer = s.config.StreamBuf
-			smuxConfig.MaxFrameSize = s.config.FrameSize
-			smuxConfig.KeepAliveInterval = time.Duration(s.config.KeepAlive) * time.Second
-			if smuxConfig.KeepAliveInterval >= smuxConfig.KeepAliveTimeout {
-				smuxConfig.KeepAliveTimeout = 3 * smuxConfig.KeepAliveInterval
-			}
+		// Own the mux, whose official Close also wakes unread logical streams
+		// and receive-budget waiters, rather than closing only the KCP socket.
+		smuxConfig := smux.DefaultConfig()
+		smuxConfig.Version = s.config.SmuxVer
+		smuxConfig.MaxReceiveBuffer = s.config.SmuxBuf
+		smuxConfig.MaxStreamBuffer = s.config.StreamBuf
+		smuxConfig.MaxFrameSize = s.config.FrameSize
+		smuxConfig.KeepAliveInterval = time.Duration(s.config.KeepAlive) * time.Second
+		if smuxConfig.KeepAliveInterval >= smuxConfig.KeepAliveTimeout {
+			smuxConfig.KeepAliveTimeout = 3 * smuxConfig.KeepAliveInterval
+		}
 
-			mux, err := smux.Server(netConn, smuxConfig)
-			if err != nil {
-				_ = netConn.Close()
-				return
+		mux, err := smux.Server(netConn, smuxConfig)
+		if err != nil {
+			_ = netConn.Close()
+			continue
+		}
+		owned, err := s.sessions.Begin(func() error {
+			err := mux.Close()
+			if errors.Is(err, io.ErrClosedPipe) {
+				return nil
 			}
+			return err
+		})
+		if err != nil {
+			continue
+		}
+		owned.Run(func() {
 			defer mux.Close()
 
 			for {

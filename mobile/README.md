@@ -395,6 +395,23 @@ cleanup remains registered with the pool, so final Close still waits for its
 actual return and includes its error. The upstream 30-minute idle criterion,
 stream selection and stream-limit retry behavior are unchanged.
 
+KCP client retirement calls the existing smux Close for every tracked session,
+including failed and expired sessions. smux IsClosed also reports I/O/protocol
+failure, so it is not a reason to forget a transport without closing it.
+Client-initiated cleanup runs outside the pool lock, remains joined by final
+Close, and retains its returned errors without disabling later independent
+requests. Repeated Close returns the same result. The existing expiry schedule,
+round-robin selection, compression and KCP/smux wire implementations are reused.
+
+The separate KCP server path serves an explicitly configured Shadowsocks
+`kcp-tun` inbound. It owns each smux session, using smux Close to wake logical
+streams and receive-budget waiters before closing KCP. Its listener borrows the
+UDP socket; the caller still closes that socket. Server.Close stops admission
+and closes sessions, while forwarding.Stop additionally waits for registered
+application callbacks. Neither path supplies the worker-join API missing from
+the pinned KCP/smux dependencies, or proves every dependency-internal Close
+error is propagated.
+
 Every Start independently validates `preparedPolicy` and builds fresh owned
 resources through `mobile/policy.Engine.BuildCandidate`. Static validation's
 M1b/V2 labels never select a runtime implementation. `executor.PublishMobilePolicy`

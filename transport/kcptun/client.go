@@ -32,9 +32,11 @@ type Client struct {
 	muxes         []timedSession
 	rr            uint16
 	connMu        sync.Mutex
-	closed        bool
 	sessions      map[*smux.Session]struct{}
 	scavengerDone sync.WaitGroup
+	closing       sync.WaitGroup
+	closeOnce     sync.Once
+	closeErr      error
 
 	chScavenger chan timedSession
 }
@@ -55,17 +57,42 @@ func NewClient(config Config) *Client {
 
 func (c *Client) Close() error {
 	c.cancel()
-	c.connMu.Lock()
-	c.closed = true
-	var errs []error
-	for session := range c.sessions {
-		if err := session.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
-			errs = append(errs, err)
+	c.closeOnce.Do(func() {
+		c.connMu.Lock()
+		for session := range c.sessions {
+			c.closeSessionLocked(session)
 		}
-	}
+		c.connMu.Unlock()
+		c.scavengerDone.Wait()
+		c.closing.Wait()
+	})
+	return c.closeErr
+}
+
+func (c *Client) closeSession(session *smux.Session) {
+	c.connMu.Lock()
+	c.closeSessionLocked(session)
 	c.connMu.Unlock()
-	c.scavengerDone.Wait()
-	return errors.Join(errs...)
+}
+
+// Called with connMu held. IsClosed includes read/protocol failures; it does
+// not prove that smux has closed the underlying KCP/UDP transport. Retain that
+// Close until it returns, without holding up selection or another close.
+func (c *Client) closeSessionLocked(session *smux.Session) {
+	if _, owned := c.sessions[session]; !owned {
+		return
+	}
+	delete(c.sessions, session)
+	c.closing.Add(1)
+	go func() {
+		defer c.closing.Done()
+		err := session.Close()
+		if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+			c.connMu.Lock()
+			c.closeErr = errors.Join(c.closeErr, err)
+			c.connMu.Unlock()
+		}
+	}()
 }
 
 func (c *Client) createConn(ctx context.Context, dial DialFn) (*smux.Session, error) {
@@ -134,7 +161,7 @@ func (c *Client) OpenStream(ctx context.Context, dial DialFn) (*smux.Stream, err
 func (c *Client) getSession(ctx context.Context, dial DialFn) (*smux.Session, error) {
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
-	if c.closed || c.ctx.Err() != nil {
+	if c.ctx.Err() != nil {
 		return nil, net.ErrClosed
 	}
 	c.once.Do(func() {
@@ -142,7 +169,7 @@ func (c *Client) getSession(ctx context.Context, dial DialFn) (*smux.Session, er
 		c.chScavenger = make(chan timedSession, 128)
 		if c.config.AutoExpire > 0 {
 			c.scavengerDone.Add(1)
-			go func() { defer c.scavengerDone.Done(); scavenger(c.ctx, c.chScavenger, &c.config) }()
+			go func() { defer c.scavengerDone.Done(); scavenger(c.ctx, c.chScavenger, &c.config, c.closeSession) }()
 		}
 
 		c.numconn = uint16(c.config.Conn)
@@ -162,12 +189,12 @@ func (c *Client) getSession(ctx context.Context, dial DialFn) (*smux.Session, er
 		}
 		for session := range c.sessions {
 			if session.IsClosed() {
-				delete(c.sessions, session)
+				c.closeSessionLocked(session)
 			}
 		}
 		c.sessions[c.muxes[idx].session] = struct{}{}
 		if c.ctx.Err() != nil {
-			_ = c.muxes[idx].session.Close()
+			c.closeSessionLocked(c.muxes[idx].session)
 			return nil, net.ErrClosed
 		}
 		c.muxes[idx].expiryDate = time.Now().Add(time.Duration(c.config.AutoExpire) * time.Second)
@@ -193,7 +220,7 @@ type timedSession struct {
 }
 
 // scavenger goroutine is used to close expired sessions
-func scavenger(ctx context.Context, ch chan timedSession, config *Config) {
+func scavenger(ctx context.Context, ch chan timedSession, config *Config, closeSession func(*smux.Session)) {
 	ticker := time.NewTicker(scavengePeriod * time.Second)
 	defer ticker.Stop()
 	var sessionList []timedSession
@@ -208,10 +235,11 @@ func scavenger(ctx context.Context, ch chan timedSession, config *Config) {
 			for k := range sessionList {
 				s := sessionList[k]
 				if s.session.IsClosed() {
-					log.Debugln("scavenger: session normally closed: %s", s.session.LocalAddr())
+					closeSession(s.session)
+					log.Debugln("scavenger: retiring unusable session: %s", s.session.LocalAddr())
 				} else if time.Now().After(s.expiryDate) {
-					s.session.Close()
-					log.Debugln("scavenger: session closed due to ttl: %s", s.session.LocalAddr())
+					closeSession(s.session)
+					log.Debugln("scavenger: retiring expired session: %s", s.session.LocalAddr())
 				} else {
 					newList = append(newList, sessionList[k])
 				}
