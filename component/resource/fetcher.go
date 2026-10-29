@@ -180,8 +180,7 @@ func (f *Fetcher[V]) recordCleanupError(err error) bool {
 	return true
 }
 
-func (f *Fetcher[V]) Initial() (value V, err error) {
-	defer func() { f.recordResult(false, err) }()
+func (f *Fetcher[V]) Initial() (V, error) {
 	f.startMutex.Lock()
 	prepared := f.prepared
 	f.startMutex.Unlock()
@@ -265,8 +264,7 @@ func (f *Fetcher[V]) setInitialTime(modTime time.Time) error {
 	})
 }
 
-func (f *Fetcher[V]) Update() (value V, same bool, err error) {
-	defer func() { f.recordResult(same, err) }()
+func (f *Fetcher[V]) Update() (V, bool, error) {
 	if err := f.begin(); err != nil {
 		return lo.Empty[V](), false, err
 	}
@@ -285,7 +283,8 @@ func (f *Fetcher[V]) Update() (value V, same bool, err error) {
 	}
 	return f.update()
 }
-func (f *Fetcher[V]) update() (V, bool, error) {
+func (f *Fetcher[V]) update() (value V, same bool, err error) {
+	defer func() { f.recordResult(same, err) }()
 	f.startMutex.Lock()
 	root := f.ctx
 	if f.prepared {
