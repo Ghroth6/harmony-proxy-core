@@ -26,7 +26,6 @@ type Option struct {
 	NameCertVerify string
 	Fingerprint    string
 	ResourceOwner  *lifecycle.Group
-	ResourcePolicy func(string) error
 	Certificate    string
 	PrivateKey     string
 	Mux            bool
@@ -75,7 +74,6 @@ func NewGostWebsocket(ctx context.Context, conn net.Conn, option *Option) (net.C
 			},
 			Fingerprint:    option.Fingerprint,
 			NameCertVerify: option.NameCertVerify,
-			ResourcePolicy: option.ResourcePolicy,
 			ResourceOwner:  option.ResourceOwner,
 			Certificate:    option.Certificate,
 			PrivateKey:     option.PrivateKey,

@@ -161,7 +161,6 @@ func NewHysteria(option HysteriaOption) (*Hysteria, error) {
 		},
 		Fingerprint:    option.Fingerprint,
 		NameCertVerify: option.NameCertVerify,
-		ResourcePolicy: option.ResourcePolicyForAPI,
 		ResourceOwner:  option.ResourceOwner,
 		Certificate:    option.Certificate,
 		PrivateKey:     option.PrivateKey,

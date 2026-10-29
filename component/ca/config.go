@@ -83,7 +83,6 @@ type Option struct {
 	NameCertVerify string
 	ZeroTrust      bool
 	ResourceOwner  *lifecycle.Group
-	ResourcePolicy func(string) error
 	Certificate    string
 	PrivateKey     string
 }
@@ -126,7 +125,7 @@ func GetTLSConfig(opt Option) (tlsConfig *tls.Config, err error) {
 	}
 
 	if len(opt.Certificate) > 0 || len(opt.PrivateKey) > 0 {
-		certLoader, err := newTLSKeyPairLoader(opt.Certificate, opt.PrivateKey, opt.ResourceOwner, opt.ResourcePolicy)
+		certLoader, err := newTLSKeyPairLoader(opt.Certificate, opt.PrivateKey, opt.ResourceOwner)
 		if err != nil {
 			return nil, err
 		}

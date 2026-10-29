@@ -25,11 +25,11 @@ import (
 
 // NewTLSKeyPairLoader creates a loader function for TLS key pairs from the provided certificate and private key data or file paths.
 // If both certificate and privateKey are empty, generates a random TLS RSA key pair.
-func NewTLSKeyPairLoader(certificate, privateKey string, resourcePolicy ...func(string) error) (func() (*tls.Certificate, error), error) {
-	return newTLSKeyPairLoader(certificate, privateKey, nil, resourcePolicy...)
+func NewTLSKeyPairLoader(certificate, privateKey string) (func() (*tls.Certificate, error), error) {
+	return newTLSKeyPairLoader(certificate, privateKey, nil)
 }
 
-func newTLSKeyPairLoader(certificate, privateKey string, owner *lifecycle.Group, resourcePolicy ...func(string) error) (func() (*tls.Certificate, error), error) {
+func newTLSKeyPairLoader(certificate, privateKey string, owner *lifecycle.Group) (func() (*tls.Certificate, error), error) {
 	if certificate == "" && privateKey == "" {
 		var err error
 		certificate, privateKey, _, err = NewRandomTLSKeyPair(KeyPairTypeRSA)
@@ -57,65 +57,42 @@ func newTLSKeyPairLoader(certificate, privateKey string, owner *lifecycle.Group,
 	if loadErr != nil {
 		return nil, fmt.Errorf("parse certificate failed, maybe format error:%s, or path error: %s", painTextErr.Error(), loadErr.Error())
 	}
-	if owner == nil && len(resourcePolicy) > 0 && resourcePolicy[0] != nil {
-		if err := resourcePolicy[0]("PROXY_TLS_WATCHER_NOT_IMPLEMENTED"); err != nil {
-			return nil, err
-		}
-	}
-	gcFlag := new(os.File) // tiny (on the order of 16 bytes or less) and pointer-free objects may never run the finalizer, so we choose new an os.File
 	updateMutex := sync.RWMutex{}
-	closed := false
-	var watcher *fswatch.Watcher
-	start := func() error {
-		var err error
-		watcher, err = fswatch.NewWatcher(fswatch.Options{Path: []string{certificate, privateKey}, Callback: func(path string) {
-			updateMutex.Lock()
-			defer updateMutex.Unlock()
-			if closed {
-				return
-			}
-			if newCert, err := tls.LoadX509KeyPair(certificate, privateKey); err == nil {
-				cert = newCert
-			}
-		}})
-		if err != nil {
-			return err
-		}
-		return watcher.Start()
-	}
-	closeWatcher := func() error {
+	reload := func() {
 		updateMutex.Lock()
-		closed = true
-		updateMutex.Unlock()
-		if watcher != nil {
-			return watcher.Close()
-		}
-		return nil
-	}
-	if owner != nil {
-		owned := &ownedKeyPairWatcher{paths: []string{certificate, privateKey}, reload: func() {
-			updateMutex.Lock()
-			defer updateMutex.Unlock()
-			if newCert, err := tls.LoadX509KeyPair(certificate, privateKey); err == nil {
-				cert = newCert
-			}
-		}}
-		if err := owner.Add(owned.Start, owned.Close); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := start(); err == nil {
-			runtime.SetFinalizer(gcFlag, func(f *os.File) { _ = closeWatcher() })
-		} else {
-			_ = closeWatcher()
+		defer updateMutex.Unlock()
+		if newCert, err := tls.LoadX509KeyPair(certificate, privateKey); err == nil {
+			cert = newCert
 		}
 	}
-	return func() (*tls.Certificate, error) {
-		defer runtime.KeepAlive(gcFlag)
+	get := func() (*tls.Certificate, error) {
 		updateMutex.RLock()
 		defer updateMutex.RUnlock()
 		current := cert
 		return &current, nil
+	}
+	if owner != nil {
+		// A TLS config may be rebuilt on every connection. Share only within
+		// its node's owner, so repeated handshakes do not accumulate watchers.
+		type keyPairFiles struct{ certificate, privateKey string }
+		resource, err := owner.GetOrAdd(keyPairFiles{certificate, privateKey}, func() lifecycle.Resource {
+			return &ownedKeyPairWatcher{paths: []string{certificate, privateKey}, reload: reload, get: get}
+		})
+		if err != nil {
+			return nil, err
+		}
+		return resource.(*ownedKeyPairWatcher).get, nil
+	}
+	// The non-owned daemon/server path retains upstream finalizer semantics.
+	gcFlag := new(os.File) // A small pointer-free allocation may never run a finalizer.
+	if watcher, err := fswatch.NewWatcher(fswatch.Options{Path: []string{certificate, privateKey}, Callback: func(string) { reload() }}); err == nil {
+		if err = watcher.Start(); err == nil {
+			runtime.SetFinalizer(gcFlag, func(f *os.File) { _ = watcher.Close() })
+		}
+	}
+	return func() (*tls.Certificate, error) {
+		defer runtime.KeepAlive(gcFlag)
+		return get()
 	}, nil
 }
 

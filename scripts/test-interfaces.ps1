@@ -21,7 +21,8 @@ $packages = @(
   'tunnel', 'hub/route', 'listener/sing_tun',
   'listener/sing_hysteria2', 'listener/hysteria2_realm', 'transport/anytls/session', 'transport/anytls/util', 'transport/tuic',
   'transport/shadowquic', 'transport/kcptun', 'transport/gun', 'transport/xhttp',
-  'transport/trusttunnel', 'transport/openvpn', 'component/resource',
+  'transport/trusttunnel', 'transport/openvpn', 'transport/vmess', 'transport/gost',
+  'transport/v2ray-plugin', 'transport/shadowtls', 'transport/tlsmirror', 'component/resource',
   'adapter/provider', 'rules/provider', 'component/updater', 'component/geodata'
 )
 $imports = @($packages | ForEach-Object { 'github.com/metacubex/mihomo/' + $_ })

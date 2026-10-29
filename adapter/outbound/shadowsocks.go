@@ -353,7 +353,6 @@ func NewShadowSocks(option ShadowSocksOption) (*ShadowSocks, error) {
 			v2rayOption.SkipCertVerify = opts.SkipCertVerify
 			v2rayOption.NameCertVerify = opts.NameCertVerify
 			v2rayOption.Fingerprint = opts.Fingerprint
-			v2rayOption.ResourcePolicy = option.ResourcePolicyForAPI
 			v2rayOption.ResourceOwner = option.ResourceOwner
 			v2rayOption.Certificate = opts.Certificate
 			v2rayOption.PrivateKey = opts.PrivateKey
@@ -386,7 +385,6 @@ func NewShadowSocks(option ShadowSocksOption) (*ShadowSocks, error) {
 			gostOption.SkipCertVerify = opts.SkipCertVerify
 			gostOption.NameCertVerify = opts.NameCertVerify
 			gostOption.Fingerprint = opts.Fingerprint
-			gostOption.ResourcePolicy = option.ResourcePolicyForAPI
 			gostOption.ResourceOwner = option.ResourceOwner
 			gostOption.Certificate = opts.Certificate
 			gostOption.PrivateKey = opts.PrivateKey
@@ -409,7 +407,6 @@ func NewShadowSocks(option ShadowSocksOption) (*ShadowSocks, error) {
 			Password:          opt.Password,
 			Host:              opt.Host,
 			Fingerprint:       opt.Fingerprint,
-			ResourcePolicy:    option.ResourcePolicyForAPI,
 			ResourceOwner:     option.ResourceOwner,
 			Certificate:       opt.Certificate,
 			PrivateKey:        opt.PrivateKey,

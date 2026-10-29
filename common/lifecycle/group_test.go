@@ -1,9 +1,53 @@
 package lifecycle_test
 
 import (
+	"errors"
 	"github.com/metacubex/mihomo/common/lifecycle"
 	"testing"
 )
+
+type failedResource struct {
+	err            error
+	starts, closes int
+}
+
+func (r *failedResource) Start() error { r.starts++; return r.err }
+func (r *failedResource) Close() error { r.closes++; return nil }
+
+func TestSharedResourceRetainsStartFailureAndCleanup(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		g := &lifecycle.Group{}
+		if active {
+			if err := g.Activate(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		failure := errors.New("partial resource start")
+		r := &failedResource{err: failure}
+		factory := func() lifecycle.Resource { return r }
+		_, err := g.GetOrAdd("key", factory)
+		if !active {
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = g.Activate()
+		}
+		if !errors.Is(err, failure) {
+			t.Fatalf("lost initial failure: %v", err)
+		}
+		for i := 0; i < 3; i++ {
+			if _, err = g.GetOrAdd("key", func() lifecycle.Resource { t.Fatal("retried failed resource implicitly"); return nil }); !errors.Is(err, failure) {
+				t.Fatalf("reuse hid failure: %v", err)
+			}
+		}
+		if err := g.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if r.starts != 1 || r.closes != 1 {
+			t.Fatalf("starts=%d closes=%d", r.starts, r.closes)
+		}
+	}
+}
 
 func TestDeferredProviderResourcesWaitForSuccessfulPublication(t *testing.T) {
 	root := &lifecycle.Group{}

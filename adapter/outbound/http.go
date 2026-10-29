@@ -160,7 +160,6 @@ func NewHttp(option HttpOption) (*Http, error) {
 			},
 			Fingerprint:    option.Fingerprint,
 			NameCertVerify: option.NameCertVerify,
-			ResourcePolicy: option.ResourcePolicyForAPI,
 			ResourceOwner:  option.ResourceOwner,
 			Certificate:    option.Certificate,
 			PrivateKey:     option.PrivateKey,

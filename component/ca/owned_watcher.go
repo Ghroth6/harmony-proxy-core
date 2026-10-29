@@ -7,6 +7,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/metacubex/fswatch"
+	"github.com/metacubex/tls"
 )
 
 // fswatch v0.1.1 does not expose its handle if adding a watch fails, and Close
@@ -15,6 +16,7 @@ import (
 type ownedKeyPairWatcher struct {
 	paths   []string
 	reload  func()
+	get     func() (*tls.Certificate, error)
 	watcher *fsnotify.Watcher
 	done    chan struct{}
 	once    sync.Once

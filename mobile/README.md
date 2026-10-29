@@ -493,6 +493,19 @@ use the pinned wireguard-go device. Device.Close joins WireGuard workers, while
 MIPS.Close initiates stack shutdown without joining every socket actor. This is
 not phone, external-server, AmneziaWG or a complete dependency-worker acceptance.
 
+TLS/WebSocket transports retain upstream handshakes, certificate checks and
+connection Close. GOST, v2ray-plugin, VMess TLS, ShadowTLS and TLSMirror carry
+only the certificate ResourceOwner; the obsolete TLS watcher admission callback
+has been removed. File key pairs share one watcher per resolved pair within a
+node's lifecycle.Group, including concurrent TLS configuration creation. Owners
+remain independent, start errors remain visible, and retirement joins the reload
+callback. The pinned fswatch API cannot close failed watch registration or join
+its deferred callbacks, so the existing owned fsnotify adapter remains necessary.
+Inline certificates and the ordinary daemon/server finalizer path retain
+upstream behavior. ShadowTLS/TLSMirror server handlers and VMess WebSocket
+framing are unchanged; explicit ownership of ordinary inbound certificate file
+watchers remains part of the outer-listener review, not a guarantee of this batch.
+
 Every Start independently validates `preparedPolicy` and builds fresh owned
 resources through `mobile/policy.Engine.BuildCandidate`. Static validation's
 M1b/V2 labels never select a runtime implementation. `executor.PublishMobilePolicy`

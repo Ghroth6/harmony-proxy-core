@@ -25,7 +25,6 @@ type ClientConfig struct {
 	Fingerprint        string
 	Certificate        string
 	ResourceOwner      *lifecycle.Group
-	ResourcePolicy     func(string) error
 	PrivateKey         string
 	ClientFingerprint  string
 	ForwardAddressHint string

@@ -62,7 +62,6 @@ type RelayOption struct {
 	NameCertVerify    string `proxy:"name-cert-verify,omitempty"`
 	Fingerprint       string `proxy:"fingerprint,omitempty"`
 	ResourceOwner     *lifecycle.Group
-	ResourcePolicy    func(string) error
 	Certificate       string `proxy:"certificate,omitempty"`
 	PrivateKey        string `proxy:"private-key,omitempty"`
 	ClientFingerprint string `proxy:"client-fingerprint,omitempty"`
@@ -181,7 +180,6 @@ func (d *relayDialer) dialRelayServer(ctx context.Context, fallbackAddress strin
 			SkipCertVerify:    d.option.SkipCertVerify,
 			NameCertVerify:    d.option.NameCertVerify,
 			FingerPrint:       d.option.Fingerprint,
-			ResourcePolicy:    d.option.ResourcePolicy,
 			ResourceOwner:     d.option.ResourceOwner,
 			Certificate:       d.option.Certificate,
 			PrivateKey:        d.option.PrivateKey,
