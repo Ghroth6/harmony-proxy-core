@@ -179,8 +179,6 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 	}
 	if len(alpn) == 1 && alpn[0] == "http/1.1" { // `alpn: [http/1.1]` means using http/1.1 mode
 		dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
-			ctx, release := forwarding.SharedDialContext(ctx)
-			defer release()
 			raw, err := dialRaw(ctx)
 			if err != nil {
 				return nil, err
@@ -214,8 +212,6 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 	protocols.SetUnencryptedHTTP2(true)
 	return &http.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			ctx, release := forwarding.SharedDialContext(ctx)
-			defer release()
 			raw, err := dialRaw(ctx)
 			if err != nil {
 				return nil, err

@@ -453,6 +453,18 @@ so an extra error join adds no propagation. Its pool reset does not expose all
 session close errors or a complete worker join. The service starts stream
 handlers independently, so its return is not proof all callbacks have exited.
 
+gRPC and XHTTP retain the upstream transport pools and Close paths. XHTTP's
+HTTP/1.1 and HTTP/2 dialers use the pinned HTTP library's cancellation-detached
+pool context directly; they need no extra SharedDialContext wrapper. gRPC's
+local construction timeout and HTTP/3's dial goroutine still cancel their
+contexts on return, so those two physical dial boundaries retain the wrapper
+for inner/platform connections that keep the construction context. Logical
+requests and streams retain upstream cancellation. Dedicated gRPC/XHTTP server
+handlers are unchanged from upstream; VLESS's XHTTP inbound wires TCP HTTP/1.1
+and HTTP/2, not an HTTP/3 UDP server. Host transport reuse/close tests and actual
+inbound round trips do not establish every outer listener's callback join or
+phone acceptance.
+
 Every Start independently validates `preparedPolicy` and builds fresh owned
 resources through `mobile/policy.Engine.BuildCandidate`. Static validation's
 M1b/V2 labels never select a runtime implementation. `executor.PublishMobilePolicy`
