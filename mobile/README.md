@@ -164,8 +164,9 @@ follow the actual prepared configuration. The current select/MATCH node base
 omits both settings, preserving Mihomo defaults `IPv6=true`, `DNS.Enable=false`.
 Client UDP ingress does not grant UDP support to a TCP-only physical node.
 `platformPolicy` has `revision`, `addressFamily`, `applicationIds`, and the optional
-`applicationScope` below. Legacy/include lists have 1..16 distinct valid bundle
-IDs, each <=128 bytes; explicit all has an empty list. The IPv4 `tunPolicy` uses
+`applicationScope` below. Legacy/include lists contain one or more distinct valid
+bundle IDs, each <=128 bytes; explicit all has an empty list. List capacity is
+enforced by the target VPN API, not by another application/core count limit. The IPv4 `tunPolicy` uses
 `{address:"10.111.0.1",prefixLength:30,route:"0.0.0.0",routePrefixLength:0,mtu:1500}`.
 Enabled IPv6 adds `fd00:111::1/126` and `::/0`
 and sets address family `dual`. Enabled DNS uses `10.111.0.2`, plus
@@ -784,7 +785,10 @@ fields, never arbitrary credentials or display names.
 `mobile/include/cb_policy.h` declares original-policy ABI 2; context schema and
 planner remain 1. `PlatformPolicy.applicationScope` is optional only for legacy
 include values. Explicit `all` requires `applicationIds:[]`; explicit `include`
-and legacy absence require 1..16 distinct valid bundle IDs. Unknown/null/empty
+and legacy absence require a nonempty list of distinct valid bundle IDs. The core
+does not duplicate OS-version-specific list capacities; the application passes
+the complete list to the target VPN API and reports actual creation errors.
+Unknown/null/empty
 scope, missing/null list, empty legacy/include and conflicting all reject.
 `Engine` preparation and runtime admission independently enforce this. Sealing
 alone computes identities and is not policy admission. Canonical encoding omits

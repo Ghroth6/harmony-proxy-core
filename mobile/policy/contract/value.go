@@ -93,7 +93,7 @@ func (value PlatformPolicy) ValidApplicationScope() bool {
 			return false
 		}
 	}
-	if len(value.ApplicationIDs) < 1 || len(value.ApplicationIDs) > 16 {
+	if len(value.ApplicationIDs) < 1 {
 		return false
 	}
 	seen := map[string]bool{}
