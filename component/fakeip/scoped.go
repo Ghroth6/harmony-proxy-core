@@ -279,6 +279,7 @@ func (s *scopedStore) lookup(pool *Pool, host string) (netip.Addr, error) {
 			var err error
 			result, err = netip.ParseAddr(string(value))
 			if err != nil || !pool.ipnet.Contains(result) || result.Less(pool.first) || !result.Less(pool.last) || !bytes.Equal(addresses.Get(value), hostKey) {
+			result = netip.Addr{}
 				return ErrStateFailed
 			}
 			return nil

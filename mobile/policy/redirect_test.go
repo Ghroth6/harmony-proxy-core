@@ -87,14 +87,14 @@ func awaitPublicPeriodicAttempt(t *testing.T, engine *policy.Engine, cfg *config
 }
 
 func TestOriginalResourceRedirectKeepsUpstreamSameHostHeadersAndCountsEachGET(t *testing.T) {
-	var requests, leaks atomic.Int32
+	var requests, headerMismatches atomic.Int32
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if r.Method != "GET" {
 			t.Error("resource redirect changed the actual method")
 		}
 		if r.Header.Get("X-Private-Fixture") != "documentation-only" || r.Header.Get("Authorization") != "documentation-only" || r.Header.Get("Cookie") != "documentation-only" {
-			leaks.Add(1)
+			headerMismatches.Add(1)
 		}
 		if r.URL.Path == "/cross" {
 			http.Redirect(w, r, "/complete", http.StatusFound)
@@ -117,7 +117,7 @@ func TestOriginalResourceRedirectKeepsUpstreamSameHostHeadersAndCountsEachGET(t 
 		t.Fatal("preparation or publication acquired a redirect source")
 	}
 	observed := awaitPublicPeriodicAttempt(t, engine, cfg, ctx, generation)
-	if leaks.Load() != 0 {
+	if headerMismatches.Load() != 0 {
 		t.Fatal("same-host redirect must retain upstream header behavior even across ports")
 	}
 	if requests.Load() != 3 || observed.ResourceAcquireCount != strconv.FormatUint(baseline+3, 10) {

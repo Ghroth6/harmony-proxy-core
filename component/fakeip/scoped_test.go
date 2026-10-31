@@ -52,6 +52,11 @@ func TestScopedLegacyDatabaseAbove64MiBReopensWithoutChangingMappings(t *testing
 		if err = bucket.Bucket([]byte("addresses")).Put([]byte("198.18.0.4"), []byte("\x00legacy.example")); err != nil {
 			return err
 		}
+		for host, address := range map[string]string{"outside.example": "203.0.113.7", "reserved.example": "198.18.0.1", "inconsistent.example": "198.18.0.6"} {
+			if err = bucket.Bucket([]byte("hosts")).Put(append([]byte{0}, host...), []byte(address)); err != nil {
+				return err
+			}
+		}
 		return bucket.Bucket([]byte("state")).Put([]byte("offset"), []byte("198.18.0.4"))
 	})
 	if err != nil {
@@ -84,6 +89,16 @@ func TestScopedLegacyDatabaseAbove64MiBReopensWithoutChangingMappings(t *testing
 	}
 	if address := pool.Lookup("next.example"); address.String() != "198.18.0.5" {
 		t.Fatal(address)
+	}
+	for _, item := range []struct{ host, want string }{
+		{"outside.example", "198.18.0.6"},
+		{"reserved.example", "198.18.0.7"},
+		{"inconsistent.example", "198.18.0.8"},
+	} {
+		address, err := pool.LookupWithError(item.host)
+		if err != nil || address.String() != item.want {
+			t.Fatal("a rejected cached value must not escape as a successful DNS answer", item.host, address, err)
+		}
 	}
 	if err = state.Close(); err != nil {
 		t.Fatal(err)

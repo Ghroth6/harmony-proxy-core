@@ -107,8 +107,8 @@ func TestClientPersistentFakeIPActualFreshProcessesAndUnknownOpenCleanup(t *test
 	started := manager.Start(manager.Consume(generation, 1, 9), input, request)
 	if mode == "blocked" {
 		stopped := manager.Stop(generation)
-		if started.Outcome != "failed" || started.FailureCode != "POLICY_FAKEIP_STATE_FAILED" || stopped.Cleanup != "unknown" || stopped.Outcome != "failed" {
-			t.Fatalf("actual state failure must fail the runtime and retain unknown cleanup: %+v", stopped)
+		if started.Outcome != "running" || !started.ForwardingActive || stopped.Cleanup != "unknown" || stopped.Outcome != "failed" {
+			t.Fatalf("cache open failure must allow runtime admission while actual unknown cleanup remains reported: start=%+v stop=%+v", started, stopped)
 		}
 		unknown := false
 		for _, resource := range stopped.Resources {
