@@ -23,7 +23,8 @@ int32_t cb_runtime_contract_version_v1(void);
  * Every request carries the strict preparedPolicy value with
  * four independently verified identities. Its immutable manifest remains
  * separate from later actual resource acquisition/adoption observations.
- * Limits: input 1048576, request UTF-8 1048576, output 1048576 bytes.
+ * Input/request byte lengths must fit signed C.int (INT32_MAX).
+ * Observation output retains its separate 1048576-byte budget.
  * No fd is acquired by query/stop. transfer_id=0 queries the run; positive IDs
  * query that EXACT entered handoff. Missing handoffs return unknown, never an
  * older clean run. Duplicate IDs/capacity faults remain ownership faults.

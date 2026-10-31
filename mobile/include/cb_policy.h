@@ -6,8 +6,8 @@ extern "C" {
 #endif
 /* Original policy ABI 2, prepared context schema/planner remain 1.
  * Explicit applicationScope all/include; absent means valid legacy include.
- * Raw/control <=1048576, result<=8388608;
- * resources<=128, groups<=512, members<=4096 each/32768 total.
+ * Raw/control/result byte lengths must fit signed C.int (INT32_MAX).
+ * No extra resource-count/aggregate-byte, group or member admission quotas.
  * storage_root is a trusted native Context path (<=4096 UTF-8), never an RPC
  * root. It binds once and is idempotent only for that same canonical path.
  * Prepare/Plan/Validate open fixed immutable files; they never acquire HTTP.
