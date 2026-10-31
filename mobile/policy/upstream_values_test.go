@@ -152,14 +152,14 @@ func TestExistingFileResourceIdentitySurvivesOfficialDecoding(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer engine.Close()
-	input := []byte("ipv6: false\ndns: {enable: false}\nrule-providers:\n local: {type: file, behavior: domain, path: './rules.yaml', header: null, size-limit: 1}\nrules: ['RULE-SET,local,DIRECT']\n")
+	input := []byte("ipv6: false\ndns: {enable: false}\nrule-providers:\n local: {type: file, behavior: domain, path: './rules.yaml', header: null, size-limit: 1024}\nrules: ['RULE-SET,local,DIRECT']\n")
 	plan := engine.Plan("existing-source", input, nil)
 	if plan.Category != "planned" || len(plan.Requirements) != 1 {
 		t.Fatalf("plan: %+v", plan)
 	}
 	// Frozen pre-change source description: header:null and the explicit file
 	// size-limit were already part of the persisted resource's identity.
-	oldSource := contract.Digest([]byte(`{"downloadProxy":"","format":"yaml","intervalSeconds":0,"kind":"rule-provider","maxBytes":1,"originalPath":"./rules.yaml","sourceHeadersJson":"null","sourceKind":"file","sourceUri":""}`))
+	oldSource := contract.Digest([]byte(`{"downloadProxy":"","format":"yaml","intervalSeconds":0,"kind":"rule-provider","maxBytes":1024,"originalPath":"./rules.yaml","sourceHeadersJson":"null","sourceKind":"file","sourceUri":""}`))
 	if plan.Requirements[0].SourceDigest != oldSource || plan.Requirements[0].MaxBytes != contract.MaxResourceBytes {
 		t.Fatal("source identity changed or a file acquired an HTTP quota")
 	}

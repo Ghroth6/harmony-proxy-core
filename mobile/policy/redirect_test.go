@@ -141,7 +141,7 @@ func TestOriginalResourceRedirectLimitAndPartialResponseRetainActualOldStrategy(
 		{"six-hops", 6, 200, true, 7, false},
 		{"nine-hops", 9, 200, true, 10, false},
 		{"tenth-hop-denied-by-upstream", 10, 200, false, 10, false},
-		{"partial-206-denied", 0, 206, false, 1, false},
+		{"complete-206-follows-upstream", 0, 206, true, 1, false},
 		{"truncated-200-denied", 0, 200, false, 1, true},
 	} {
 		t.Run(sample.name, func(t *testing.T) {
