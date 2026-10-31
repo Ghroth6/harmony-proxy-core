@@ -9,11 +9,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/metacubex/mihomo/common/utils"
 	mihomoHTTP "github.com/metacubex/mihomo/component/http"
 	"github.com/metacubex/mihomo/component/platformnetwork"
+	"github.com/metacubex/mihomo/component/resource"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 )
@@ -47,7 +47,7 @@ func (v *preparedVehicle) Read(root context.Context, oldHash utils.HashType) ([]
 	if !available || !observed.Online || observed.Generation != v.session.networkGeneration {
 		return nil, utils.HashType{}, errors.New("POLICY_RESOURCE_NETWORK_CHANGED")
 	}
-	ctx, cancel := context.WithTimeout(root, 20*time.Second)
+	ctx, cancel := context.WithTimeout(root, resource.DefaultHttpTimeout)
 	defer cancel()
 	var headers map[string][]string
 	if v.requirement.SourceHeadersJSON != "" && json.Unmarshal([]byte(v.requirement.SourceHeadersJSON), &headers) != nil {
@@ -69,7 +69,7 @@ func (v *preparedVehicle) Read(root context.Context, oldHash utils.HashType) ([]
 		}
 		return nil, utils.HashType{}, errors.New("POLICY_RESOURCE_HTTP_FAILED")
 	}
-	if response.StatusCode != 200 {
+	if response.StatusCode < 200 || response.StatusCode > 299 {
 		closeErr := response.Body.Close()
 		v.session.RetainWorkerCloseFailure(response.Body, closeErr)
 		return nil, utils.HashType{}, errors.New("POLICY_RESOURCE_HTTP_STATUS")

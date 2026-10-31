@@ -31,6 +31,7 @@ func TestOriginalProviderActivationWaitsFullIntervalSavesAndAdoptsActualBytes(t 
 			t.Error("original resource headers were lost")
 		}
 		if requests.Load() == 1 {
+			w.WriteHeader(http.StatusCreated)
 			fmt.Fprint(w, "payload:\n - DOMAIN-SUFFIX,updated.example\n - DOMAIN-SUFFIX\n")
 		} else if requests.Load() == 2 {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -50,7 +51,7 @@ func TestOriginalProviderActivationWaitsFullIntervalSavesAndAdoptsActualBytes(t 
 		t.Fatal(err)
 	}
 	count := func(delta uint64) string { return strconv.FormatUint(baseline+delta, 10) }
-	input := []byte(strings.ReplaceAll(strings.ReplaceAll(providerPolicy, "https://resources.example/rules.yaml", server.URL), "interval: 86400", "interval: 1, proxy: DIRECT, header: {X-Public-Fixture: [documentation]}"))
+	input := []byte(strings.ReplaceAll(strings.ReplaceAll(providerPolicy, "https://resources.example/rules.yaml", server.URL), "interval: 86400", `interval: "1", size-limit: "1048576", proxy: DIRECT, header: {X-Public-Fixture: [documentation]}`))
 	plan := engine.Plan("periodic-plan", input, nil)
 	resource := savePublicResource(t, root, plan.Requirements[0], []byte("payload:\n - DOMAIN-SUFFIX,documentation.example\n"))
 	platform := publicPlatform()

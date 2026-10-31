@@ -8,8 +8,9 @@ extern "C" {
  * Explicit applicationScope all/include; absent means valid legacy include.
  * Raw/control/result byte lengths must fit signed C.int (INT32_MAX).
  * No extra resource-count/aggregate-byte, group or member admission quotas.
- * storage_root is a trusted native Context path (<=4096 UTF-8), never an RPC
- * root. It binds once and is idempotent only for that same canonical path.
+ * storage_root is a trusted native Context path, never an RPC root; its length
+ * must fit C.int, and the filesystem decides path support. It binds once and
+ * is idempotent only for that same canonical path.
  * Prepare/Plan/Validate open fixed immutable files; they never acquire HTTP.
  * Empty raw is a typed invalid receipt with its actual digest. Other borrowed
  * inputs are copied. Output pointers are initialized NULL/0 on every path.

@@ -97,10 +97,10 @@ func TestRuntimeReadableProjectionBoundsDoNotInventLabelsOrEgress(t *testing.T) 
 	}{
 		{"例子.test", C.Chain{"节点 🧭 \"引用\"\\路径\n第二行", "选择组"}, C.Shadowsocks, "available", "shadowsocks"},
 		{"", C.Chain{"DIRECT"}, C.AdapterType(10000), "available", "unknown"},
-		{strings.Repeat("界", 342), C.Chain{"leaf", "group"}, C.Direct, "limited", "unknown"},
-		{"", C.Chain{strings.Repeat("界", 86), "group"}, C.Direct, "limited", "unknown"},
+		{strings.Repeat("界", 342), C.Chain{"leaf", "group"}, C.Direct, "available", "direct"},
+		{"", C.Chain{strings.Repeat("界", 86), "group"}, C.Direct, "available", "direct"},
 		{"", C.Chain{"\xff", "group"}, C.Direct, "limited", "unknown"},
-		{"", C.Chain{"a", "b", "c", "d", "e", "f", "g", "h", "i"}, C.Direct, "limited", "unknown"},
+		{"", C.Chain{"a", "b", "c", "d", "e", "f", "g", "h", "i"}, C.Direct, "available", "direct"},
 	} {
 		tracker := statistic.NewTCPTracker(&readableSocket{chain: test.chain, kind: test.kind}, statistic.DefaultManager, &C.Metadata{Type: C.TUN, NetWork: C.TCP, ForwardingGeneration: generation, RequestContext: root, Host: test.host, DstPort: 443}, nil, 11, 22, false)
 		receipt := manager.Query(generation, 1)

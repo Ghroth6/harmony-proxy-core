@@ -37,9 +37,9 @@ func readableConnection(info *statistic.TrackerInfo, kind C.AdapterType) Connect
 		C.EasyTier, C.GostRelay:
 		value.OutboundType = strings.ToLower(kind.String())
 	}
-	valid := utf8.ValidString(value.Host) && len(value.Host) <= 1024 && utf8.ValidString(value.RulePayload) && len(value.RulePayload) <= 1024 && len(value.Chain) <= 8
+	valid := utf8.ValidString(value.Host) && utf8.ValidString(value.RulePayload)
 	for _, label := range value.Chain {
-		valid = valid && utf8.ValidString(label) && len(label) <= 256
+		valid = valid && utf8.ValidString(label)
 	}
 	if !valid {
 		return ConnectionReadable{SchemaVersion: 1, State: "limited", Chain: []string{}, OutboundType: "unknown"}

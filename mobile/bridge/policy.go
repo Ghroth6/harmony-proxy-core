@@ -36,7 +36,7 @@ func cb_policy_storage_root_v1(root *C.uint8_t, rootSize C.uint32_t) (status C.i
 			status = 2
 		}
 	}()
-	if root == nil || rootSize == 0 || rootSize > 4096 {
+	if root == nil || rootSize == 0 || rootSize > contract.MaxControlBytes {
 		return 1
 	}
 	value := string(C.GoBytes(unsafe.Pointer(root), C.int(rootSize)))

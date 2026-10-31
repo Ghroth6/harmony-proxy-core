@@ -62,9 +62,9 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 	if groupOption.Type == "" || groupOption.Name == "" {
 		return nil, errFormat
 	}
-	// These values become real ticker/deadline durations. Reject overflow or
-	// negative values before converting them to unsigned integers.
-	if groupOption.Interval < 0 || int64(groupOption.Interval) > int64((1<<63-1)/time.Second) || groupOption.TestTimeout < 0 || int64(groupOption.TestTimeout) > int64((1<<63-1)/time.Millisecond) || groupOption.MaxFailedTimes < 0 {
+	// A nonpositive ticker duration panics in the health-check worker. Keep
+	// this timer guard; timeout and failure thresholds retain upstream semantics.
+	if groupOption.Interval < 0 || int64(groupOption.Interval) > int64((1<<63-1)/time.Second) {
 		return nil, errFormat
 	}
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sort"
-	"time"
 
 	"github.com/metacubex/mihomo/component/fakeip"
 	"github.com/metacubex/mihomo/config"
@@ -44,19 +43,23 @@ func (e *Engine) prepareProviders(raw *config.RawConfig, prepared contract.Prepa
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		mapping := raw.RuleProvider[name]
-		behaviorName, _ := mapping["behavior"].(string)
-		formatName, _ := mapping["format"].(string)
-		if formatName == "" {
-			formatName = "yaml"
+		schema, err := RP.DecodeRuleProviderSchema(raw.RuleProvider[name])
+		if err != nil {
+			return inputs, err
 		}
-		behavior, _ := P.ParseBehavior(behaviorName)
-		format, _ := P.ParseRuleFormat(formatName)
+		behavior, err := P.ParseBehavior(schema.Behavior)
+		if err != nil {
+			return inputs, err
+		}
+		format, err := P.ParseRuleFormat(schema.Format)
+		if err != nil {
+			return inputs, err
+		}
 		decode := func(input []byte) ([]string, error) {
 			return RP.RuleSetPayload(input, behavior, format, inputs.ParseRule)
 		}
-		if mapping["type"] == "inline" {
-			data, err := yaml.Marshal(map[string]any{"payload": mapping["payload"]})
+		if schema.Type == "inline" {
+			data, err := yaml.Marshal(map[string]any{"payload": schema.Payload})
 			if err != nil {
 				return inputs, errors.New("POLICY_RESOURCE_PAYLOAD_INVALID")
 			}
@@ -72,20 +75,17 @@ func (e *Engine) prepareProviders(raw *config.RawConfig, prepared contract.Prepa
 		if !present {
 			return inputs, errors.New("POLICY_RESOURCES_MISSING")
 		}
-		interval, _ := mapping["interval"].(int)
-		uri, _ := mapping["url"].(string)
-		proxy, _ := mapping["proxy"].(string)
 		var requirement contract.Requirement
 		for _, item := range requirements {
 			if item.RefID == ref {
 				requirement = item
 			}
 		}
-		vehicle := &preparedVehicle{resource: resource.value, uri: uri, proxy: proxy, kind: P.HTTP, session: session, requirement: requirement, decode: decode}
-		if mapping["type"] == "file" {
+		vehicle := &preparedVehicle{resource: resource.value, uri: schema.URL, proxy: schema.Proxy, kind: P.HTTP, session: session, requirement: requirement, decode: decode}
+		if schema.Type == "file" {
 			vehicle.kind = P.File
 		}
-		provider, err := RP.NewPreparedRuleSetProvider(name, behavior, format, time.Duration(interval)*time.Second, vehicle, resource.bytes, inputs.ParseRule)
+		provider, err := RP.NewPreparedRuleSetProvider(name, behavior, format, schema.IntervalDuration(), vehicle, resource.bytes, inputs.ParseRule)
 		if provider != nil {
 			inputs.RuleProviders[name] = provider
 		}

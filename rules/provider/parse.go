@@ -11,7 +11,9 @@ import (
 	"github.com/metacubex/mihomo/rules/common"
 )
 
-type ruleProviderSchema struct {
+// RuleProviderSchema is shared with preparation, which must decode the same
+// fields without constructing a vehicle or starting resource acquisition.
+type RuleProviderSchema struct {
 	Type         string              `provider:"type"`
 	Behavior     string              `provider:"behavior"`
 	Path         string              `provider:"path,omitempty"`
@@ -25,10 +27,22 @@ type ruleProviderSchema struct {
 	PathInBundle string              `provider:"path-in-bundle,omitempty"`
 }
 
-func ParseRuleProvider(name string, mapping map[string]any, parse common.ParseRuleFunc, makeBundleFile func(pathInBundle string) resource.BundleFile) (P.RuleProvider, error) {
-	schema := &ruleProviderSchema{}
+func DecodeRuleProviderSchema(mapping map[string]any) (*RuleProviderSchema, error) {
+	schema := &RuleProviderSchema{}
 	decoder := structure.NewDecoder(structure.Option{TagName: "provider", WeaklyTypedInput: true})
 	if err := decoder.Decode(mapping, schema); err != nil {
+		return nil, err
+	}
+	return schema, nil
+}
+
+func (s *RuleProviderSchema) IntervalDuration() time.Duration {
+	return time.Duration(uint(s.Interval)) * time.Second
+}
+
+func ParseRuleProvider(name string, mapping map[string]any, parse common.ParseRuleFunc, makeBundleFile func(pathInBundle string) resource.BundleFile) (P.RuleProvider, error) {
+	schema, err := DecodeRuleProviderSchema(mapping)
+	if err != nil {
 		return nil, err
 	}
 	behavior, err := P.ParseBehavior(schema.Behavior)
@@ -63,7 +77,7 @@ func ParseRuleProvider(name string, mapping map[string]any, parse common.ParseRu
 		return nil, fmt.Errorf("unsupported vehicle type: %s", schema.Type)
 	}
 
-	interval := time.Duration(uint(schema.Interval)) * time.Second
+	interval := schema.IntervalDuration()
 
 	return NewRuleSetProvider(name, behavior, format, interval, vehicle, schema.Payload, makeBundleFile(schema.PathInBundle), parse), nil
 }

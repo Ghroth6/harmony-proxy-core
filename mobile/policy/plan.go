@@ -16,8 +16,10 @@ import (
 	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/mobile/validation"
+	RP "github.com/metacubex/mihomo/rules/provider"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -95,9 +97,14 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 	}
 	providerRules := []string{}
 	for name, mapping := range raw.RuleProvider {
-		behavior, _ := mapping["behavior"].(string)
-		if mapping["type"] == "inline" {
-			encoded, err := yaml.Marshal(map[string]any{"payload": mapping["payload"]})
+		schema, err := RP.DecodeRuleProviderSchema(mapping)
+		if err != nil {
+			receipt.Category, receipt.Code = "invalid", "POLICY_RESOURCE_INVALID"
+			return
+		}
+		behavior := schema.Behavior
+		if schema.Type == "inline" {
+			encoded, err := yaml.Marshal(map[string]any{"payload": schema.Payload})
 			if err != nil {
 				receipt.Category = "invalid"
 				receipt.Code = "POLICY_RESOURCE_PAYLOAD_INVALID"
@@ -275,9 +282,9 @@ func (e *Engine) planGroups(raw *config.RawConfig, inputDigest string, resolvedM
 			return nil, "POLICY_GROUP_INVALID"
 		}
 		members := group.GetProxies(false)
-		item := contract.Group{GroupRef: digest([]byte(inputDigest + ":group:" + strconv.Itoa(position+1))), Position: position + 1, DisplayName: safeName(name), Type: kind, Members: []contract.Member{}}
+		item := contract.Group{GroupRef: digest([]byte(inputDigest + ":group:" + strconv.Itoa(position+1))), Position: position + 1, DisplayName: name, Type: kind, Members: []contract.Member{}}
 		for index, member := range members {
-			item.Members = append(item.Members, contract.Member{MemberRef: digest([]byte(inputDigest + ":group:" + strconv.Itoa(position+1) + ":member:" + strconv.Itoa(index+1))), Position: index + 1, DisplayName: safeName(member.Name()), Kind: names[member.Name()]})
+			item.Members = append(item.Members, contract.Member{MemberRef: digest([]byte(inputDigest + ":group:" + strconv.Itoa(position+1) + ":member:" + strconv.Itoa(index+1))), Position: index + 1, DisplayName: member.Name(), Kind: names[member.Name()]})
 			if resolvedMembers != nil {
 				resolvedMembers[item.GroupRef] = append(resolvedMembers[item.GroupRef], member.Name())
 			}
@@ -285,17 +292,6 @@ func (e *Engine) planGroups(raw *config.RawConfig, inputDigest string, resolvedM
 		result = append(result, item)
 	}
 	return result, ""
-}
-func safeName(name string) string {
-	if len(name) > 512 {
-		return ""
-	}
-	return strings.Map(func(r rune) rune {
-		if r < 32 || r == 127 {
-			return -1
-		}
-		return r
-	}, name)
 }
 
 func allSubRules(raw *config.RawConfig) []string {
@@ -319,17 +315,18 @@ func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules .
 	}
 	sort.Strings(logicalNames)
 	for _, name := range logicalNames {
-		value := raw.RuleProvider[name]
-		kind, _ := value["type"].(string)
-		behavior, _ := value["behavior"].(string)
-		format, _ := value["format"].(string)
+		schema, err := RP.DecodeRuleProviderSchema(raw.RuleProvider[name])
+		if err != nil {
+			return nil, "POLICY_RESOURCE_INVALID"
+		}
+		kind, behavior, format := schema.Type, schema.Behavior, schema.Format
 		if format == "" {
 			format = "yaml"
 		}
-		if behavior != "classical" && behavior != "domain" && behavior != "ipcidr" {
+		if _, err := P.ParseBehavior(behavior); err != nil {
 			return nil, "POLICY_RESOURCE_BEHAVIOR_UNSUPPORTED"
 		}
-		if format != "yaml" && format != "text" && format != "mrs" || format == "mrs" && behavior == "classical" {
+		if _, err := P.ParseRuleFormat(format); err != nil {
 			return nil, "POLICY_RESOURCE_FORMAT_UNSUPPORTED"
 		}
 		if kind == "inline" {
@@ -338,9 +335,7 @@ func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules .
 		if kind != "http" && kind != "file" {
 			return nil, "POLICY_RESOURCE_SOURCE_UNSUPPORTED"
 		}
-		uri, _ := value["url"].(string)
-		path, _ := value["path"].(string)
-		proxy, _ := value["proxy"].(string)
+		uri, path, proxy := schema.URL, schema.Path, schema.Proxy
 		if kind == "http" {
 			u, err := url.Parse(uri)
 			if err != nil || u.Host == "" || u.Scheme != "http" && u.Scheme != "https" {
@@ -349,31 +344,18 @@ func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules .
 		} else if path == "" {
 			return nil, "POLICY_RESOURCE_SOURCE_INVALID"
 		}
-		interval := int64(0)
-		if item, present := value["interval"]; present {
-			number, ok := item.(int)
-			if !ok || number < 0 {
-				return nil, "POLICY_RESOURCE_INTERVAL_INVALID"
-			}
-			interval = int64(number)
-		}
+		interval := int64(schema.Interval)
 		headers := ""
-		if value, ok := value["header"]; ok {
-			encoded, err := canonical(value)
+		if schema.Header != nil {
+			encoded, err := canonical(schema.Header)
 			if err != nil {
 				return nil, "POLICY_RESOURCE_HEADERS_INVALID"
 			}
 			headers = string(encoded)
 		}
 		maxBytes := int64(contract.MaxResourceBytes)
-		if limit, present := value["size-limit"]; present {
-			number, ok := limit.(int)
-			if !ok || number < 0 {
-				return nil, "POLICY_RESOURCE_BOUNDS"
-			}
-			if number > 0 && int64(number) < maxBytes {
-				maxBytes = int64(number)
-			}
+		if kind == "http" && schema.SizeLimit > 0 && schema.SizeLimit < maxBytes {
+			maxBytes = schema.SizeLimit
 		}
 		add("rule-provider", format, name, kind, uri, headers, path, proxy, interval, maxBytes)
 	}
@@ -403,12 +385,12 @@ func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules .
 		}
 	}
 	for _, provider := range raw.RuleProvider {
-		if payload, ok := provider["payload"].([]any); ok {
-			for _, entry := range payload {
-				if text, ok := entry.(string); ok {
-					scanRule(text)
-				}
-			}
+		schema, err := RP.DecodeRuleProviderSchema(provider)
+		if err != nil {
+			return nil, "POLICY_RESOURCE_INVALID"
+		}
+		for _, entry := range schema.Payload {
+			scanRule(entry)
 		}
 	}
 	for _, value := range append(append([]string{}, raw.Sniffer.ForceDomain...), raw.Sniffer.SkipDomain...) {

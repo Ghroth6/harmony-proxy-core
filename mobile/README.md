@@ -26,6 +26,9 @@ candidate. Policy validation also reuses its verified plan's adaptations, so a
 second construction or cleanup cannot be hidden after a successful result.
 
 Original policy Plan and Build share the upstream proxy/group graph constructor.
+Rule-provider preparation and activation share the official field decoder,
+including numeric strings and typed headers. Group/member names are returned
+unchanged; display escaping belongs to the application.
 Load-balance, include-all and include-all-proxies use actual upstream members,
 filtering and order. Group preferences bind effective member positions of that
 graph; construction dependencies do not rewrite original group positions.
@@ -258,7 +261,8 @@ Runtime 5 adds a separately versioned `readable` local display projection from
 TrackerInfo/Metadata and the connection's frozen EgressType. It copies RuleHost,
 actual rule payload and ordered chain labels; its first label is the actual leaf
 label, not a physical peer. Unknown/control/group egress stays unknown. Invalid
-Unicode or projection limits produce an empty `limited` value; no label is
+Unicode produces an empty `limited` value; no per-field length or chain-count
+quota is applied. Whole-reply exclusions are reported separately. No label is
 partially truncated or promoted within the chain. Existing technical fields,
 original/resolved targets and attribution digests remain independent. The exact
 shared schema and pairing rules live only in the application repository's
