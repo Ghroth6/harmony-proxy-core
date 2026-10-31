@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -62,6 +61,11 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 	receipt.GeneralIPv6, receipt.DNSEnabled, receipt.DNSIPv6 = raw.IPv6, raw.DNS.Enable, raw.DNS.IPv6
 	receipt.StoreSelected, receipt.StoreFakeIP = raw.Profile.StoreSelected, raw.Profile.StoreFakeIP
 	for _, provider := range raw.ProxyProvider {
+		if provider["type"] == "http" {
+			receipt.RuntimeDownloads = true
+		}
+	}
+	for _, provider := range raw.RuleProvider {
 		if provider["type"] == "http" {
 			receipt.RuntimeDownloads = true
 		}
@@ -156,7 +160,9 @@ func (e *Engine) plan(operationID string, input []byte, available []PreparedReso
 		known[requirement.RefID] = true
 		resource, present := fixed[requirement.RefID]
 		if !present {
-			receipt.ResourcesComplete = false
+			if requirement.Kind != "rule-provider" {
+				receipt.ResourcesComplete = false
+			}
 			continue
 		}
 		if code = matchResource(requirement, resource); code != "" {
@@ -341,14 +347,6 @@ func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules .
 			return nil, "POLICY_RESOURCE_SOURCE_UNSUPPORTED"
 		}
 		uri, path, proxy := schema.URL, schema.Path, schema.Proxy
-		if kind == "http" {
-			u, err := url.Parse(uri)
-			if err != nil || u.Host == "" || u.Scheme != "http" && u.Scheme != "https" {
-				return nil, "POLICY_RESOURCE_SOURCE_INVALID"
-			}
-		} else if path == "" {
-			return nil, "POLICY_RESOURCE_SOURCE_INVALID"
-		}
 		interval := int64(schema.Interval)
 		headers, identityHeaders := "", ""
 		if original, present := raw.RuleProvider[name]["header"]; present {
@@ -375,7 +373,10 @@ func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules .
 	flags := map[string]bool{}
 	scanRule := func(text string) {
 		upper := strings.ToUpper(text)
-		if regexp.MustCompile(`(?:^|\()(?:SRC-)?GEOIP,`).MatchString(upper) {
+		for _, match := range regexp.MustCompile(`(?:^|\()(?:SRC-)?GEOIP,([^,()]*)`).FindAllStringSubmatch(upper, -1) {
+			if strings.TrimSpace(match[1]) == "LAN" {
+				continue
+			}
 			if raw.GeodataMode {
 				flags["geoip"] = true
 			} else {
@@ -412,7 +413,7 @@ func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules .
 		}
 	}
 	for _, value := range append(append([]string{}, raw.Sniffer.SkipSrcAddress...), raw.Sniffer.SkipDstAddress...) {
-		if strings.HasPrefix(strings.ToLower(value), "geoip:") {
+		if strings.HasPrefix(strings.ToLower(value), "geoip:") && !strings.EqualFold(strings.TrimPrefix(strings.ToLower(value), "geoip:"), "lan") {
 			if raw.GeodataMode {
 				flags["geoip"] = true
 			} else {

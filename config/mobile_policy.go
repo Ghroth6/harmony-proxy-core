@@ -162,6 +162,18 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 	if err != nil {
 		return cfg, &MobileValidationError{Code: "POLICY_GENERAL_INVALID"}
 	}
+	cfg.Experimental, err = parseExperimental(raw)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.TLS, err = parseTLS(raw)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.NTP, err = parseNTP(raw)
+	if err != nil {
+		return cfg, err
+	}
 	cfg.Profile = &Profile{StoreSelected: raw.Profile.StoreSelected, StoreFakeIP: raw.Profile.StoreFakeIP, Tracing: raw.Profile.Tracing}
 	cfg.Sniffer, err = parseSniffer(raw.Sniffer, cfg.RuleProviders, parse)
 	if err != nil {
@@ -190,6 +202,11 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 		return cfg, &MobileValidationError{Code: "POLICY_RULE_INVALID"}
 	}
 	if raw.DNS.Enable {
+		// Reuse upstream normalization for explicitly disabled IPv6. Enabled
+		// mobile IPv6 is supplied by the platform, not a host-interface probe.
+		if !raw.IPv6 {
+			parseIPV6(raw)
+		}
 		cfg.DNS, err = parseDNS(raw, cfg.RuleProviders, cfg.mobilePolicyResources)
 		if err != nil {
 			return cfg, &MobileValidationError{Code: "POLICY_DNS_INVALID"}
@@ -203,6 +220,7 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 	// The shared fence remains closed throughout construction.
 	bootstrap, _ := cfg.MobileNodeResolvers()
 	fence.options = mobilePolicyDialerOptions(raw.IPv6, bootstrap)
+	cfg.prepareMobileNTP()
 	return cfg, nil
 }
 
@@ -222,17 +240,23 @@ func (c *Config) ActivateMobilePolicyResources(root context.Context) error {
 	if err := c.CheckCandidate(); err != nil {
 		return err
 	}
-	if c.mobilePolicyResources == nil || c.mobilePolicyResources.Services == nil {
-		return nil
-	}
 	scope, err := forwarding.Context(c.mobileNetwork.generation.Load())
 	if err != nil {
 		return err
 	}
-	return c.mobilePolicyResources.Services.ActivateScheduled(forwarding.Bind(root, scope))
+	root = forwarding.Bind(root, scope)
+	if c.mobilePolicyResources != nil && c.mobilePolicyResources.Services != nil {
+		if err := c.mobilePolicyResources.Services.ActivateScheduled(root); err != nil {
+			return err
+		}
+	}
+	return c.activateMobileNTP(root)
 }
 
 func (c *Config) CancelMobilePolicyServices() {
+	if c != nil && c.mobileNTP != nil {
+		c.mobileNTP.Cancel()
+	}
 	if c != nil && c.mobilePolicy != nil {
 		for _, provider := range c.Providers {
 			if owner, ok := provider.(interface{ Cancel() }); ok {
@@ -249,6 +273,11 @@ func (c *Config) CancelMobilePolicyServices() {
 }
 func (c *Config) WaitMobilePolicyServices(ctx context.Context) error {
 	var errs []error
+	if c != nil && c.mobileNTP != nil {
+		if err := c.mobileNTP.Wait(ctx); err != nil {
+			return err
+		}
+	}
 	if c != nil && c.mobilePolicy != nil {
 		for _, provider := range c.Providers {
 			if owner, ok := provider.(interface{ Wait(context.Context) error }); ok {

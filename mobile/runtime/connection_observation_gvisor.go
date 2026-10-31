@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"encoding/json"
+	O "github.com/metacubex/mihomo/mobile/observation"
 	"net/netip"
 	"sort"
 	"strings"
@@ -14,10 +15,6 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/tunnel/statistic"
 )
-
-// Retain the existing short-history budget. This creation window never owns a
-// connection and never admits, limits or selects the authoritative active list.
-const maxConnectionHistory = 16
 
 func (e *runEngine) runtimeConnection(info *statistic.TrackerInfo) bool {
 	return info != nil && info.Metadata != nil && info.Metadata.Type == C.TUN &&
@@ -123,10 +120,10 @@ func (e *runEngine) observeConnection(tracker statistic.Tracker) {
 		value.Attribution.DNSSequence = query.Sequence
 		encoded, _ := json.Marshal(query)
 		cost := len(value.ID) + len(encoded)
-		if e.dnsFactsBytes+cost > MaxOutputBytes {
+		if e.dnsFactsBytes+cost > O.Current().ReplyBytes {
 			e.pruneDNSFacts()
 		}
-		if e.dnsFactsBytes+cost <= MaxOutputBytes {
+		if e.dnsFactsBytes+cost <= O.Current().ReplyBytes {
 			if e.dnsFacts == nil {
 				e.dnsFacts = map[string]DNSQueryObservation{}
 			}
@@ -137,10 +134,10 @@ func (e *runEngine) observeConnection(tracker statistic.Tracker) {
 		}
 	}
 	e.observations = append(e.observations, observation{value: value, info: info, dns: query})
-	if len(e.observations) > maxConnectionHistory {
+	if len(e.observations) > O.Current().Connections {
 		copy(e.observations, e.observations[1:])
 		e.observations[len(e.observations)-1] = observation{}
-		e.observations = e.observations[:maxConnectionHistory]
+		e.observations = e.observations[:O.Current().Connections]
 		if e.historyDropped < MaxObservation {
 			e.historyDropped++
 		}
@@ -162,7 +159,7 @@ func (e *runEngine) fillConnections(receipt *Receipt) {
 		if record.value.Attribution != nil {
 			cost += 6
 		}
-		if bytes+len(encoded)+1 > MaxOutputBytes || nodes+cost > MaxOutputNodes-1024 {
+		if bytes+len(encoded)+1 > O.Current().ReplyBytes || nodes+cost > O.Current().ReplyValues-1024 {
 			return false
 		}
 		bytes += len(encoded) + 1
@@ -218,7 +215,7 @@ func (e *runEngine) fillConnections(receipt *Receipt) {
 	for {
 		e.writeConnections(receipt, records)
 		encoded, err := json.Marshal(receipt)
-		if err == nil && len(encoded) <= MaxOutputBytes || len(records) == 0 {
+		if err == nil && len(encoded) <= O.Current().ReplyBytes || len(records) == 0 {
 			return
 		}
 		last := records[len(records)-1].value

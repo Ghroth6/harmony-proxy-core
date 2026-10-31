@@ -8,6 +8,7 @@ import "C"
 
 import (
 	"encoding/json"
+	O "github.com/metacubex/mihomo/mobile/observation"
 	mobileRuntime "github.com/metacubex/mihomo/mobile/runtime"
 	"unsafe"
 )
@@ -25,7 +26,7 @@ func initializeRuntimeOutput(output **C.uint8_t, size *C.uint32_t) bool {
 }
 func runtimeOutput(receipt mobileRuntime.Receipt, output **C.uint8_t, size *C.uint32_t) C.int32_t {
 	encoded, err := json.Marshal(receipt)
-	if err != nil || len(encoded) == 0 || len(encoded) > mobileRuntime.MaxOutputBytes {
+	if err != nil || len(encoded) == 0 || len(encoded) > O.Current().ReplyBytes {
 		return 2
 	}
 	buffer := C.CBytes(encoded)

@@ -109,19 +109,15 @@ func (m *Manager) Consume(generation, transfer uint64, fd int) *Transfer {
 	if t.generationFresh {
 		m.lastGeneration = generation
 	}
-	if len(m.transfers) >= MaxTransferRecords {
-		var oldest uint64
-		for id, old := range m.transfers {
-			receipt := old.snapshot()
-			if old != m.current && receipt.Cleanup == "complete" && !receipt.OwnershipFault && (oldest == 0 || id < oldest) {
-				oldest = id
-			}
-		}
-		if oldest != 0 {
-			delete(m.transfers, oldest)
+	// Completed, superseded transfers have no remaining ownership. Retain the
+	// current receipt and every unresolved owner, without an arbitrary quota.
+	for id, old := range m.transfers {
+		receipt := old.snapshot()
+		if old != m.current && receipt.Cleanup == "complete" && !receipt.OwnershipFault {
+			delete(m.transfers, id)
 		}
 	}
-	if transfer == 0 || transfer <= m.lastTransfer || m.transfers[transfer] != nil || len(m.transfers) >= MaxTransferRecords {
+	if transfer == 0 || transfer <= m.lastTransfer || m.transfers[transfer] != nil {
 		m.fault = true
 		t.receipt.OwnershipFault = true
 		t.receipt.TransferState = "fault"
@@ -185,7 +181,7 @@ func (t *Transfer) Reject(code string) {
 		t.fd.close()
 		t.mu.Lock()
 		t.receipt.Cleanup = "complete"
-		if t.receipt.OwnershipFault || !t.fd.valid || t.fd.receipt().CloseResult != 0 {
+		if t.receipt.OwnershipFault || (t.fd.valid && t.fd.receipt().CloseResult != 0) {
 			t.receipt.Cleanup = "unknown"
 		}
 		t.mu.Unlock()

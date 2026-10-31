@@ -46,6 +46,7 @@ type trojanPeer struct {
 	closed        chan struct{}
 	handshakeSeen chan struct{}
 	mode          string
+	rootPEM       string
 	mu            sync.Mutex
 	connections   []net.Conn
 	workers       sync.WaitGroup
@@ -92,6 +93,9 @@ func newTrojanPeer(t *testing.T, mode string) *trojanPeer {
 		t.Fatal(err)
 	}
 	peer := &trojanPeer{listener: listener, verified: make(chan string, 16), failure: make(chan error, 16), closed: make(chan struct{}, 16), handshakeSeen: make(chan struct{}, 16), mode: mode}
+	if mode != "untrusted" {
+		peer.rootPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootDER}))
+	}
 	peer.workers.Add(1)
 	go func() {
 		defer peer.workers.Done()
@@ -184,7 +188,11 @@ func trojanBytes(peer *trojanPeer) []byte {
 	if peer.mode == "wrong-password" {
 		password = "incorrect-documentation-only"
 	}
-	return []byte(fmt.Sprintf("proxies:\n  - {name: sample, type: trojan, server: 127.0.0.1, port: %d, password: %s, sni: node.example.invalid}\nproxy-groups:\n  - {name: selected, type: select, proxies: [sample]}\nrules:\n  - MATCH,selected\n", peer.listener.Addr().(*net.TCPAddr).Port, password))
+	input := []byte(fmt.Sprintf("proxies:\n  - {name: sample, type: trojan, server: 127.0.0.1, port: %d, password: %s, sni: node.example.invalid}\nproxy-groups:\n  - {name: selected, type: select, proxies: [sample]}\nrules:\n  - MATCH,selected\n", peer.listener.Addr().(*net.TCPAddr).Port, password))
+	if peer.rootPEM != "" {
+		input = append(input, []byte(fmt.Sprintf("tls:\n  custom-certifactes: [%q]\n", peer.rootPEM))...)
+	}
+	return input
 }
 
 func startTrojanRun(t *testing.T, peer *trojanPeer, callback protection.Callback, certificatePolicy ...bool) (*R.Manager, uint64, *packetDescriptors) {

@@ -3,14 +3,17 @@ package policy
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sort"
 
 	"github.com/metacubex/mihomo/component/fakeip"
+	"github.com/metacubex/mihomo/component/resource"
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/rules"
+	RB "github.com/metacubex/mihomo/rules/bundle"
 	RP "github.com/metacubex/mihomo/rules/provider"
 )
 
@@ -42,46 +45,51 @@ func (e *Engine) prepareProviders(raw *config.RawConfig, prepared contract.Prepa
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		schema, err := RP.DecodeRuleProviderSchema(raw.RuleProvider[name])
-		if err != nil {
-			return inputs, err
-		}
-		behavior, err := P.ParseBehavior(schema.Behavior)
-		if err != nil {
-			return inputs, err
-		}
-		format, err := P.ParseRuleFormat(schema.Format)
-		if err != nil {
-			return inputs, err
-		}
-		decode := func(input []byte) ([]string, error) {
-			return RP.RuleSetPayload(input, behavior, format, inputs.ParseRule)
-		}
-		if schema.Type == "inline" {
-			inputs.RuleProviders[name] = RP.NewInlineProvider(name, behavior, schema.Payload, inputs.ParseRule)
-			continue
-		}
 		ref := digest([]byte(prepared.InputDigest + ":resource:rule-provider:" + name))
-		resource, present := fixed[ref]
-		if !present {
-			return inputs, errors.New("POLICY_RESOURCES_MISSING")
-		}
 		var requirement contract.Requirement
+		var vehicleErr error
 		for _, item := range requirements {
 			if item.RefID == ref {
 				requirement = item
 			}
 		}
-		vehicle := &preparedVehicle{resource: resource.value, uri: schema.URL, proxy: schema.Proxy, kind: P.HTTP, session: session, requirement: requirement, decode: decode}
-		if schema.Type == "file" {
-			vehicle.kind = P.File
-		}
-		provider, err := RP.NewPreparedRuleSetProvider(name, behavior, format, schema.IntervalDuration(), vehicle, resource.bytes, inputs.ParseRule)
+		provider, err := RP.ParseRuleProvider(name, raw.RuleProvider[name], inputs.ParseRule,
+			func(path string) resource.BundleFile { return RB.MakeBundleFileIn(e.root.Name(), path) },
+			func(base P.Vehicle) P.Vehicle {
+				// The process home is fixed to this private root in production. Resolve
+				// the same relative path against the engine root for independent callers.
+				relative, pathErr := filepath.Rel(C.Path.HomeDir(), base.Path())
+				if pathErr != nil || !filepath.IsLocal(relative) {
+					vehicleErr = errors.New("POLICY_RESOURCE_PATH_INVALID")
+					return base
+				}
+				privatePath := filepath.Join(e.root.Name(), relative)
+				if base.Type() == P.File {
+					base = resource.NewFileVehicle(privatePath)
+				}
+				value := contract.Resource{RefID: ref, Kind: requirement.Kind, Format: requirement.Format, SourceDigest: requirement.SourceDigest}
+				if saved, ok := fixed[ref]; ok {
+					value = saved.value
+				}
+				return newPreparedVehicle(base, privatePath, value, requirement, session)
+			})
 		if provider != nil {
 			inputs.RuleProviders[name] = provider
 		}
 		if err != nil {
 			return inputs, err
+		}
+		if vehicleErr != nil {
+			return inputs, vehicleErr
+		}
+		if saved, ok := fixed[ref]; ok {
+			stat, err := e.root.Stat(saved.value.RelativePath)
+			if err != nil {
+				return inputs, err
+			}
+			if err := RP.PrepareRuleSetProvider(provider, saved.bytes, stat.ModTime()); err != nil {
+				return inputs, err
+			}
 		}
 	}
 	return inputs, nil

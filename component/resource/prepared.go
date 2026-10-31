@@ -3,15 +3,13 @@ package resource
 import (
 	"context"
 	"errors"
-	"time"
-
 	"github.com/metacubex/mihomo/common/utils"
-	P "github.com/metacubex/mihomo/constant/provider"
+	"time"
 )
 
-// InitialPrepared parses exactly the caller's verified immutable bytes. It
-// never reads the original path or starts a watcher, request or scheduler.
-func (f *Fetcher[V]) InitialPrepared(input []byte) (V, error) {
+// InitialPrepared loads caller-verified bytes without publishing callbacks or
+// starting I/O. Activation later uses the same upstream cache/watch scheduler.
+func (f *Fetcher[V]) InitialPrepared(input []byte, modified time.Time) (V, error) {
 	f.startMutex.Lock()
 	defer f.startMutex.Unlock()
 	var empty V
@@ -22,55 +20,50 @@ func (f *Fetcher[V]) InitialPrepared(input []byte) (V, error) {
 		return empty, err
 	}
 	defer f.finish()
+	value, err := f.parser(input)
+	if err != nil {
+		return empty, err
+	}
 	f.prepared = true
-	value, _, err := f.loadBuf(input, utils.MakeHash(input), false)
-	return value, err
+	f.stateMutex.Lock()
+	f.hash, f.updatedAt = utils.MakeHash(input), modified
+	f.stateMutex.Unlock()
+	return value, nil
 }
 
-// ActivateScheduled is the sole prepared provider scheduler. Its first tick
-// starts a full configured interval after explicit activation, independent of
-// old file mtime. The fixed run root retains protection and network ownership.
+// ActivateScheduled defers acquisition until the runtime owns the network.
+// Existing bytes retain their age; absent bytes use upstream cache, bundle,
+// fallback and initial acquisition. File sources use the normal file watcher.
 func (f *Fetcher[V]) ActivateScheduled(root context.Context) error {
 	f.startMutex.Lock()
-	defer f.startMutex.Unlock()
-	if !f.prepared || root == nil || root.Err() != nil {
-		return errors.New("prepared resource cannot activate")
+	if root == nil || root.Err() != nil {
+		f.startMutex.Unlock()
+		return context.Canceled
 	}
 	if f.started {
+		f.startMutex.Unlock()
 		return nil
+	}
+	prepared := f.prepared
+	if !prepared {
+		f.startMutex.Unlock()
+		if err := f.BindContext(root); err != nil {
+			return err
+		}
+		_, err := f.Initial()
+		return err
 	}
 	f.lifecycleMutex.Lock()
 	if f.retired {
 		f.lifecycleMutex.Unlock()
+		f.startMutex.Unlock()
 		return context.Canceled
 	}
+	f.ctxCancel()
 	ctx, cancel := context.WithCancel(root)
-	f.networkRoot = WithCommitGuard(ctx, f.Commit)
-	f.networkCancel = cancel
-	f.started = true
-	scheduled := f.vehicle.Type() == P.HTTP && f.interval > 0
-	if scheduled {
-		f.active++
-	}
+	f.ctx, f.ctxCancel = WithCommitGuard(ctx, f.Commit), cancel
+	f.networkRoot = f.ctx
 	f.lifecycleMutex.Unlock()
-	if scheduled {
-		go func() { defer f.finish(); f.preparedPullLoop(ctx) }()
-	}
-	return nil
-}
-
-func (f *Fetcher[V]) preparedPullLoop(ctx context.Context) {
-	timer := time.NewTimer(f.interval)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-f.ctx.Done():
-			return
-		case <-timer.C:
-			f.updateWithLog()
-			timer.Reset(f.interval)
-		}
-	}
+	f.startMutex.Unlock()
+	return f.startPullLoop(time.Since(f.UpdatedAt()) > f.interval)
 }

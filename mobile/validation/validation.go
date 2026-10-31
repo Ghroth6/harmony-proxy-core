@@ -1,12 +1,11 @@
 // Package validation exposes the single read-only mobile validation operation.
-// It only constructs and discards the explicitly gated static subset, never
-// applying a configuration or calling the full resource-constructing parser.
+// It uses the upstream format decoder only. Complete semantic validation is
+// owned by mobile/policy and supplied resources, not a second whitelist.
 package validation
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"strings"
 
 	"github.com/metacubex/mihomo/config"
@@ -78,7 +77,7 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		receipt.Diagnostics = []Diagnostic{{Code: "CONFIG_EMPTY", Field: "", Message: "Configuration is empty."}}
 		return
 	}
-	raw, err := config.UnmarshalRawConfig(input)
+	_, err := config.UnmarshalRawConfig(input)
 	if err != nil {
 		receipt.Category = "invalid"
 		// Core errors can echo scalar values (including credentials). Preserve
@@ -87,78 +86,7 @@ func Validate(operationID string, input []byte) (receipt Receipt) {
 		return
 	}
 	receipt.Covered = []string{"mihomo-format"}
-	receipt.Phase = "semantic"
-	selected := config.MobileSelectedShape(raw)
-	if diagnostics := inspectInputScope(input, selected); len(diagnostics) != 0 {
-		receipt.Category = "incomplete"
-		receipt.Diagnostics = diagnostics
-		for _, diagnostic := range diagnostics {
-			if diagnostic.Field != "" {
-				receipt.Uncovered = append(receipt.Uncovered, diagnostic.Field)
-			}
-		}
-		return
-	}
-	validateStatic := config.ValidateMobileStatic
-	if selected {
-		validateStatic = config.ValidateMobileSelected
-	}
-	if err := validateStatic(raw); err != nil {
-		receipt.Category = "invalid"
-		var diagnostic *config.MobileValidationError
-		if errors.As(err, &diagnostic) {
-			if diagnostic.Code == "CANDIDATE_CLEANUP_FAILED" || diagnostic.Code == "CORE_FAILURE" {
-				receipt.Category = "failure"
-			} else if diagnostic.Code == "CAPABILITY_NOT_COVERED" || diagnostic.Code == "PROXY_TYPE_UNSUPPORTED" || strings.HasSuffix(diagnostic.Code, "NOT_IMPLEMENTED") {
-				receipt.Category = "incomplete"
-			}
-			message := "Mihomo rejected a static node or proxy group definition."
-			switch diagnostic.Code {
-			case "GROUP_REFERENCE_INVALID":
-				message = "A select group references a proxy node or group that does not exist."
-			case "RULE_REFERENCE_INVALID":
-				message = "A static rule references a proxy node or group that does not exist."
-			case "RULE_INVALID":
-				message = "A static rule has an invalid definition."
-			case "CAPABILITY_NOT_COVERED":
-				message = "This field or capability is outside the current static validation scope."
-			case "CANDIDATE_CLEANUP_FAILED":
-				message = "Temporary validation objects could not be completely released."
-			}
-			receipt.Diagnostics = []Diagnostic{{Code: diagnostic.Code, Field: diagnostic.Field, Message: message}}
-		} else {
-			receipt.Category = "failure"
-			receipt.Diagnostics = []Diagnostic{{Code: "CORE_FAILURE", Field: "", Message: "Core validation did not complete."}}
-		}
-		return
-	}
-	receipt.Category = "pass"
-	// Historical validation only determines which old coverage labels remain
-	// truthful. Its narrower checks never reject a current selected candidate.
-	extendedSelected := selected && !config.MobileLegacySelectedShape(raw)
-	if extendedSelected {
-		receipt.Covered = append(receipt.Covered, "mobile-proxy-ipv4-tcp-v2", "static-mobile-proxy-node", "explicit-select-references", "MATCH-rule-references", "candidate-resources-closed")
-		receipt.Uncovered = []string{"runtime-connectivity", "application-udp-dns-ipv6", "original-source-policy-and-resources"}
-		return
-	}
-	transport := "static-ss-aes-128-gcm"
-	if len(raw.Proxy) == 1 && raw.Proxy[0]["type"] == "ss" && raw.Proxy[0]["cipher"] == "chacha20-ietf-poly1305" {
-		transport = "static-ss-chacha20-ietf-poly1305"
-	}
-	if len(raw.Proxy) == 1 && raw.Proxy[0]["type"] == "trojan" {
-		transport = "static-trojan-tcp-tls-sni"
-	}
-	receipt.Covered = append(receipt.Covered, transport, "explicit-select-references", "DOMAIN-MATCH-rule-references", "candidate-resources-closed")
-	if fixedRuntimeScope(raw) {
-		receipt.Covered = append(receipt.Covered, "m1b-fixed-ipv4-tcp")
-	}
-	if transport == "static-trojan-tcp-tls-sni" {
-		policy := "trojan-tls-cert-policy-normal"
-		if raw.Proxy[0]["skip-cert-verify"] == true {
-			policy = "trojan-tls-cert-policy-explicit-skip"
-		}
-		receipt.Covered = append(receipt.Covered, policy)
-	}
-	receipt.Uncovered = []string{"runtime-connectivity", "other-protocols-fields-and-rule-types"}
+	receipt.Category = "incomplete"
+	receipt.Diagnostics = []Diagnostic{{Code: "SEMANTICS_NOT_CHECKED", Message: "Format decoded. Full configuration validation uses the prepared-policy operation."}}
 	return
 }

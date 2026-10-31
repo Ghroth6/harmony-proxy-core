@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	O "github.com/metacubex/mihomo/mobile/observation"
 	"net/netip"
 	"sort"
 	"strings"
@@ -51,7 +52,7 @@ func (s observedDNSService) ServeMsg(ctx context.Context, question *D.Msg) (*D.M
 			if !address.IsValid() {
 				continue
 			}
-			if len(value.AnswerAddresses) == MaxDNSAnswers {
+			if len(value.AnswerAddresses) == O.Current().DNSAnswers {
 				value.AnswersTruncated = true
 				continue
 			}
@@ -84,7 +85,11 @@ func (b *dnsBook) record(value DNSQueryObservation) {
 	}
 	b.observed.Sequence++
 	value.Sequence = b.observed.Sequence
-	if len(b.observed.Queries) == MaxDNSObservations {
+	if O.Current().DNSQueries == 0 {
+		b.observed.Dropped++
+		return
+	}
+	if len(b.observed.Queries) == O.Current().DNSQueries {
 		b.observed.Queries = b.observed.Queries[1:]
 		b.observed.Dropped++
 	}
@@ -127,15 +132,15 @@ func (b *dnsBook) queryFor(domainDigest string, address netip.Addr) *DNSQueryObs
 	return matched
 }
 
-// Keep the same 16-result budget: confirmed links held by selected connections
+// Apply the application DNS observation budget: confirmed connection links
 // first, then the latest ring results. Sequence and Dropped remain the original
 // completion/ring-eviction counters; restoring a linked value never resets them.
 func (b *dnsBook) observationForConnections(references []DNSQueryObservation) *DNSObservation {
 	value := b.observation()
-	queries := make([]DNSQueryObservation, 0, MaxDNSObservations)
+	queries := make([]DNSQueryObservation, 0, O.Current().DNSQueries)
 	seen := map[uint64]bool{}
 	add := func(query DNSQueryObservation) {
-		if len(queries) == MaxDNSObservations || seen[query.Sequence] || query.Sequence == 0 || query.Sequence > value.Sequence {
+		if len(queries) == O.Current().DNSQueries || seen[query.Sequence] || query.Sequence == 0 || query.Sequence > value.Sequence {
 			return
 		}
 		seen[query.Sequence] = true

@@ -40,7 +40,7 @@ func (s *RuleProviderSchema) IntervalDuration() time.Duration {
 	return time.Duration(uint(s.Interval)) * time.Second
 }
 
-func ParseRuleProvider(name string, mapping map[string]any, parse common.ParseRuleFunc, makeBundleFile func(pathInBundle string) resource.BundleFile) (P.RuleProvider, error) {
+func ParseRuleProvider(name string, mapping map[string]any, parse common.ParseRuleFunc, makeBundleFile func(pathInBundle string) resource.BundleFile, wrap ...func(P.Vehicle) P.Vehicle) (P.RuleProvider, error) {
 	schema, err := DecodeRuleProviderSchema(mapping)
 	if err != nil {
 		return nil, err
@@ -78,6 +78,9 @@ func ParseRuleProvider(name string, mapping map[string]any, parse common.ParseRu
 	}
 
 	interval := schema.IntervalDuration()
+	for _, decorate := range wrap {
+		vehicle = decorate(vehicle)
+	}
 
 	return NewRuleSetProvider(name, behavior, format, interval, vehicle, schema.Payload, makeBundleFile(schema.PathInBundle), parse), nil
 }

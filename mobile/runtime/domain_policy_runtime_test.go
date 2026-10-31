@@ -215,7 +215,7 @@ rules:
  - MATCH,REJECT
 `, dnsPeer.LocalAddr().String(), proxy.Addr().(*net.TCPAddr).Port, password))
 	plan := owner.Plan("full-domain-plan", input, nil)
-	if plan.Category != "planned" || plan.ResourcesComplete || len(plan.Requirements) != 1 || len(plan.Groups) != 2 {
+	if plan.Category != "planned" || !plan.ResourcesComplete || len(plan.Requirements) != 1 || len(plan.Groups) != 2 {
 		t.Fatalf("complete source policy was not preserved by planning: %+v", plan)
 	}
 	resource := domainRuleProviderResource(plan.Requirements[0])

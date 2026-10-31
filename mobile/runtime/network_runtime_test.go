@@ -104,7 +104,7 @@ func TestRuntimeDomainUsesAcceptedSnapshotProtectedDNSAndRealTLSBeforeJoinedStop
 	}
 }
 
-func TestRuntimeNetworkEpochAndDomainDNSErrorsAreNotReceiptEchoes(t *testing.T) {
+func TestRuntimeChecksActualNetworkEpochAndDefersMissingDNSToUse(t *testing.T) {
 	peer := newTrojanPeer(t, "valid")
 	input := bytes.Replace(trojanBytes(peer), []byte("server: 127.0.0.1"), []byte("server: proxy.example"), 1)
 	previous, _ := platformnetwork.Current()
@@ -118,7 +118,7 @@ func TestRuntimeNetworkEpochAndDomainDNSErrorsAreNotReceiptEchoes(t *testing.T) 
 	}{
 		{0, "REQUEST_IDENTITY"},
 		{networkGeneration + 1, "NETWORK_GENERATION_MISMATCH"},
-		{networkGeneration, "NETWORK_DNS_UNAVAILABLE"},
+		{networkGeneration, ""},
 	} {
 		generation := nextGeneration()
 		register(generation, func(uint64, uint64, uintptr) int32 {
@@ -129,15 +129,18 @@ func TestRuntimeNetworkEpochAndDomainDNSErrorsAreNotReceiptEchoes(t *testing.T) 
 		manager := newNodePolicyManager(t, system, generation)
 		started := manager.Start(manager.Consume(generation, 1, 9), input, nodeNetworkRequest(t, input, generation, check.requested))
 		outcome := "failed"
+		acceptedGeneration := uint64(0)
 		if check.requested == 0 {
 			outcome = "rejected"
+		} else if check.code == "" {
+			outcome, acceptedGeneration = "running", networkGeneration
 		}
-		if started.Outcome != outcome || started.FailureCode != check.code || started.NetworkGeneration != 0 || peer.accepted.Load() != 0 {
+		if started.Outcome != outcome || started.FailureCode != check.code || started.NetworkGeneration != acceptedGeneration || peer.accepted.Load() != 0 {
 			t.Fatalf("unaccepted epoch cannot be echoed as actual runtime evidence: %+v", started)
 		}
 		joined := manager.Stop(generation)
 		productionGate.Unregister(generation)
-		if joined.Cleanup != "complete" || joined.NetworkGeneration != 0 || system.closes[9] != 1 {
+		if joined.Cleanup != "complete" || joined.NetworkGeneration != acceptedGeneration || system.closes[9] != 1 {
 			t.Fatal("rejected network epoch did not join descriptor cleanup")
 		}
 	}

@@ -93,6 +93,7 @@ type HTTPVehicle struct {
 	sizeLimit int64
 	inRead    func(response *http.Response)
 	provider  P.ProxyProvider
+	options   []mihomoHttp.Option
 }
 
 func (h *HTTPVehicle) Url() string {
@@ -119,6 +120,10 @@ func (h *HTTPVehicle) SetInRead(fn func(response *http.Response)) {
 	h.inRead = fn
 }
 
+// SetRequestOptions attaches the embedding owner's request accounting and
+// cleanup without replacing HTTP status, ETag or redirect semantics.
+func (h *HTTPVehicle) SetRequestOptions(options ...mihomoHttp.Option) { h.options = options }
+
 func (h *HTTPVehicle) Read(ctx context.Context, oldHash utils.HashType) (buf []byte, hash utils.HashType, err error) {
 	if err = ctx.Err(); err != nil {
 		return
@@ -139,11 +144,12 @@ func (h *HTTPVehicle) Read(ctx context.Context, oldHash utils.HashType) (buf []b
 			setIfNoneMatch = true
 		}
 	}
-	resp, err := mihomoHttp.HttpRequest(ctx, h.url, http.MethodGet, header, nil, mihomoHttp.WithSpecialProxy(h.proxy), mihomoHttp.WithRequestObserver(observer(ctx)))
+	options := append([]mihomoHttp.Option{mihomoHttp.WithSpecialProxy(h.proxy), mihomoHttp.WithRequestObserver(observer(ctx))}, h.options...)
+	resp, err := mihomoHttp.HttpRequest(ctx, h.url, http.MethodGet, header, nil, options...)
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { err = errors.Join(err, resp.Body.Close()) }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		if setIfNoneMatch && resp.StatusCode == http.StatusNotModified {

@@ -24,10 +24,11 @@ int32_t cb_runtime_contract_version_v1(void);
  * four independently verified identities. Its immutable manifest remains
  * separate from later actual resource acquisition/adoption observations.
  * Input/request byte lengths must fit signed C.int (INT32_MAX).
- * Observation output retains its separate 1048576-byte budget.
+ * Observation output uses the embedding application's configured byte budget
+ * (1048576 bytes in clashoh), independently of input and forwarding capacity.
  * No fd is acquired by query/stop. transfer_id=0 queries the run; positive IDs
  * query that EXACT entered handoff. Missing handoffs return unknown, never an
- * older clean run. Duplicate IDs/capacity faults remain ownership faults.
+ * older clean run. Duplicate/non-monotonic IDs remain ownership faults.
  * Start observes <=5000 ms and stop <=10000 ms; cleanup continues independently.
  * ABI status: 0=bounded receipt returned, 1=invalid output/buffer ABI arguments,
  * 2=internal/output failure. Runtime success is only in the typed receipt.

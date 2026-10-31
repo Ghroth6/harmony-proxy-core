@@ -72,7 +72,7 @@ func Seal(inputDigest string, resources []Resource, platform Platform, preferenc
 	sort.Slice(resources, func(i, j int) bool { return resources[i].RefID < resources[j].RefID })
 	sort.Slice(preferences, func(i, j int) bool { return preferences[i].GroupRef < preferences[j].GroupRef })
 	for index, resource := range resources {
-		if !IsDigest(resource.RefID) || !IsDigest(resource.SourceDigest) || !IsDigest(resource.ContentDigest) || resource.ByteLength <= 0 || resource.ByteLength > MaxResourceBytes || !identityASCII(resource.Kind) || !identityASCII(resource.Format) || !identityASCII(resource.RelativePath) || index > 0 && resources[index-1].RefID == resource.RefID {
+		if !IsDigest(resource.RefID) || !IsDigest(resource.SourceDigest) || !IsDigest(resource.ContentDigest) || resource.ByteLength < 0 || resource.ByteLength > MaxResourceBytes || !identityASCII(resource.Kind) || !identityASCII(resource.Format) || !identityASCII(resource.RelativePath) || index > 0 && resources[index-1].RefID == resource.RefID {
 			return PreparedContext{}, invalid
 		}
 	}

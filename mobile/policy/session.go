@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/metacubex/mihomo/component/dialer"
+	O "github.com/metacubex/mihomo/mobile/observation"
 	"io"
 	"sort"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/component/platformnetwork"
 	P "github.com/metacubex/mihomo/constant/provider"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 )
 
@@ -108,10 +110,14 @@ func (s *resourceSession) ActivateScheduled(root context.Context) error {
 	for _, provider := range s.providers {
 		if scheduled, ok := provider.(interface{ ActivateScheduled(context.Context) error }); ok {
 			if err := scheduled.ActivateScheduled(bound); err != nil {
-				s.Cancel()
-				return errors.New("POLICY_RESOURCE_ACTIVATION_INVALID")
+				// Like upstream provider initialization, keep the declared fallback
+				// and unrelated rules when one source cannot be obtained.
+				log.Errorln("Initial rule provider %s error: %s", provider.Name(), err)
 			}
 		}
+	}
+	if err := bound.Err(); err != nil {
+		return err
 	}
 	return s.startGeoUpdates(bound)
 }
@@ -237,12 +243,17 @@ func (s *resourceSession) record(task, ref, stage, code string, value ResourceVe
 	defer s.mu.Unlock()
 	sequence := strconv.FormatUint(resourceEventSequence.Add(1), 10)
 	event := ResourceEvent{Sequence: sequence, TaskID: task, RefID: ref, Generation: s.generation, NetworkGeneration: s.networkGeneration, Stage: stage, Code: code, ContentDigest: value.ContentDigest, ByteLength: value.ByteLength, RelativePath: value.RelativePath}
-	if len(s.events) == 128 {
+	limit := O.Current().ResourceEvents
+	if limit == 0 {
+		s.historyTruncated = true
+	} else if len(s.events) == limit {
 		copy(s.events, s.events[1:])
-		s.events = s.events[:127]
+		s.events = s.events[:limit-1]
 		s.historyTruncated = true
 	}
-	s.events = append(s.events, event)
+	if limit > 0 {
+		s.events = append(s.events, event)
+	}
 	if stage == "adopted" {
 		s.adopted[ref] = value
 	}

@@ -84,9 +84,9 @@ func TestValidationPreservesExistingStateAndJoinsTemporaryCleanup(t *testing.T) 
 		bytes string
 		want  string
 	}{
-		{staticConfig, "pass"},
-		{strings.Replace(staticConfig, "proxies: [sample-ss, DIRECT]", "proxies: [missing, DIRECT]", 1), "invalid"},
-		{strings.Replace(staticConfig, "DOMAIN,example.com,sample-select", "DOMAIN,example.com,missing", 1), "invalid"},
+		{staticConfig, "incomplete"},
+		{strings.Replace(staticConfig, "proxies: [sample-ss, DIRECT]", "proxies: [missing, DIRECT]", 1), "incomplete"},
+		{strings.Replace(staticConfig, "DOMAIN,example.com,sample-select", "DOMAIN,example.com,missing", 1), "incomplete"},
 		{staticConfig + "dns:\n  enable: true\n", "incomplete"},
 		{"proxies: [\n", "invalid"},
 	}

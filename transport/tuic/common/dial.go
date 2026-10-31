@@ -2,9 +2,9 @@ package common
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/metacubex/mihomo/component/dialer"
 
@@ -22,35 +22,68 @@ type DialQuicOption struct {
 }
 
 func DialQuic(ctx context.Context, address string, opts []dialer.Option, pDialer PacketDialer, tlsConf *tls.Config, conf *quic.Config, option DialQuicOption) (net.PacketConn, *quic.Conn, error) {
-	addresses, err := dialer.ResolveUDPAddresses(ctx, address, opts...)
+	d := dialer.NewDialer(
+		dialer.WithOptions(opts...),
+		dialer.WithPacketDialer(pDialer, func(ctx context.Context, packetConn net.PacketConn, addrPort netip.AddrPort) (net.Conn, error) {
+			udpAddr := net.UDPAddrFromAddrPort(addrPort)
+			transport := quic.Transport{
+				Conn:               packetConn,
+				ConnectionIDLength: option.ConnectionIDLength,
+			}
+			transport.SetCreatedConn(true) // auto close conn
+			transport.SetSingleUse(true)   // auto close transport
+
+			var quicConn *quic.Conn
+			var err error
+			if option.Early {
+				quicConn, err = transport.DialEarly(ctx, udpAddr, tlsConf, conf)
+			} else {
+				quicConn, err = transport.Dial(ctx, udpAddr, tlsConf, conf)
+			}
+			if err != nil {
+				_ = transport.Close()
+				return nil, err
+			}
+			return quicNetConn{Conn: quicConn, pc: packetConn}, nil
+		}),
+	)
+	c, err := d.DialContext(ctx, "udp", address)
 	if err != nil {
 		return nil, nil, err
 	}
-	var failures []error
-	for _, remote := range addresses {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
-		}
-		packet, err := pDialer.ListenPacket(ctx, "udp", "", remote)
-		if err != nil {
-			failures = append(failures, err)
-			continue
-		}
-		transport := quic.Transport{Conn: packet, ConnectionIDLength: option.ConnectionIDLength}
-		transport.SetCreatedConn(true)
-		transport.SetSingleUse(true)
-		var connection *quic.Conn
-		if option.Early {
-			connection, err = transport.DialEarly(ctx, net.UDPAddrFromAddrPort(remote), tlsConf, conf)
-		} else {
-			connection, err = transport.Dial(ctx, net.UDPAddrFromAddrPort(remote), tlsConf, conf)
-		}
-		if err == nil {
-			return packet, connection, nil
-		}
-		_ = transport.Close()
-		_ = packet.Close()
-		failures = append(failures, err)
-	}
-	return nil, nil, errors.Join(failures...)
+	nc := c.(quicNetConn)
+	return nc.pc, nc.Conn, nil
 }
+
+type quicNetConn struct {
+	*quic.Conn
+	pc net.PacketConn
+}
+
+func (q quicNetConn) Close() error {
+	err := q.Conn.CloseWithError(0, "")
+	_ = q.pc.Close() // always close the packetConn
+	return err
+}
+
+func (q quicNetConn) Read(b []byte) (n int, err error) {
+	panic("should not call Read on quicNetConn")
+}
+
+func (q quicNetConn) Write(b []byte) (n int, err error) {
+	panic("should not call Write on quicNetConn")
+}
+
+func (q quicNetConn) SetDeadline(t time.Time) error {
+	panic("should not call SetDeadline on quicNetConn")
+}
+
+func (q quicNetConn) SetReadDeadline(t time.Time) error {
+	panic("should not call SetReadDeadline on quicNetConn")
+}
+
+func (q quicNetConn) SetWriteDeadline(t time.Time) error {
+	panic("should not call SetWriteDeadline on quicNetConn")
+}
+
+var _ net.Conn = quicNetConn{}

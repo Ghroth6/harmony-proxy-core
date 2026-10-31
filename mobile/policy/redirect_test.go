@@ -276,6 +276,10 @@ func TestOriginalResourceRedirectUsesUpstreamTLSRedirectBehavior(t *testing.T) {
 	}
 	t.Cleanup(ca.ResetCertificate)
 	engine, cfg, _, ctx, generation := publicPeriodicCandidate(t, secure.URL)
+	// Publication applies the candidate TLS configuration, as upstream does.
+	if err := ca.AddCertificate(string(secure.Certificate().Raw)); err != nil {
+		t.Fatal(err)
+	}
 	baseline, _ := strconv.ParseUint(engine.ResourceAcquireCount(), 10, 64)
 	observed := awaitPublicPeriodicAttempt(t, engine, cfg, ctx, generation)
 	if tlsRequests.Load() != 1 || plainRequests.Load() != 1 || observed.ResourceAcquireCount != strconv.FormatUint(baseline+2, 10) {

@@ -165,8 +165,8 @@ func TestFixedPolicyPlanVerifiesActualImmutableBytesAndUpstreamPayload(t *testin
 	baseline := engine.ResourceAcquireCount()
 	input := []byte(providerPolicy)
 	first := engine.Plan("fixed-first", input, nil)
-	if first.Category != "planned" || first.ResourcesComplete || len(first.Requirements) != 1 {
-		t.Fatal("fixed provider must be explicitly required before any acquisition")
+	if first.Category != "planned" || !first.ResourcesComplete || !first.RuntimeDownloads || len(first.Requirements) != 1 {
+		t.Fatal("provider keeps its explicit source while allowing upstream runtime initialization")
 	}
 	resource := savePublicResource(t, root, first.Requirements[0], []byte("payload:\n - DOMAIN-SUFFIX,documentation.example\n - IP-CIDR,192.0.2.0/24,no-resolve\n"))
 	ready := engine.Plan("fixed-ready", input, []contract.Resource{resource})

@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -168,8 +167,9 @@ func dialContext(ctx context.Context, network string, destination netip.Addr, po
 		return nil, err
 	}
 	defer finish()
+	_, packetTransport := opt.netDialer.(packetNetDialer)
 	defer func() {
-		if lifecycle != nil && err == nil && conn != nil {
+		if !packetTransport && lifecycle != nil && err == nil && conn != nil {
 			conn, err = lifecycle.OwnConn(ctx, conn)
 		}
 	}()
@@ -183,6 +183,10 @@ func dialContext(ctx context.Context, network string, destination netip.Addr, po
 	switch netDialer.(type) {
 	case nil:
 		netDialer = &net.Dialer{}
+	case packetNetDialer:
+		// Its PacketDialer owns and protects the physical socket. Do not wrap
+		// the composite protocol result as a second physical connection.
+		return netDialer.DialContext(ctx, network, address)
 	case *net.Dialer:
 		_netDialer := *netDialer.(*net.Dialer)
 		netDialer = &_netDialer // make a copy
@@ -502,52 +506,4 @@ func (d Dialer) ListenPacket(ctx context.Context, network, address string, rAddr
 func NewDialer(options ...Option) Dialer {
 	opt := applyOptions(options...)
 	return Dialer{Opt: opt}
-}
-
-// ResolveUDPAddresses reuses the normal proxy bootstrap resolver and explicit
-// address-family options without substituting an opaque net.Dialer. Internal
-// QUIC callers then create each physical socket through their PacketDialer.
-func ResolveUDPAddresses(ctx context.Context, address string, options ...Option) ([]netip.AddrPort, error) {
-	ctx, finish, _, err := acquireNetwork(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer finish()
-	opt := applyOptions(options...)
-	if policy := outboundSocketPolicy.Load(); policy != nil && policy.Required(ctx) && opt.netDialer != nil {
-		if _, ok := opt.netDialer.(*net.Dialer); !ok {
-			return nil, ErrUnsupportedSocketPolicyDialer
-		}
-	}
-	network := "udp"
-	if opt.network == 4 {
-		network = "udp4"
-	}
-	if opt.network == 6 {
-		network = "udp6"
-	}
-	ips, portText, err := parseAddr(ctx, network, address, opt.resolver)
-	if err != nil {
-		return nil, err
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil || port < 1 || port > 65535 {
-		return nil, ErrorInvalidedNetworkStack
-	}
-	if len(ips) == 0 {
-		return nil, ErrorNoIpAddress
-	}
-	if opt.prefer == 4 || opt.prefer == 6 {
-		v4, v6 := resolver.SortationAddr(ips)
-		if opt.prefer == 4 {
-			ips = append(v4, v6...)
-		} else {
-			ips = append(v6, v4...)
-		}
-	}
-	result := make([]netip.AddrPort, 0, len(ips))
-	for _, ip := range ips {
-		result = append(result, netip.AddrPortFrom(ip, uint16(port)))
-	}
-	return result, nil
 }

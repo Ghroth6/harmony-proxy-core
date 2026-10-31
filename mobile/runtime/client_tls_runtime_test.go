@@ -334,7 +334,8 @@ func TestClientTUNFullSourceNodeTLSRejectsCertificatesAndRecoversOriginalPolicy(
 	}()
 	t.Cleanup(func() { dnsPeer.Close(); <-dnsDone })
 	nameserver := dnsPeer.LocalAddr().String()
-	original := sourceTLSInput(valid, nameserver)
+	trustConfig := []byte(fmt.Sprintf("tls:\n  custom-certifactes: [%q]\n", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: trustedRoot.Raw}))))
+	original := append(sourceTLSInput(valid, nameserver), trustConfig...)
 	root := t.TempDir()
 	owner, err := policyowner.NewEngine(root)
 	if err != nil {
@@ -364,7 +365,7 @@ func TestClientTUNFullSourceNodeTLSRejectsCertificatesAndRecoversOriginalPolicy(
 			defer L.UnSubscribe(events)
 			input := original
 			if round.errorText != "" {
-				input = sourceTLSInput(round.peer, nameserver) // Separate complete diagnostic input; only its node port differs.
+				input = append(sourceTLSInput(round.peer, nameserver), trustConfig...) // Only the node port differs.
 			}
 			var protects atomic.Int32
 			manager, generation, system, started := startSourceTLS(t, owner, root, input, &protects)

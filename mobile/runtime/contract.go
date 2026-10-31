@@ -19,21 +19,16 @@ import (
 )
 
 const (
-	ContractVersion    = 5
-	MaxGeneration      = 0x7fffffff
-	MaxInputBytes      = policy.MaxControlBytes
-	MaxRequestBytes    = policy.MaxControlBytes
-	MaxOutputBytes     = 1024 * 1024
-	MaxOutputNodes     = 65536
-	PacketQueue        = 128
-	MTU                = 1500
-	MaxDNSObservations = 16
-	MaxDNSAnswers      = 4
-	MaxObservation     = uint64(1<<53 - 1)
-	MaxTransferRecords = 64
-	StartObservation   = 5 * time.Second
-	StopObservation    = 10 * time.Second
-	StackName          = "gvisor-ipv4-tcp"
+	ContractVersion  = 5
+	MaxGeneration    = 0x7fffffff
+	MaxInputBytes    = policy.MaxControlBytes
+	MaxRequestBytes  = policy.MaxControlBytes
+	PacketQueue      = 128
+	MTU              = 1500
+	MaxObservation   = uint64(1<<53 - 1)
+	StartObservation = 5 * time.Second
+	StopObservation  = 10 * time.Second
+	StackName        = "gvisor-ipv4-tcp"
 )
 
 type RuntimeOptions = policy.RuntimeOptions

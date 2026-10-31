@@ -5,6 +5,7 @@ package runtime_test
 import (
 	"context"
 	"encoding/json"
+	O "github.com/metacubex/mihomo/mobile/observation"
 	"io"
 	"net"
 	"net/netip"
@@ -219,7 +220,7 @@ func testRuntimeConnectionRetention(t *testing.T, extraCount int) {
 			ports[connection.SourcePort] = true
 		}
 		encoded, err := json.Marshal(firstReceipt)
-		if err != nil || len(encoded) > R.MaxOutputBytes || extraCount == 2048 && firstReceipt.ConnectionSnapshot.ActiveOmitted == 0 {
+		if err != nil || len(encoded) > O.Current().ReplyBytes || extraCount == 2048 && firstReceipt.ConnectionSnapshot.ActiveOmitted == 0 {
 			t.Fatal("wire budget did not expose actual active omissions")
 		}
 		if extraCount == 64 {

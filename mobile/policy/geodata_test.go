@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/metacubex/mihomo/component/geodata/router"
 	"github.com/metacubex/mihomo/component/mmdb"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/mobile/policy"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/oschwald/maxminddb-golang"
@@ -26,6 +29,8 @@ rules:
 `
 
 func TestOriginalPolicyUsesResourceScopedGeoMatchersWithoutGlobalCaches(t *testing.T) {
+	nativeLogs := log.Subscribe()
+	defer log.UnSubscribe(nativeLogs)
 	var firstRules []C.Rule
 	for _, fixture := range []struct{ domain, address string }{{"first.example", "192.0.2.1"}, {"second.example", "198.51.100.1"}} {
 		root := t.TempDir()
@@ -87,6 +92,21 @@ func TestOriginalPolicyUsesResourceScopedGeoMatchersWithoutGlobalCaches(t *testi
 		}
 		if engine.ResourceAcquireCount() != baseline {
 			t.Fatal("geodata preparation made an acquisition")
+		}
+	}
+	seen := map[string]bool{}
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for len(seen) < 2 {
+		select {
+		case event := <-nativeLogs:
+			for _, kind := range []string{"GeoIP", "GeoSite"} {
+				if event.LogLevel == log.INFO && strings.Contains(event.Payload, "Finished initial "+kind+" rule") && strings.Contains(event.Payload, "records: 1") {
+					seen[kind] = true
+				}
+			}
+		case <-deadline.C:
+			t.Fatal("scoped GEO constructors lost original initialization logs", seen)
 		}
 	}
 }

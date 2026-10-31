@@ -2,31 +2,24 @@ package provider
 
 import (
 	"context"
-	"runtime"
 	"time"
 
-	"github.com/metacubex/mihomo/component/resource"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/rules/common"
 )
 
-// NewPreparedRuleSetProvider keeps the original vehicle/interval but replaces
-// eager Initial with fixed bytes. Formats and invalid entries use rulesParse,
-// exactly as the ordinary provider does.
-func NewPreparedRuleSetProvider(name string, behavior P.RuleBehavior, format P.RuleFormat, interval time.Duration, vehicle P.Vehicle, input []byte, parse common.ParseRuleFunc) (*RuleSetProvider, error) {
-	rp := &RuleSetProvider{&ruleSetProvider{baseProvider: baseProvider{behavior: behavior}, format: format, notifyDone: make(chan struct{})}}
-	rp.Fetcher = resource.NewFetcher(name, interval, vehicle, nil, func(bytes []byte) (ruleStrategy, error) {
-		return rulesParse(bytes, newStrategy(behavior, parse), format)
-	}, func(strategy ruleStrategy) {
-		rp.strategyMu.Lock()
-		rp.strategy = strategy
-		rp.strategyMu.Unlock()
-	})
-	runtime.SetFinalizer(rp, (*RuleSetProvider).Close)
-	if _, err := rp.Fetcher.InitialPrepared(input); err != nil {
-		return rp, err
+// PrepareRuleSetProvider supplies immutable initial bytes to the ordinary
+// provider. Its fallback, vehicle, parser and runtime scheduling stay upstream.
+func PrepareRuleSetProvider(provider P.RuleProvider, input []byte, modified time.Time) error {
+	rp := provider.(*RuleSetProvider)
+	strategy, err := rp.Fetcher.InitialPrepared(input, modified)
+	if err != nil {
+		return err
 	}
-	return rp, nil
+	rp.strategyMu.Lock()
+	rp.strategy = strategy
+	rp.strategyMu.Unlock()
+	return nil
 }
 
 // RuleSetPayload uses the upstream format decoder and strategy, retaining the

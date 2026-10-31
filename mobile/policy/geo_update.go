@@ -4,8 +4,8 @@ import (
 	"context"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/geodata"
+	"github.com/metacubex/mihomo/component/resource"
 	"github.com/metacubex/mihomo/component/updater"
-	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"time"
 )
@@ -21,11 +21,11 @@ func (s *resourceSession) prepareGeoUpdates(requirements []contract.Requirement,
 		if requirement.Kind == "rule-provider" || requirement.IntervalSeconds <= 0 {
 			continue
 		}
-		resource := fixed[requirement.RefID]
-		vehicle := &preparedVehicle{resource: resource.value, uri: requirement.SourceURI, kind: P.HTTP, session: s, requirement: requirement,
-			decode: func(data []byte) ([]string, error) { return nil, geodata.VerifyPrepared(requirement.Kind, data) }}
+		fixedResource := fixed[requirement.RefID]
+		base := resource.NewHTTPVehicle(requirement.SourceURI, "", "DIRECT", nil, resource.DefaultHttpTimeout, requirement.MaxBytes)
+		vehicle := newPreparedVehicle(base, "", fixedResource.value, requirement, s)
 		last := time.Now()
-		if info, err := s.engine.root.Stat(resource.value.RelativePath); err == nil {
+		if info, err := s.engine.root.Stat(fixedResource.value.RelativePath); err == nil {
 			last = info.ModTime()
 		}
 		s.geoUpdates = append(s.geoUpdates, geoRefresh{vehicle, time.Duration(requirement.IntervalSeconds) * time.Second, last})
@@ -33,6 +33,7 @@ func (s *resourceSession) prepareGeoUpdates(requirements []contract.Requirement,
 }
 func (s *resourceSession) startGeoUpdates(ctx context.Context) error {
 	for _, update := range s.geoUpdates {
+		update := update
 		root, finish, err := s.AcquireWorker(ctx)
 		if err != nil {
 			return err
@@ -44,6 +45,12 @@ func (s *resourceSession) startGeoUpdates(ctx context.Context) error {
 				defer func() { v.PreparedUpdateResult(false, err) }()
 				data, _, err := v.Read(ctx, utils.HashType{})
 				if err != nil {
+					return err
+				}
+				if err = geodata.VerifyPrepared(v.resource.Kind, data); err != nil {
+					return err
+				}
+				if err = v.PrepareUpdate(ctx, data); err != nil {
 					return err
 				}
 				s.mu.Lock()

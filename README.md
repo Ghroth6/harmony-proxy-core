@@ -14,7 +14,7 @@ URLTest、连接创建和 provider 初始化通过可注销订阅发布事件。
 
 选择组沿用上游 `Set(string)` 及失效名称回退语义；无生产调用的 `SetIdentity/SelectedProxy` 扩展已删除。保留 provider 刷新后 URLTest 缓存失效处理，避免新连接继续使用已退休对象。
 
-传统 HTTP、SOCKS、Mixed、Redir、TProxy、SS、VMess、TUIC 的 `ReCreate*` 以及 `PatchTunnel`、`PatchInboundListeners` 返回实际构造、绑定与关闭错误。双协议入口仅在两者都成功后登记；Patch 失败回滚本次新建入口，未变更的原入口保留，已删除或替换的旧入口不自动恢复。已登记入口关闭失败时移出就绪集合，保留待清理所有权供下次停止重试。命名多地址与底层构造失败会关闭本次已取得的资源；若构造器内部回滚的 Close 本身失败，错误一并返回，不能保证资源已释放，也没有成功实例可供调用方重试。重复关闭不把已关闭句柄当作新错误，未知关闭错误仍返回。调用方必须处理错误并决定是否关闭剩余入口，不能把返回错误的配置当作就绪。该合同不覆盖 TUN、DNS/controller 或 provider 后台任务，也不是已接入连接全部结束的屏障。
+传统 HTTP、SOCKS、Mixed、Redir、TProxy、SS、VMess、TUIC 的 `ReCreate*` 以及 `PatchTunnel`、`PatchInboundListeners` 返回实际构造、绑定与关闭错误。双协议入口仅在两者都成功后登记；Patch 各独立入口分别应用并保留成功的变更，失败入口汇总返回错误；未变更的原入口保留，已删除或替换的旧入口不自动恢复。已登记入口关闭失败时移出就绪集合，保留待清理所有权供下次停止重试。命名多地址与底层构造失败会关闭本次已取得的资源；若构造器内部回滚的 Close 本身失败，错误一并返回，不能保证资源已释放，也没有成功实例可供调用方重试。重复关闭不把已关闭句柄当作新错误，未知关闭错误仍返回。调用方必须处理错误并决定是否关闭剩余入口，不能把返回错误的配置当作就绪。该合同不覆盖 TUN、DNS/controller 或 provider 后台任务，也不是已接入连接全部结束的屏障。
 
 普通 TLS 入站的证书文件 watcher 复用现有 lifecycle.Group 和 owned watcher，由监听实例 Close 或构造失败回滚显式关闭，不再依赖实例被 GC 后清理；文件更新监视启动失败仍按官方行为保留已加载证书并记录警告。此归属覆盖 AnyTLS、HTTP/SOCKS/Mixed、两种 Hysteria2、VLESS/VMess、Trojan、TrustTunnel、TUIC。管理 controller 仍沿用官方进程生命周期。整轮转发停止会关闭已接入的握手 socket；这不等于等待所有第三方服务内部 callback/worker。
 

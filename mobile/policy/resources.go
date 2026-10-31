@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path"
-	"regexp"
 	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
@@ -25,7 +24,7 @@ type fixedResource struct {
 func (e *Engine) loadResources(available []contract.Resource) (map[string]fixedResource, string) {
 	result := map[string]fixedResource{}
 	for _, resource := range available {
-		if !contract.IsDigest(resource.RefID) || !contract.IsDigest(resource.SourceDigest) || !contract.IsDigest(resource.ContentDigest) || resource.ByteLength <= 0 || resource.ByteLength > contract.MaxResourceBytes || result[resource.RefID].value.RefID != "" {
+		if !contract.IsDigest(resource.RefID) || !contract.IsDigest(resource.SourceDigest) || !contract.IsDigest(resource.ContentDigest) || resource.ByteLength < 0 || resource.ByteLength > contract.MaxResourceBytes || result[resource.RefID].value.RefID != "" {
 			return nil, "POLICY_RESOURCE_IDENTITY_INVALID"
 		}
 		allowed := resource.Kind == "rule-provider" && (resource.Format == "yaml" || resource.Format == "text" || resource.Format == "mrs") || (resource.Kind == "mmdb" || resource.Kind == "asn") && resource.Format == "mmdb" || (resource.Kind == "geoip" || resource.Kind == "geosite") && resource.Format == "dat"
@@ -104,21 +103,11 @@ func providerPayload(data []byte, format, behavior string) ([]string, string) {
 	return payload, ""
 }
 
-var geoPayload = regexp.MustCompile(`^!?[A-Za-z0-9_-]+(?:@[A-Za-z0-9_-]+)?$`)
-
 // Planning can validate a geodata reference's syntax and discover its bytes,
 // but only the later resource-scoped constructor may compile that matcher.
 func preflightProviderRule(tp, payload, target string, params []string, sub map[string][]C.Rule) (C.Rule, error) {
 	switch tp {
 	case "GEOIP", "SRC-GEOIP", "GEOSITE", "IP-ASN", "SRC-IP-ASN":
-		if !geoPayload.MatchString(payload) {
-			return nil, errors.New("geodata reference")
-		}
-		for _, param := range params {
-			if param != "src" && param != "no-resolve" {
-				return nil, errors.New("geodata parameter")
-			}
-		}
 		return RC.NewMatch(target), nil
 	case "AND":
 		return logic.NewAND(payload, target, preflightProviderRule)

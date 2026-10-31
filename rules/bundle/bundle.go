@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path/filepath"
 
 	"github.com/metacubex/mihomo/component/resource"
 	C "github.com/metacubex/mihomo/constant"
@@ -21,8 +22,20 @@ func MakeBundleFile(path string) resource.BundleFile {
 	}
 }
 
+// MakeBundleFileIn uses the embedding application's fixed private resource root.
+func MakeBundleFileIn(root, path string) resource.BundleFile {
+	if path == "" {
+		return nil
+	}
+	return func() (fs.File, error) { return open(filepath.Join(root, C.BundleMRSName), path) }
+}
+
 func Open(path string) (fs.File, error) {
-	r, err := sevenzip.OpenReader(C.Path.BundleMRS())
+	return open(C.Path.BundleMRS(), path)
+}
+
+func open(archive, path string) (fs.File, error) {
+	r, err := sevenzip.OpenReader(archive)
 	if err != nil {
 		return nil, fmt.Errorf("open bundle file error: %w", err)
 	}

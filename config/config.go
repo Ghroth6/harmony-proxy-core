@@ -38,6 +38,7 @@ import (
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/mobile/policy/contract"
+	"github.com/metacubex/mihomo/ntp/ntp"
 	R "github.com/metacubex/mihomo/rules"
 	RB "github.com/metacubex/mihomo/rules/bundle"
 	RC "github.com/metacubex/mihomo/rules/common"
@@ -225,6 +226,7 @@ type Config struct {
 	mobileAdapterResources *lifecycle.Group
 	mobilePolicyFailure    func(string)
 	mobileDNS              *mobileDNS
+	mobileNTP              *ntp.OwnedService
 }
 
 type RawCors struct {
@@ -1729,9 +1731,7 @@ func parseFakeIPRules(rawRules []string, ruleProviders map[string]P.RuleProvider
 				case P.IPCIDR:
 					return nil, fmt.Errorf("dns.fake-ip-filter[%d] [%s] error: rule-set behavior is %s, must be domain or classical", idx, line, rp.Behavior())
 				case P.Classical:
-					if len(parsers) == 0 {
-						log.Warnln("%s provider is %s, only matching domain rules in fake-ip-filter", rp.Name(), rp.Behavior())
-					}
+					log.Warnln("%s provider is %s, only matching domain rules in fake-ip-filter", rp.Name(), rp.Behavior())
 				default:
 				}
 			}
@@ -2056,9 +2056,7 @@ func parseIPRuleSet(domainSetName string, adapterName string, ruleProviders map[
 		case P.Domain:
 			return nil, fmt.Errorf("rule provider type error, expect ipcidr,actual %s", rp.Behavior())
 		case P.Classical:
-			if len(parsers) == 0 {
-				log.Warnln("%s provider is %s, only matching it contain ip rule", rp.Name(), rp.Behavior())
-			}
+			log.Warnln("%s provider is %s, only matching it contain ip rule", rp.Name(), rp.Behavior())
 		default:
 		}
 	}
@@ -2076,9 +2074,7 @@ func parseDomainRuleSet(domainSetName string, adapterName string, ruleProviders 
 		case P.IPCIDR:
 			return nil, fmt.Errorf("rule provider type error, expect domain,actual %s", rp.Behavior())
 		case P.Classical:
-			if len(parsers) == 0 {
-				log.Warnln("%s provider is %s, only matching it contain domain rule", rp.Name(), rp.Behavior())
-			}
+			log.Warnln("%s provider is %s, only matching it contain domain rule", rp.Name(), rp.Behavior())
 		default:
 		}
 	}

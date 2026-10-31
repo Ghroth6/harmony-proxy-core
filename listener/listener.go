@@ -315,9 +315,9 @@ func ReCreateTun(tunConf LC.Tun, tunnel C.Tunnel) {
 
 type tunnelCloseKey struct{ network, key string }
 
-// PatchTunnel applies the requested set. On failure, sockets created by this
-// call are closed; unchanged sockets remain. Removed/replaced sockets are not
-// restored. An error is never a readiness result for the requested set.
+// PatchTunnel applies independent entries and retains successful changes.
+// Failed entries contribute errors; removed/replaced sockets are not restored.
+// An error is never a readiness result for the entire requested set.
 func PatchTunnel(tunnels []LC.Tunnel, tunnel C.Tunnel) (err error) {
 	tunnelMux.Lock()
 	defer tunnelMux.Unlock()

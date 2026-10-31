@@ -218,7 +218,7 @@ func TestBadGenerationAndPreStartABIRejectionStillConsumeDescriptor(t *testing.T
 	}
 }
 
-func TestTransferCapacityFaultCannotReturnEarlierCleanRun(t *testing.T) {
+func TestUnresolvedTransfersRemainAddressableBeyondFormerCapacity(t *testing.T) {
 	system := newDescriptors()
 	manager := R.NewManager(system)
 	manager.Start(manager.Consume(1, 1, 9), sample, []byte("{}"))
@@ -229,13 +229,13 @@ func TestTransferCapacityFaultCannotReturnEarlierCleanRun(t *testing.T) {
 		pending = append(pending, manager.Consume(id, id, fd))
 	}
 	system.open[1066] = true
-	fault := manager.Consume(66, 66, 1066)
-	manager.Start(fault, sample, []byte("{}"))
+	latest := manager.Consume(66, 66, 1066)
+	manager.Start(latest, sample, []byte("{}"))
 	if receipt := manager.Query(1, 1); receipt.Cleanup != "unknown" {
-		t.Fatalf("capacity failure replaced by earlier clean run: %+v", receipt)
+		t.Fatalf("discarded clean transfer replaced by another record: %+v", receipt)
 	}
-	if receipt := manager.Query(66, 66); receipt.Cleanup != "unknown" || receipt.TransferConsumed {
-		t.Fatal("unstored transfer was invented")
+	if receipt := manager.Query(66, 66); receipt.Cleanup != "complete" || !receipt.TransferConsumed || receipt.OwnershipFault || system.closes[1066] != 1 {
+		t.Fatal("a real transfer was lost because of the former capacity")
 	}
 	for _, handoff := range pending {
 		handoff.Reject("TEST_CLEANUP")

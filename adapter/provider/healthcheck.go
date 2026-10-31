@@ -110,7 +110,7 @@ func (hc *HealthCheck) setProxies(proxies []C.Proxy) {
 func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint) {
 	url = strings.TrimSpace(url)
 	if len(url) == 0 || url == hc.url {
-		log.Debugln("Ignore an empty or already registered health-check URL")
+		log.Debugln("ignore invalid health check url: %s", url)
 		return
 	}
 
@@ -136,7 +136,7 @@ func (hc *HealthCheck) registerHealthCheckTask(url string, expectedStatus utils.
 			splitAndAddFiltersToExtra(filter, hc.extra[url])
 		}
 
-		log.Debugln("Health-check URL already exists")
+		log.Debugln("health check url: %s exists", url)
 		return
 	}
 
@@ -262,13 +262,9 @@ func (hc *HealthCheck) execute(b *errgroup.Group, proxies []C.Proxy, url, uid st
 			if ctx.Err() != nil {
 				return nil
 			}
-			if !hc.bound {
-				log.Debugln("Health Checking, proxy: %s, url: %s, id: {%s}", p.Name(), url, uid)
-			}
+			log.Debugln("Health Checking, proxy: %s, url: %s, id: {%s}", p.Name(), url, uid)
 			_, _ = p.URLTest(ctx, url, expectedStatus)
-			if !hc.bound {
-				log.Debugln("Health Checked, proxy: %s, url: %s, alive: %t, delay: %d ms uid: {%s}", p.Name(), url, p.AliveForTestUrl(url), p.LastDelayForTestUrl(url), uid)
-			}
+			log.Debugln("Health Checked, proxy: %s, url: %s, alive: %t, delay: %d ms uid: {%s}", p.Name(), url, p.AliveForTestUrl(url), p.LastDelayForTestUrl(url), uid)
 			return nil
 		})
 	}

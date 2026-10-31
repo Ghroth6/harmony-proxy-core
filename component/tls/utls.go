@@ -59,17 +59,6 @@ func GetFingerprint(clientFingerprint string) (UClientHelloID, bool) {
 	}
 }
 
-// SupportsFingerprint checks exact adapter capability without creating a
-// randomized hello or logging an untrusted parameter. Empty/none preserve the
-// engine's explicit standard TLS policy.
-func SupportsFingerprint(clientFingerprint string) bool {
-	if clientFingerprint == "" || clientFingerprint == "none" {
-		return true
-	}
-	_, ok := fingerprints[clientFingerprint]
-	return ok
-}
-
 var randomFingerprint = once.OnceValue(func() UClientHelloID {
 	chooser, _ := weightedrand.NewChooser(
 		weightedrand.NewChoice("chrome", 6),

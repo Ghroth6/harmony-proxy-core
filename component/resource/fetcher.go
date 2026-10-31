@@ -180,7 +180,14 @@ func (f *Fetcher[V]) recordCleanupError(err error) bool {
 	return true
 }
 
-func (f *Fetcher[V]) Initial() (V, error) {
+func (f *Fetcher[V]) Initial() (value V, resultErr error) {
+	f.updateMutex.Lock()
+	defer f.updateMutex.Unlock()
+	defer func() {
+		if observer, ok := f.vehicle.(interface{ PreparedUpdateResult(bool, error) }); ok {
+			observer.PreparedUpdateResult(false, resultErr)
+		}
+	}()
 	f.startMutex.Lock()
 	prepared := f.prepared
 	f.startMutex.Unlock()
@@ -269,16 +276,11 @@ func (f *Fetcher[V]) Update() (V, bool, error) {
 		return lo.Empty[V](), false, err
 	}
 	defer f.finish()
-	f.startMutex.Lock()
-	prepared := f.prepared
-	f.startMutex.Unlock()
-	if prepared {
+	if observer, ok := f.vehicle.(interface{ PreparedUpdateResult(bool, error) }); ok {
 		f.updateMutex.Lock()
 		defer f.updateMutex.Unlock()
 		value, same, err := f.update()
-		if observer, ok := f.vehicle.(interface{ PreparedUpdateResult(bool, error) }); ok {
-			observer.PreparedUpdateResult(same, err)
-		}
+		observer.PreparedUpdateResult(same, err)
 		return value, same, err
 	}
 	return f.update()
@@ -315,6 +317,11 @@ func (f *Fetcher[V]) SideUpdate(buf []byte) (value V, same bool, err error) {
 		return lo.Empty[V](), false, err
 	}
 	defer f.finish()
+	if observer, ok := f.vehicle.(interface{ PreparedUpdateResult(bool, error) }); ok {
+		f.updateMutex.Lock()
+		defer f.updateMutex.Unlock()
+		defer func() { observer.PreparedUpdateResult(same, err) }()
+	}
 	return f.loadBuf(buf, utils.MakeHash(buf), true)
 }
 
@@ -334,7 +341,7 @@ func (f *Fetcher[V]) loadBufContext(ctx context.Context, buf []byte, hash utils.
 	if same {
 		err := Commit(ctx, func() error {
 			now := time.Now()
-			if updateFile && !f.prepared {
+			if updateFile {
 				_ = os.Chtimes(f.vehicle.Path(), now, now)
 			}
 			f.stateMutex.Lock()
@@ -353,6 +360,23 @@ func (f *Fetcher[V]) loadBufContext(ctx context.Context, buf []byte, hash utils.
 		f.recordCleanupError(err)
 		_ = f.Commit(func() error { f.backoff.AddAttempt(); return nil })
 		return lo.Empty[V](), false, err
+	}
+	// The mobile store freezes complete, parsed bytes before the short commit.
+	// This also covers upstream cache and bundle initialization, and file reads.
+	if prepared, ok := f.vehicle.(interface {
+		PrepareUpdate(context.Context, []byte) error
+	}); ok {
+		if err := prepared.PrepareUpdate(ctx, buf); err != nil {
+			if f.discard != nil {
+				discardErr := f.discard(contents)
+				if discardErr != nil && !f.recordCleanupError(discardErr) {
+					f.recordCloseError(discardErr)
+					f.Cancel()
+				}
+				err = errors.Join(err, discardErr)
+			}
+			return lo.Empty[V](), false, err
+		}
 	}
 	err = Commit(ctx, func() error {
 		if updateFile {
@@ -441,12 +465,6 @@ func (f *Fetcher[V]) startPullLoop(forceUpdate bool) error {
 }
 func (f *Fetcher[V]) updateWithLog() {
 	_, same, err := f.Update()
-	f.startMutex.Lock()
-	prepared := f.prepared
-	f.startMutex.Unlock()
-	if prepared {
-		return
-	} // The private mobile owner emits only fixed diagnostics.
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			log.Errorln("[Provider] %s pull error: %s", f.Name(), err)

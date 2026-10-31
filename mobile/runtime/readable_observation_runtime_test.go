@@ -4,6 +4,7 @@ package runtime_test
 
 import (
 	"encoding/json"
+	O "github.com/metacubex/mihomo/mobile/observation"
 	"strings"
 	"testing"
 
@@ -69,7 +70,7 @@ func TestRuntimeReadableShortestLargeRegistryRespectsBothProductionDecoderBudget
 	nodes := wireNodes(value)
 	t.Logf("OBS52_LARGE_RECEIPT:%s", encoded)
 	t.Logf("OBS52_LARGE_BUDGET bytes=%d nodes=%d returned=%d omitted=%d", len(encoded), nodes, len(receipt.Connections), receipt.ConnectionSnapshot.ActiveOmitted)
-	if len(encoded) > R.MaxOutputBytes || nodes > 65536 || receipt.ConnectionSnapshot.Active != 2600 || uint64(len(receipt.Connections))+receipt.ConnectionSnapshot.ActiveOmitted != 2600 || !receipt.ForwardingActive {
+	if len(encoded) > O.Current().ReplyBytes || nodes > 65536 || receipt.ConnectionSnapshot.Active != 2600 || uint64(len(receipt.Connections))+receipt.ConnectionSnapshot.ActiveOmitted != 2600 || !receipt.ForwardingActive {
 		t.Fatalf("actual readable registry exceeded a production decoder budget: bytes=%d nodes=%d", len(encoded), nodes)
 	}
 	if len(receipt.Connections) == 0 || receipt.ConnectionSnapshot.ActiveOmitted == 0 {

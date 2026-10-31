@@ -170,17 +170,13 @@ func (c *Controller) Submit(operationID string, input []byte) Receipt {
 }
 
 // Accepted verifies actual core state, rather than echoing the requested epoch.
-// A domain candidate additionally requires observed DNS; no public fallback.
-func Accepted(generation uint64, needsDNS bool) (uint64, string) {
+func Accepted(generation uint64) (uint64, string) {
 	current, enabled := platformnetwork.Current()
 	if generation == 0 || !enabled || current.Generation != generation {
 		return 0, "NETWORK_GENERATION_MISMATCH"
 	}
 	if !current.Online {
 		return 0, "NETWORK_OFFLINE"
-	}
-	if needsDNS && len(current.DNS) == 0 {
-		return 0, "NETWORK_DNS_UNAVAILABLE"
 	}
 	return current.Generation, ""
 }

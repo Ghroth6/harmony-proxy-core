@@ -442,19 +442,13 @@ func updateGeneral(general *config.General, logging bool) {
 	tunnel.SetFindProcessMode(general.FindProcessMode)
 	resolver.DisableIPv6 = !general.IPv6
 
-	dialer.SetTcpConcurrent(general.TCPConcurrent)
+	updateOutboundSettings(general)
 	if logging && general.TCPConcurrent {
 		log.Infoln("Use tcp concurrent")
 	}
 
 	inbound.SetTfo(general.InboundTfo)
 	inbound.SetMPTCP(general.InboundMPTCP)
-
-	keepalive.SetKeepAliveIdle(time.Duration(general.KeepAliveIdle) * time.Second)
-	keepalive.SetKeepAliveInterval(time.Duration(general.KeepAliveInterval) * time.Second)
-	keepalive.SetDisableKeepAlive(general.DisableKeepAlive)
-
-	adapter.UnifiedDelay.Store(general.UnifiedDelay)
 
 	dialer.DefaultInterface.Store(general.Interface)
 	dialer.DefaultRoutingMark.Store(int32(general.RoutingMark))
@@ -471,6 +465,16 @@ func updateGeneral(general *config.General, logging bool) {
 	geodata.SetGeoSiteUrl(general.GeoXUrl.GeoSite)
 	geodata.SetMmdbUrl(general.GeoXUrl.Mmdb)
 	geodata.SetASNUrl(general.GeoXUrl.ASN)
+}
+
+// These upstream engine preferences also apply to the platform-owned mobile
+// ingress. Listener, device-route and scoped geodata publication stay separate.
+func updateOutboundSettings(general *config.General) {
+	dialer.SetTcpConcurrent(general.TCPConcurrent)
+	keepalive.SetKeepAliveIdle(time.Duration(general.KeepAliveIdle) * time.Second)
+	keepalive.SetKeepAliveInterval(time.Duration(general.KeepAliveInterval) * time.Second)
+	keepalive.SetDisableKeepAlive(general.DisableKeepAlive)
+	adapter.UnifiedDelay.Store(general.UnifiedDelay)
 	mihomoHttp.SetUA(general.GlobalUA)
 	resource.SetETag(general.ETagSupport)
 }

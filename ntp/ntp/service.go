@@ -73,6 +73,9 @@ func (srv *Service) update() error {
 			}
 			continue
 		}
+		if srv.ctx.Err() != nil {
+			return nil
+		}
 		offset := response.ClockOffset
 		if offset > time.Duration(0) {
 			log.Infoln("System clock is ahead of NTP time by %s", offset)

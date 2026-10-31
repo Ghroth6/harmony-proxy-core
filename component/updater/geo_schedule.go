@@ -15,7 +15,9 @@ func RunGeoUpdater(ctx context.Context, interval time.Duration, lastUpdate time.
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	log.Infoln("[GEO] last update time %s", lastUpdate)
 	if lastUpdate.Add(interval).Before(time.Now()) {
+		log.Infoln("[GEO] Database has not been updated for %s, update now", interval)
 		if err := update(ctx); err != nil {
 			log.Errorln("[GEO] Failed to update GEO database: %s", err)
 			return
@@ -26,6 +28,7 @@ func RunGeoUpdater(ctx context.Context, interval time.Duration, lastUpdate time.
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			log.Infoln("[GEO] updating database every %s", interval)
 			if err := update(ctx); err != nil {
 				log.Errorln("[GEO] Failed to update GEO database: %s", err)
 			}

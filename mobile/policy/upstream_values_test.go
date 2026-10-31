@@ -78,7 +78,7 @@ func TestRuleProviderPreparationUsesOfficialFieldDecoding(t *testing.T) {
 			}
 			fixed := savePublicResource(t, root, requirement, []byte("payload:\n - example.com\n"))
 			platform := publicPlatform()
-			platform.RuntimeOptions.ResourceDownloads = test.interval > 0
+			platform.RuntimeOptions.ResourceDownloads = true
 			prepared, err := contract.Seal(plan.InputDigest, []contract.Resource{fixed}, platform, nil)
 			if err != nil {
 				t.Fatal(err)

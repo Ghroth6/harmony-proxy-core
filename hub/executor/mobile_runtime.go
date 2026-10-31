@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 
+	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/sniffer"
 	"github.com/metacubex/mihomo/config"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
 )
 
@@ -46,6 +48,19 @@ func PublishMobilePolicy(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 	appliedCandidate = cfg
+	log.SetLevel(cfg.General.LogLevel)
+	updateOutboundSettings(cfg.General)
+	if cfg.Experimental != nil {
+		updateExperimental(cfg.Experimental)
+	}
+	if cfg.TLS != nil {
+		ca.ResetCertificate()
+		for _, certificate := range cfg.TLS.CustomTrustCert {
+			if err := ca.AddCertificate(certificate); err != nil {
+				log.Warnln("%s\nadd error: %s", certificate, err)
+			}
+		}
+	}
 	tunnel.OnSuspend()
 	updateProxies(cfg.Proxies, cfg.Providers)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
@@ -72,7 +87,6 @@ func PublishMobilePolicy(ctx context.Context, cfg *config.Config) error {
 			resolver.DirectHostResolver = r.Resolver
 		}
 	}
-	dialer.SetTcpConcurrent(cfg.General.TCPConcurrent)
 	// Raw device-interface/routing marks cannot take ownership from the actual
 	// mobile snapshot and socket-protection gate.
 	dialer.DefaultInterface.Store("")

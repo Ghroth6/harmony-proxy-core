@@ -143,19 +143,7 @@ func (t *Transfer) start(target StartRequest, input []byte) {
 		return
 	}
 	t.phase("constructing")
-	raw, err := config.UnmarshalRawConfig(input)
-	if err != nil {
-		t.failure("CANDIDATE_FORMAT")
-		return
-	}
-	needsDNS := raw.DNS.Enable
-	for _, node := range raw.Proxy {
-		server, _ := node["server"].(string)
-		if _, err := netip.ParseAddr(server); err != nil {
-			needsDNS = true
-		}
-	}
-	accepted, code := network.Accepted(target.NetworkGeneration, needsDNS)
+	accepted, code := network.Accepted(target.NetworkGeneration)
 	if code != "" {
 		t.failure(code)
 		return

@@ -151,6 +151,25 @@ func TestInitialDownloadRejectsHTTPFailureAndTruncatedBody(t *testing.T) {
 	}
 }
 
+func TestInitialDownloadAcceptsCompleteOtherSuccessfulStatuses(t *testing.T) {
+	downloadNetwork(t)
+	valid := geoIPDownloadFixture(t)
+	for _, status := range []int{http.StatusCreated, http.StatusPartialContent} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "GeoIP.dat")
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				_, _ = w.Write(valid)
+			}))
+			defer server.Close()
+			if err := downloadToPath(server.URL, target, validateGeoIPDownload); err != nil {
+				t.Fatal(err)
+			}
+			assertDownloadTarget(t, target, string(valid), true)
+		})
+	}
+}
+
 func TestInitialDownloadFailedPublishPreservesTarget(t *testing.T) {
 	downloadNetwork(t)
 	target := filepath.Join(t.TempDir(), "GeoIP.dat")

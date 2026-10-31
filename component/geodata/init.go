@@ -95,7 +95,7 @@ func downloadToPathContext(ctx context.Context, url, path string, validate func(
 			err = errors.Join(err, resp.Body.Close())
 		}
 	}()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("download %s: %s", url, resp.Status)
 	}
 

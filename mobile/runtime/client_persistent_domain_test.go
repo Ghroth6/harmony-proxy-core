@@ -214,7 +214,7 @@ func runPersistentDomainChild(t *testing.T, mode, root string) {
 	t.Cleanup(func() { manager.Stop(generation); owner.Close() })
 	networkGeneration := publishClientNetwork(t, manager, "192.0.2.53")
 	plan := owner.Plan(mode+"-source-plan", input, nil)
-	if plan.Category != "planned" || plan.ResourcesComplete || len(plan.Requirements) != 1 || len(plan.Groups) != 2 || len(plan.Groups[0].Members) != 2 || !plan.StoreFakeIP || !plan.StoreSelected {
+	if plan.Category != "planned" || !plan.ResourcesComplete || len(plan.Requirements) != 1 || len(plan.Groups) != 2 || len(plan.Groups[0].Members) != 2 || !plan.StoreFakeIP || !plan.StoreSelected {
 		t.Fatalf("fresh process did not plan the complete declared saved policy: %+v", plan)
 	}
 	resource := domainRuleProviderResource(plan.Requirements[0])

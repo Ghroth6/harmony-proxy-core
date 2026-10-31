@@ -3,7 +3,7 @@ package geodata
 import (
 	"errors"
 	"net/netip"
-	"regexp"
+
 	"strings"
 	"sync"
 
@@ -31,57 +31,13 @@ func VerifyPrepared(kind string, data []byte) error {
 		return r.Close()
 	case "geoip":
 		var list router.GeoIPList
-		if err := proto.Unmarshal(data, &list); err != nil {
-			return err
-		}
-		seen := map[string]bool{}
-		if len(list.Entry) == 0 {
-			return errors.New("empty IP data")
-		}
-		for _, entry := range list.Entry {
-			if entry == nil || entry.CountryCode == "" || seen[strings.ToLower(entry.CountryCode)] {
-				return errors.New("invalid IP data group")
-			}
-			seen[strings.ToLower(entry.CountryCode)] = true
-			for _, cidr := range entry.Cidr {
-				if cidr == nil {
-					return errors.New("invalid IP data record")
-				}
-				ip, ok := netip.AddrFromSlice(cidr.Ip)
-				if !ok || cidr.Prefix > uint32(ip.BitLen()) {
-					return errors.New("invalid IP data prefix")
-				}
-			}
-		}
+		return proto.Unmarshal(data, &list)
 	case "geosite":
 		var list router.GeoSiteList
-		if err := proto.Unmarshal(data, &list); err != nil {
-			return err
-		}
-		seen := map[string]bool{}
-		if len(list.Entry) == 0 {
-			return errors.New("empty domain data")
-		}
-		for _, entry := range list.Entry {
-			if entry == nil || entry.CountryCode == "" || seen[strings.ToLower(entry.CountryCode)] {
-				return errors.New("invalid domain data group")
-			}
-			seen[strings.ToLower(entry.CountryCode)] = true
-			for _, domain := range entry.Domain {
-				if domain == nil || domain.Value == "" || domain.Type < router.Domain_Plain || domain.Type > router.Domain_Full {
-					return errors.New("invalid domain data record")
-				}
-				if domain.Type == router.Domain_Regex {
-					if _, err := regexp.Compile(domain.Value); err != nil {
-						return errors.New("invalid domain regular expression")
-					}
-				}
-			}
-		}
+		return proto.Unmarshal(data, &list)
 	default:
 		return errors.New("unsupported prepared geodata")
 	}
-	return nil
 }
 
 // Prepared freezes the resource instance and its matcher caches. Global

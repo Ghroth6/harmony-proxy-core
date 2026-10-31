@@ -19,10 +19,8 @@ Standalone node inspection cannot traverse an already published chain. Adapter
 resources are discarded and joined; preparation network attempts are rejected.
 Selected-node select/MATCH composition remains an explicit local policy. Both
 composed nodes and full original YAML use the same prepared-policy runtime.
-The independent manual static validator still constructs its own temporary
-selected candidate; historical checks only determine its older coverage labels.
-Coverage classification reads the original values without constructing another
-candidate. Policy validation also reuses its verified plan's adaptations, so a
+The independent manual validator only decodes the upstream format. Complete
+semantics use policy validation, which reuses its verified plan's adaptations, so a
 second construction or cleanup cannot be hidden after a successful result.
 
 Original policy Plan and Build share the upstream proxy/group graph constructor.
@@ -186,7 +184,7 @@ authorizes initial resource acquisition during preparation or Start.
 snapshot for every Start. The old fixed-node zero-generation bypass is retired;
 even literal-IPv4 nodes require observation of the real underlying network.
 Input and request lengths must fit the signed C.int ABI (INT32_MAX); observation receipts retain their separate 1 MiB budget.
-Packet queue size is 128, MTU 1500 and transfer record capacity 64. The transient
+Packet queue size is 128 and MTU is 1500. Transfer records have no count quota. The transient
 TCP handshake backlog is 1024, matching pinned sing-tun v0.4.27's gVisor
 forwarder. A completed handshake releases its backlog reservation while the
 callback retains lifetime ownership until real forwarding returns. Established
@@ -218,10 +216,11 @@ they never substitute the raw digest for the composed candidate identity.
 Before construction `stack` retains its legacy placeholder; accepted runtime
 reports `gvisor-ipv4-tcp-udp` or `gvisor-dual-tcp-udp` from its actual packet stack.
 An absent specific transfer is unknown, never replaced with
-the last run. Duplicate ID or record-capacity faults are retained and block
-new runs, even if a separate rejected descriptor close succeeds. At most 64
-specific transfers are retained: confirmed clean older records may be evicted,
-while any unresolved record remains. A query of an evicted transfer is unknown.
+the last run. Duplicate or non-monotonic IDs retain their ownership fault and
+block new runs. Each new transfer discards confirmed-clean noncurrent records;
+all unresolved owners remain without a count cap. A discarded transfer is unknown.
+A negative descriptor or proven EBADF consumed no descriptor and does not leave
+cleanup unknown or block a later valid transfer.
 
 `tun` contains `fd`, `metadataBefore`, `closeAttempted`, `closeResult`,
 `afterClose`, `metadataAfter`. Metadata contains `observed`, decimal-string
@@ -268,6 +267,11 @@ original/resolved targets and attribution digests remain independent. The exact
 shared schema and pairing rules live only in the application repository's
 `docs/design/contracts/vpn-runtime.md`; no configuration or payload is exported.
 
+Observation retention is supplied by the embedding application through
+`mobile/observation.Configure`; bare core retains no history. The current app
+configures 1 MiB/65536 JSON values, 16 connection creations, 16 DNS queries,
+4 answers per query and 128 resource events. These are application diagnostic
+windows, never proxy, DNS reply or platform capacity limits.
 Output also respects the native 65536-value JSON parser budget. Each connection
 costs 24 JSON values plus labels and 6 optional attribution values. 1024 values
 are reserved for the bounded root, descriptor/resource/pending-owner values and
@@ -548,15 +552,11 @@ repository's `docs/delivery/verification/m1a-2026-10-06.md`: 20/20 behavior and 
 checks passed, while 25 socket comparisons remain explicitly unverified.
 This milestone validates the configuration operation, not VPN forwarding.
 
-Format decoding invokes real Mihomo `config.UnmarshalRawConfig`. The original
-YAML scope gate runs before semantic constructors. Supported static ss/select/
-DOMAIN/MATCH inputs pass `config.ValidateMobileStatic`, which checks required
-node scalars and integer ports 1..65535, reuses real proxy/group/rule semantics,
-then closes and joins all candidate resources before returning. Missing members
-and targets return sanitized structured diagnostics. Unsupported fields/resources
-remain incomplete. This path never invokes `ParseRawConfig`, temporarily updates
-globals, applies a candidate, starts listeners, or obtains external resources.
-Parser error strings are deliberately not returned because they can echo input.
+Format decoding invokes real Mihomo `config.UnmarshalRawConfig` only. A decoded
+input returns incomplete with `mihomo-format` covered and `semantic-validation`
+uncovered. The old manual semantic whitelist and duplicate selected constructor
+are retired. Complete validation belongs to `mobile/policy`; the format tool
+does not construct resources, perform I/O or change running state.
 
 Build provenance must set `-X github.com/metacubex/mihomo/mobile/validation.SourceRevision=<actual-clean-commit>`.
 An unstamped build reports `development-unidentified`. No version constant proves
@@ -584,28 +584,12 @@ identified explicitly.
 
 ### Implemented validation operation
 
-| Internal responsibility | Current implementation | Ownership and failure rule |
-| --- | --- | --- |
-| C boundary | `mobile/bridge/main.go`, `mobile/include/cb_validation.h` | Check pointer/size inputs, copy borrowed bytes, serialize receipt into caller-freed output; no retained caller pointers or engine objects |
-| Validation operation | `mobile/validation/validation.go` | Own one request, digest and receipt; decode with the engine, classify original input scope, invoke supported semantics, return covered/uncovered capabilities |
-| Static semantic construction | `config/mobile_validation.go` | Validate required scalars and supported fields before reusing actual proxy/group/rule constructors; never publish a running configuration |
-| Temporary resource ownership | `component/configresources` | Register constructed resources, close and wait before returning; cleanup failure prevents a passing validation receipt |
-
-The call is synchronous inside the C export. Application asynchronous scheduling
-does not imply that the engine operation is cancellable. A detached page must not
-cause the native caller to abandon output ownership. The application contract
-defines how late receipts are ignored while the adapter completes cleanup.
-
-This operation owns no active configuration, provider scheduler, listener or VPN.
-An unsupported input is incomplete rather than validated by a shallower fallback.
-The temporary resource set cannot escape as a runnable candidate. Runtime setup
-must construct and own its own resources; it must not reuse discarded validation
-objects. Runtime preparation and independent construction use `mobile/policy`.
-
-Module tests exercise `Validate` and the semantic/resource interfaces, including
-invalid references, unsupported fields and construction/cleanup failures. C
-boundary and application tests separately verify buffer ownership and propagation.
-Only the recorded target-app validation proves the accepted device behavior.
+`mobile/bridge/main.go` owns copied inputs and caller-freed results. The read-only
+`mobile/validation.Validate` owns one request digest and upstream format receipt.
+The ABI remains 1; successful decoding is incomplete, not a semantic pass.
+The operation is synchronous, owns no temporary adapters or listeners, and has
+no cancellation interface. A detached caller still completes buffer cleanup.
+Production semantic validation and runtime construction use `mobile/policy`.
 
 ### Broader runtime responsibilities
 
@@ -679,22 +663,12 @@ remain application acceptance. Record each reused patch's purpose,
 affected path and evidence; neither a design table nor an old host test approves
 the entire historical patch set.
 
-### Independent manual static validation
+### Independent manual format validation
 
-The unchanged validation ABI 1 (`cb_validate_v1` / `mobile/validation.Validate`)
-remains available for an explicit manual static check. Selected select/MATCH
-inputs use `config.ValidateMobileSelected` → `BuildMobileSelectedCandidate` and
-discard their temporary real upstream adapters before returning. The constructor
-has no runtime caller. Other supported static shapes use `ValidateMobileStatic`.
-Neither operation owns a prepared-policy context or authorizes Start.
-
-Historical `m1b-fixed-ipv4-tcp` and `mobile-proxy-ipv4-tcp-v2` labels remain only
-as ABI 1 static coverage descriptions. Narrow legacy checks classify those labels;
-they never reject an otherwise supported selected static candidate and never
-control runtime defaults, preparation, network observation or socket protection.
-The real node constructor retains upstream protocol, scalar and TLS semantics;
-explicit integration gaps remain incomplete. The existing validation tests keep
-this independent user capability and its truthful coverage boundaries.
+The unchanged ABI 1 (`cb_validate_v1`) invokes upstream format decoding only.
+It never emits old M1b/V2 coverage tokens, owns no prepared-policy context and
+does not authorize Start. Complete semantic validation uses the same policy
+construction as production, without a second field or protocol whitelist.
 
 `node_policy_runtime_test.go` exercises canonical nodes → production-shaped
 composition → Plan/Seal/Validate/BuildCandidate → Start/Stop with real policy,
@@ -822,7 +796,11 @@ trailing data; this is the application ABI schema, not a YAML field whitelist.
 
 Fixed resources use exact `immutable/<digest>/<kind>.<format>` paths inside the
 captured trusted root. Preparation checks regular files, byte bounds, full EOF,
-Close and independent digests before compiling all provider rules and geodata.
+Close and independent digests before compiling supplied rules and geodata.
+Missing rule-provider bytes use upstream runtime initialization and fallback;
+required GEO matchers still require actual bytes. Empty text rules are valid.
+DAT validation uses the upstream loader and selected matcher, without scanning
+unused groups. Built-in GEOIP,LAN requires no database.
 Rule resources use the upstream format decoder and strategy, including its
 log-and-skip behavior for invalid individual rules. An update whose entries
 are all invalid can therefore publish an empty matcher, as upstream does.
@@ -841,31 +819,26 @@ Mihomo's existing lookup behavior remains unchanged. Initial MMDB/ASN downloads
 use the same open-time validation before atomic publication. Resource bytes,
 digest verification and candidate-scoped GEO matchers remain unchanged.
 
-For prepared rule resources, `Fetcher.InitialPrepared` loads verified bytes
-without a watcher, request or timer. Runtime activation starts one scheduler;
-its first tick waits a full configured interval. Actual updates preserve the
-original URL, headers, proxy and strategy, use the accepted protection/network
-generation and count every actual GET, including each redirect. The resource
-client uses the pinned upstream HTTP library's redirect and header rules,
-including its existing cross-host credential handling and redirect count. No
-mobile-specific downgrade or blanket header-removal policy is added. Each
-attempt still owns a fresh connection for request/close accounting.
-Only a final 200 with complete bounded EOF and returned Close can be adopted.
-Intermediate or final Close errors retain the real object and block clean
-retirement. Updates check dependency closure and the source's size-limit before
-saving, without a separate total-resource quota. A completed temporary file is
-synced, closed, re-hashed and atomically published without replacing an immutable
-file; only then can the actual provider strategy adopt it. The ledger separates
-initial candidate/manifest identity from acquired, saved and adopted versions.
-Its process-wide acquisition count never resets. Cancellation joins scheduler,
-physical dial racers and close workers; a Close failure retains the real object
-and prevents successful cleanup. Closing the Engine refuses a candidate that
-still owns its trusted root. GEO auto-update uses the official stale-first and
-interval schedule with this run's context. Verified bytes rebuild all active
-country matchers before replacing the candidate's readers; failure keeps the
-old version and retirement cancels and joins the updater. Proxy providers use
-their official Initial/cache/payload path instead of InitialPrepared; their
-initialization and refresh failures retain the official partial-success policy.
+Verified rule bytes are prepared without requests, watchers or timers. At runtime
+the same upstream Fetcher handles cache, path-in-bundle, source reads, stale-first
+refresh, retry timing and file watching. Missing prepared bytes retain official
+payload and initialize only after owned activation. Source failure is logged and
+does not cancel unrelated providers or the policy. HTTPVehicle supplies ordinary
+2xx, ETag/If-None-Match/304, redirects and configured proxy/header semantics.
+Cache, bundle, file and HTTP adoption use the same parsed-byte immutable-store
+callback. Local reads do not count as GETs; 304 creates no new version. Initial
+candidate/manifest identity remains fixed while the ledger records adoption.
+Cancellation joins actual workers and retains failed Close objects. The private
+root can contain normal file/cache paths and BundleMRS.7z; external document
+permission/source binding is an application capability not yet implemented.
+GEO updates keep the official stale-first/interval schedule and independently
+bind each resource. New bytes rebuild active matchers before publication.
+
+NTP reuses the upstream exchange, retry loop and core clock offset under a
+candidate owner. Preparation performs no exchange; runtime activates the original
+server/dialer-proxy policy and retirement cancels and joins actual UDP sockets.
+Explicit write-to-system uses the upstream platform attempt/error behavior;
+no permission is assumed and host tests never adjust the system clock.
 
 The original DNS candidate constructs its own inactive ResolverOwner, real
 resolver, enhancer and captured service. Original nameserver policy, fallback,
@@ -933,4 +906,3 @@ owned independently. These checkpoints do not complete #25/#26.
 Go 嵌入方通过 `bridge.SetPolicyReady` 在首次运行前登记本地选择恢复：provider 初始化结束后、客户端入口开放前调用。`bridge.WithActivePolicy` 按核心进程、运行代次及候选摘要借用当前 `config.Config`；回调不得保留图引用或停止该 manager。运行退休等待借用结束，取消后拒绝新借用。页面、持久化及 C/ArkTS 节点协议归应用桥，不加入 Mihomo 业务层。
 
 选择沿用 `Selector.Set/ForceSet` 的名称语义；仅为选择字符串增加并发读写保护。`Fetcher.LastResult` 公开最近一次完成的更新/未变化/失败及时间，不保存历史，不改变下载调度、失败处理或原始日志。provider 内容发布仍使用已有 `Commit`，只在短回调内读取或选择，不在其中进行网络、文件写入或连接关闭。
-
