@@ -144,3 +144,76 @@ func TestPolicyNamesSurvivePlanBuildAndSelection(t *testing.T) {
 		}
 	}
 }
+
+func TestExistingFileResourceIdentitySurvivesOfficialDecoding(t *testing.T) {
+	root := t.TempDir()
+	engine, err := policy.NewEngine(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	input := []byte("ipv6: false\ndns: {enable: false}\nrule-providers:\n local: {type: file, behavior: domain, path: './rules.yaml', header: null, size-limit: 1}\nrules: ['RULE-SET,local,DIRECT']\n")
+	plan := engine.Plan("existing-source", input, nil)
+	if plan.Category != "planned" || len(plan.Requirements) != 1 {
+		t.Fatalf("plan: %+v", plan)
+	}
+	// Frozen pre-change source description: header:null and the explicit file
+	// size-limit were already part of the persisted resource's identity.
+	oldSource := contract.Digest([]byte(`{"downloadProxy":"","format":"yaml","intervalSeconds":0,"kind":"rule-provider","maxBytes":1,"originalPath":"./rules.yaml","sourceHeadersJson":"null","sourceKind":"file","sourceUri":""}`))
+	if plan.Requirements[0].SourceDigest != oldSource || plan.Requirements[0].MaxBytes != contract.MaxResourceBytes {
+		t.Fatal("source identity changed or a file acquired an HTTP quota")
+	}
+	required := plan.Requirements[0]
+	required.SourceDigest = oldSource
+	fixed := savePublicResource(t, root, required, []byte("payload:\n - example.com\n"))
+	if ready := engine.Plan("reopen-existing-source", input, []contract.Resource{fixed}); ready.Category != "planned" || !ready.ResourcesComplete {
+		t.Fatalf("existing resource: %+v", ready)
+	}
+	prepared, err := contract.Seal(plan.InputDigest, []contract.Resource{fixed}, publicPlatform(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := engine.BuildCandidate(input, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched, _ := candidate.Rules[0].Match(&C.Metadata{Host: "example.com"}, C.RuleMatchHelper{}); !matched {
+		t.Fatal("old immutable bytes did not match")
+	}
+	if err := candidate.Discard(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fixed.SourceDigest = contract.Digest([]byte("different-source"))
+	if bad := engine.Plan("wrong-existing-source", input, []contract.Resource{fixed}); bad.Category == "planned" {
+		t.Fatal("accepted an unrelated source")
+	}
+}
+
+func TestInlineProvidersUsePayloadRegardlessOfDeclaredFormat(t *testing.T) {
+	for _, format := range []string{"yaml", "text", "mrs"} {
+		t.Run(format, func(t *testing.T) {
+			engine, err := policy.NewEngine(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer engine.Close()
+			input := []byte("ipv6: false\ndns: {enable: false}\nrule-providers:\n local: {type: inline, behavior: domain, format: " + format + ", payload: [example.com]}\nrules: ['RULE-SET,local,DIRECT']\n")
+			plan := engine.Plan("inline-format", input, nil)
+			if plan.Category != "planned" {
+				t.Fatalf("plan: %+v", plan)
+			}
+			prepared, err := contract.Seal(plan.InputDigest, nil, publicPlatform(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate, err := engine.BuildCandidate(input, prepared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer candidate.Discard(context.Background())
+			if matched, _ := candidate.Rules[0].Match(&C.Metadata{Host: "example.com"}, C.RuleMatchHelper{}); !matched {
+				t.Fatal("inline payload was decoded as a file")
+			}
+		})
+	}
+}

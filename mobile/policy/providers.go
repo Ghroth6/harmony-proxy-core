@@ -12,7 +12,6 @@ import (
 	"github.com/metacubex/mihomo/mobile/policy/contract"
 	"github.com/metacubex/mihomo/rules"
 	RP "github.com/metacubex/mihomo/rules/provider"
-	"go.yaml.in/yaml/v3"
 )
 
 func (e *Engine) prepareProviders(raw *config.RawConfig, prepared contract.PreparedContext, requirements []contract.Requirement, fixed map[string]fixedResource) (*config.MobilePolicyResources, error) {
@@ -59,15 +58,7 @@ func (e *Engine) prepareProviders(raw *config.RawConfig, prepared contract.Prepa
 			return RP.RuleSetPayload(input, behavior, format, inputs.ParseRule)
 		}
 		if schema.Type == "inline" {
-			data, err := yaml.Marshal(map[string]any{"payload": schema.Payload})
-			if err != nil {
-				return inputs, errors.New("POLICY_RESOURCE_PAYLOAD_INVALID")
-			}
-			payload, err := decode(data)
-			if err != nil {
-				return inputs, err
-			}
-			inputs.RuleProviders[name] = RP.NewInlineProvider(name, behavior, payload, inputs.ParseRule)
+			inputs.RuleProviders[name] = RP.NewInlineProvider(name, behavior, schema.Payload, inputs.ParseRule)
 			continue
 		}
 		ref := digest([]byte(prepared.InputDigest + ":resource:rule-provider:" + name))

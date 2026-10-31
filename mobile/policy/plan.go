@@ -304,10 +304,15 @@ func allSubRules(raw *config.RawConfig) []string {
 
 func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules ...[]string) ([]contract.Requirement, string) {
 	result := []contract.Requirement{}
-	add := func(kind, format, logical, sourceKind, uri, headers, path, proxy string, interval, maxBytes int64) {
-		description := map[string]any{"kind": kind, "format": format, "sourceKind": sourceKind, "sourceUri": uri, "sourceHeadersJson": headers, "originalPath": path, "downloadProxy": proxy, "intervalSeconds": interval, "maxBytes": maxBytes}
+	add := func(requirement contract.Requirement, logical, identityHeaders string, identityMaxBytes int64) {
+		// Keep the established source identity based on declared values, even
+		// when the official decoder normalizes headers or ignores a file limit.
+		// The operational fields below carry the decoded/effective values.
+		description := map[string]any{"kind": requirement.Kind, "format": requirement.Format, "sourceKind": requirement.SourceKind, "sourceUri": requirement.SourceURI, "sourceHeadersJson": identityHeaders, "originalPath": requirement.OriginalPath, "downloadProxy": requirement.DownloadProxy, "intervalSeconds": requirement.IntervalSeconds, "maxBytes": identityMaxBytes}
 		encoded, _ := canonical(description)
-		result = append(result, contract.Requirement{RefID: digest([]byte(inputDigest + ":resource:" + kind + ":" + logical)), Kind: kind, Format: format, SourceKind: sourceKind, SourceDigest: digest(encoded), SourceURI: uri, SourceHeadersJSON: headers, OriginalPath: path, DownloadProxy: proxy, IntervalSeconds: interval, MaxBytes: maxBytes})
+		requirement.RefID = digest([]byte(inputDigest + ":resource:" + requirement.Kind + ":" + logical))
+		requirement.SourceDigest = digest(encoded)
+		result = append(result, requirement)
 	}
 	logicalNames := make([]string, 0, len(raw.RuleProvider))
 	for name := range raw.RuleProvider {
@@ -345,19 +350,27 @@ func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules .
 			return nil, "POLICY_RESOURCE_SOURCE_INVALID"
 		}
 		interval := int64(schema.Interval)
-		headers := ""
-		if schema.Header != nil {
+		headers, identityHeaders := "", ""
+		if original, present := raw.RuleProvider[name]["header"]; present {
 			encoded, err := canonical(schema.Header)
 			if err != nil {
 				return nil, "POLICY_RESOURCE_HEADERS_INVALID"
 			}
 			headers = string(encoded)
+			encoded, err = canonical(original)
+			if err != nil {
+				return nil, "POLICY_RESOURCE_HEADERS_INVALID"
+			}
+			identityHeaders = string(encoded)
 		}
-		maxBytes := int64(contract.MaxResourceBytes)
-		if kind == "http" && schema.SizeLimit > 0 && schema.SizeLimit < maxBytes {
-			maxBytes = schema.SizeLimit
+		maxBytes, declaredMaxBytes := int64(contract.MaxResourceBytes), int64(contract.MaxResourceBytes)
+		if schema.SizeLimit > 0 && schema.SizeLimit < declaredMaxBytes {
+			declaredMaxBytes = schema.SizeLimit
 		}
-		add("rule-provider", format, name, kind, uri, headers, path, proxy, interval, maxBytes)
+		if kind == "http" {
+			maxBytes = declaredMaxBytes
+		}
+		add(contract.Requirement{Kind: "rule-provider", Format: format, SourceKind: kind, SourceURI: uri, SourceHeadersJSON: headers, OriginalPath: path, DownloadProxy: proxy, IntervalSeconds: interval, MaxBytes: maxBytes}, name, identityHeaders, declaredMaxBytes)
 	}
 	flags := map[string]bool{}
 	scanRule := func(text string) {
@@ -455,7 +468,7 @@ func planRequirements(raw *config.RawConfig, inputDigest string, preparedRules .
 		case "asn":
 			uri = raw.GeoXUrl.ASN
 		}
-		add(kind, format, kind, "engine-default", uri, "", "", "", interval, contract.MaxResourceBytes)
+		add(contract.Requirement{Kind: kind, Format: format, SourceKind: "engine-default", SourceURI: uri, IntervalSeconds: interval, MaxBytes: contract.MaxResourceBytes}, kind, "", contract.MaxResourceBytes)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].RefID < result[j].RefID })
 	return result, ""
