@@ -14,7 +14,7 @@ import (
 )
 
 func (c *Config) prepareMobileNTP() {
-	if c.NTP == nil || !c.NTP.Enable || c.NTP.Server == "" || c.NTP.Interval <= 0 {
+	if c.NTP == nil || !c.NTP.Enable || c.NTP.Interval <= 0 {
 		return
 	}
 	var physical C.Dialer = c.mobileNetwork.newPhysical(nil)
