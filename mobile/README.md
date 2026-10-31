@@ -77,6 +77,11 @@ publishes the actual snapshot, resets the SystemResolver and resumes online
 management admission. Invalid/stale data never gets echoed as an accepted path.
 No public DNS fallback is installed when platform DNS is unavailable.
 
+Snapshot input uses the signed C.int ABI length range. The application and core
+do not impose extra DNS/interface/address/route counts or interface-name length
+quotas on platform observations. Schema, address validity, numeric representation,
+non-VPN identity and stale-generation checks remain; no list is truncated.
+
 Runtime contract 5 retains the existing `_v1` C symbol names while explicitly
 rejecting contract-1/2/3/4 requests. Required top-level `networkGeneration` is separate
 from persistent platform policy. Every runtime input requires the current online
@@ -164,9 +169,10 @@ follow the actual prepared configuration. The current select/MATCH node base
 omits both settings, preserving Mihomo defaults `IPv6=true`, `DNS.Enable=false`.
 Client UDP ingress does not grant UDP support to a TCP-only physical node.
 `platformPolicy` has `revision`, `addressFamily`, `applicationIds`, and the optional
-`applicationScope` below. Legacy/include lists contain one or more distinct valid
-bundle IDs, each <=128 bytes; explicit all has an empty list. List capacity is
-enforced by the target VPN API, not by another application/core count limit. The IPv4 `tunPolicy` uses
+`applicationScope` below. Legacy/include lists contain one or more distinct,
+nonempty platform identifiers; explicit all has an empty list. Their names and
+list capacity are handled by the target VPN API, without duplicating installation
+naming rules or adding application/core quotas. The IPv4 `tunPolicy` uses
 `{address:"10.111.0.1",prefixLength:30,route:"0.0.0.0",routePrefixLength:0,mtu:1500}`.
 Enabled IPv6 adds `fd00:111::1/126` and `::/0`
 and sets address family `dual`. Enabled DNS uses `10.111.0.2`, plus
@@ -785,7 +791,7 @@ fields, never arbitrary credentials or display names.
 `mobile/include/cb_policy.h` declares original-policy ABI 2; context schema and
 planner remain 1. `PlatformPolicy.applicationScope` is optional only for legacy
 include values. Explicit `all` requires `applicationIds:[]`; explicit `include`
-and legacy absence require a nonempty list of distinct valid bundle IDs. The core
+and legacy absence require a nonempty list of distinct platform identifiers. The core
 does not duplicate OS-version-specific list capacities; the application passes
 the complete list to the target VPN API and reports actual creation errors.
 Unknown/null/empty
@@ -836,10 +842,10 @@ without a watcher, request or timer. Runtime activation starts one scheduler;
 its first tick waits a full configured interval. Actual updates preserve the
 original URL, headers, proxy and strategy, use the accepted protection/network
 generation and count every actual GET, including each redirect. The resource
-client allows at most five redirects, rejects HTTPS downgrade and strips all
-declared headers and generated authorization/cookie/referrer data after an
-origin change, including later same-origin hops. Each attempt owns a fresh
-connection; ordinary upstream HTTP clients keep their existing behavior.
+client uses the pinned upstream HTTP library's redirect and header rules,
+including its existing cross-host credential handling and redirect count. No
+mobile-specific downgrade or blanket header-removal policy is added. Each
+attempt still owns a fresh connection for request/close accounting.
 Only a final 200 with complete bounded EOF and returned Close can be adopted.
 Intermediate or final Close errors retain the real object and block clean
 retirement. Updates check dependency closure and the source's size-limit before
@@ -888,10 +894,14 @@ cachefile singleton. It borrows the Engine's captured root at the fixed path
 `state/fakeip/<raw-sha256-hex>.db`; candidate preferences and run generations do
 not change that identity. IPv4/IPv6 prefixes have independent buckets. Pure
 Plan/Validate/Build register inactive pools without creating a directory or DB;
-explicit activation restores them before opening DNS admission. The DB has a
-64 MiB bound. Mapping updates commit synchronously before returning a DNS answer.
-A real read/write failure returns `POLICY_FAKEIP_STATE_FAILED`, cancels services
-and fails the actual runtime rather than acknowledging an uncommitted mapping.
+explicit activation restores them before opening DNS admission. The DB retains
+the same legacy buckets and atomic mapping/offset transaction, so saved mappings do
+not need migration. No extra DB size limit is imposed. Persistence open/read/write
+errors are logged as upstream cache warnings; they do not cancel the policy or
+withdraw DNS admission. An unavailable cache can therefore prevent a mapping
+from being retained or resolved back, as with upstream; no successful persistence
+or automatic in-memory recovery is claimed. The inactive/retired owner still
+rejects lookups outside its lifetime.
 DNS workers join before the resource session Syncs/Closes the real database.
 `policy-services` reports that Close result; unknown Close retains the actual DB,
 file and root-owning session and blocks subsequent candidates. Engine.Close

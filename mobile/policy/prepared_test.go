@@ -106,9 +106,9 @@ func TestOriginalPolicyApplicationScopeCannotBroadenAmbiguousOrInvalidValues(t *
 		"conflicting all": `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationScope":"all","applicationIds":["org.example.public"]}`,
 		"unknown":         `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationScope":"exclude","applicationIds":["org.example.public"]}`,
 		"empty scope":     `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationScope":"","applicationIds":["org.example.public"]}`,
-		"invalid id":      `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationIds":["bad"]}`,
+		"empty id":        `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationIds":[""]}`,
 		"duplicate":       `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationIds":["org.example.public","org.example.public"]}`,
-		"over capacity":   `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationIds":[` + strings.TrimSuffix(strings.Repeat(`"org.example.public",`, 17), ",") + `]}`,
+		"many duplicates": `{"revision":"public-policy-v1","addressFamily":"ipv4","applicationIds":[` + strings.TrimSuffix(strings.Repeat(`"org.example.public",`, 17), ",") + `]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			platform := publicPlatform()

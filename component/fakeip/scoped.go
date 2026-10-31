@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/metacubex/bbolt"
+	"github.com/metacubex/mihomo/log"
 )
 
 var (
@@ -18,8 +19,6 @@ var (
 	ErrStateFailed   = errors.New("POLICY_FAKEIP_STATE_FAILED")
 	ErrStateClose    = errors.New("POLICY_FAKEIP_STATE_CLOSE_FAILED")
 )
-
-const MaxStateBytes = 64 << 20
 
 // StateFiles is the trusted directory authority, not a YAML or RPC path.
 // *os.Root implements it. The open-file boundary also permits real host-file
@@ -34,19 +33,16 @@ type StateFiles interface {
 // registration do no I/O; Activate restores both pools before DNS admission.
 // The candidate resource owner must pin that root until Wait succeeds.
 type ScopedPersistence struct {
-	mu            sync.Mutex
-	files         StateFiles
-	path          string
-	pools         []*Pool
-	db            *bbolt.DB
-	file          *os.File
-	active        bool
-	retired       bool
-	err           error
-	closeErr      error
-	closeDone     chan struct{}
-	failure       func()
-	failureCalled bool
+	mu        sync.Mutex
+	files     StateFiles
+	path      string
+	pools     []*Pool
+	db        *bbolt.DB
+	file      *os.File
+	active    bool
+	retired   bool
+	closeErr  error
+	closeDone chan struct{}
 }
 
 func NewScopedPersistence(files StateFiles, inputDigest string) (*ScopedPersistence, error) {
@@ -54,14 +50,6 @@ func NewScopedPersistence(files StateFiles, inputDigest string) (*ScopedPersiste
 		return nil, ErrStateFailed
 	}
 	return &ScopedPersistence{files: files, path: "state/fakeip/" + inputDigest[7:] + ".db"}, nil
-}
-
-// SetFailureHandler is bound before activation. A sticky read/write failure
-// cancels the actual policy owner; it never becomes a successful DNS answer.
-func (s *ScopedPersistence) SetFailureHandler(handler func()) {
-	s.mu.Lock()
-	s.failure = handler
-	s.mu.Unlock()
 }
 
 func (s *ScopedPersistence) register(pool *Pool) (store, error) {
@@ -82,32 +70,31 @@ func (s *ScopedPersistence) register(pool *Pool) (store, error) {
 func (s *ScopedPersistence) Activate() (err error) {
 	s.mu.Lock()
 	if s.active {
-		err = s.err
 		s.mu.Unlock()
 		return
 	}
-	if s.retired || s.err != nil || s.db != nil {
+	if s.retired || s.db != nil {
 		s.mu.Unlock()
 		return ErrStateInactive
 	}
 	if info, statErr := s.files.Stat(s.path); statErr == nil {
-		if !info.Mode().IsRegular() || info.Size() > MaxStateBytes {
+		if !info.Mode().IsRegular() {
 			s.mu.Unlock()
-			return s.fail(ErrStateFailed)
+			return s.unavailable(ErrStateFailed)
 		}
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		s.mu.Unlock()
-		return s.fail(ErrStateFailed)
+		return s.unavailable(statErr)
 	}
 	for _, path := range []string{"state", "state/fakeip"} {
 		if err = s.files.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 			s.mu.Unlock()
-			return s.fail(ErrStateFailed)
+			return s.unavailable(err)
 		}
 	}
 	// bbolt's internal open-error cleanup does not return its Close result.
 	// Capture the real file so such an unknown close cannot lose its owner.
-	s.db, err = bbolt.Open(s.path, 0o600, &bbolt.Options{Timeout: time.Second, MaxSize: MaxStateBytes, NoStatistics: true, OpenFile: func(path string, flag int, mode os.FileMode) (*os.File, error) {
+	s.db, err = bbolt.Open(s.path, 0o600, &bbolt.Options{Timeout: time.Second, NoStatistics: true, OpenFile: func(path string, flag int, mode os.FileMode) (*os.File, error) {
 		file, openErr := s.files.OpenFile(path, flag, mode)
 		if file != nil {
 			s.file = file
@@ -119,7 +106,7 @@ func (s *ScopedPersistence) Activate() (err error) {
 			s.closeErr = ErrStateClose
 		}
 		s.mu.Unlock()
-		return s.fail(ErrStateFailed)
+		return s.unavailable(err)
 	}
 	pools := append([]*Pool(nil), s.pools...)
 	s.mu.Unlock()
@@ -130,40 +117,36 @@ func (s *ScopedPersistence) Activate() (err error) {
 		err = pool.store.(*scopedStore).restore(pool)
 		pool.mux.Unlock()
 		if err != nil {
-			return s.fail(err)
+			s.warn(err)
 		}
 	}
 	s.mu.Lock()
-	if s.retired || s.err != nil {
+	if s.retired {
 		err = ErrStateInactive
 	} else {
 		s.active = true
+		err = nil
 	}
 	s.mu.Unlock()
 	return
 }
 
-func (s *ScopedPersistence) fail(err error) error {
+// As with the upstream cachefile, unavailable persistence is reported through
+// the core log. It does not cancel unrelated DNS, connections or policy tasks.
+func (s *ScopedPersistence) unavailable(err error) error {
 	s.mu.Lock()
-	if s.err == nil {
-		s.err = ErrStateFailed
-	}
-	handler := s.failure
-	call := !s.failureCalled && handler != nil
-	if call {
-		s.failureCalled = true
-	}
+	s.active = !s.retired
+	retired := s.retired
 	s.mu.Unlock()
-	if call {
-		handler()
+	s.warn(err)
+	if retired {
+		return ErrStateInactive
 	}
-	return ErrStateFailed
+	return nil
 }
 
-func (s *ScopedPersistence) Error() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.err
+func (s *ScopedPersistence) warn(err error) {
+	log.Warnln("[CacheFile] fake-IP state %s: %s", s.path, err)
 }
 
 func (s *ScopedPersistence) Cancel() {
@@ -237,7 +220,7 @@ func (s *scopedStore) restore(pool *Pool) error {
 	o := s.owner
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.db == nil || o.retired || o.err != nil {
+	if o.db == nil || o.retired {
 		return ErrStateInactive
 	}
 	return o.db.Update(func(tx *bbolt.Tx) error {
@@ -273,17 +256,16 @@ func (s *scopedStore) restore(pool *Pool) error {
 func (s *scopedStore) lookup(pool *Pool, host string) (netip.Addr, error) {
 	o := s.owner
 	o.mu.Lock()
-	if !o.active || o.retired || o.err != nil {
-		err := o.err
-		if err == nil {
-			err = ErrStateInactive
-		}
+	if !o.active || o.retired {
 		o.mu.Unlock()
-		return netip.Addr{}, err
+		return netip.Addr{}, ErrStateInactive
+	}
+	if o.db == nil {
+		o.mu.Unlock()
+		return pool.next(), nil
 	}
 	var result netip.Addr
 	hostKey := scopedHostKey(host)
-	before, cycle := pool.offset, pool.cycle
 	err := o.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(s.bucket)
 		if bucket == nil {
@@ -316,12 +298,12 @@ func (s *scopedStore) lookup(pool *Pool, host string) (netip.Addr, error) {
 		}
 		return s.state(bucket, pool)
 	})
-	if err != nil {
-		pool.offset, pool.cycle = before, cycle
-	}
 	o.mu.Unlock()
 	if err != nil {
-		return netip.Addr{}, o.fail(err)
+		o.warn(err)
+		if !result.IsValid() {
+			result = pool.next()
+		}
 	}
 	return result, nil
 }
@@ -355,7 +337,7 @@ func (s *scopedStore) GetByIP(address netip.Addr) (string, bool) {
 		return "", false
 	}
 	if value[0] != 0 {
-		s.owner.fail(ErrStateFailed)
+		s.owner.warn(ErrStateFailed)
 		return "", false
 	}
 	return string(value[1:]), true
@@ -363,7 +345,7 @@ func (s *scopedStore) GetByIP(address netip.Addr) (string, bool) {
 func (s *scopedStore) read(name string, key []byte) ([]byte, bool) {
 	o := s.owner
 	o.mu.Lock()
-	if !o.active || o.retired || o.err != nil {
+	if !o.active || o.retired || o.db == nil {
 		o.mu.Unlock()
 		return nil, false
 	}
@@ -378,7 +360,7 @@ func (s *scopedStore) read(name string, key []byte) ([]byte, bool) {
 	})
 	o.mu.Unlock()
 	if err != nil {
-		o.fail(err)
+		o.warn(err)
 	}
 	return value, err == nil && len(value) != 0
 }
@@ -386,17 +368,21 @@ func (s *scopedStore) Exist(address netip.Addr) bool { _, ok := s.GetByIP(addres
 
 // All scoped mapping writes use lookup's single atomic transaction. These
 // legacy store mutators and CloneTo are never used to import another policy's
-// state. Reaching one rejects rather than copying a global cache silently.
-func (s *scopedStore) PutByHost(string, netip.Addr) { s.owner.fail(ErrStateFailed) }
-func (s *scopedStore) PutByIP(netip.Addr, string)   { s.owner.fail(ErrStateFailed) }
-func (s *scopedStore) DelByIP(netip.Addr)           { s.owner.fail(ErrStateFailed) }
+// state. Report unexpected use without cancelling the runtime.
+func (s *scopedStore) PutByHost(string, netip.Addr) { s.owner.warn(ErrStateFailed) }
+func (s *scopedStore) PutByIP(netip.Addr, string)   { s.owner.warn(ErrStateFailed) }
+func (s *scopedStore) DelByIP(netip.Addr)           { s.owner.warn(ErrStateFailed) }
 func (s *scopedStore) CloneTo(store)                {}
 func (s *scopedStore) FlushFakeIP() error {
 	o := s.owner
 	o.mu.Lock()
-	if !o.active || o.retired || o.err != nil {
+	if !o.active || o.retired {
 		o.mu.Unlock()
 		return ErrStateInactive
+	}
+	if o.db == nil {
+		o.mu.Unlock()
+		return nil
 	}
 	err := o.db.Update(func(tx *bbolt.Tx) error {
 		if err := tx.DeleteBucket(s.bucket); err != nil {
@@ -415,7 +401,7 @@ func (s *scopedStore) FlushFakeIP() error {
 	})
 	o.mu.Unlock()
 	if err != nil {
-		return o.fail(err)
+		o.warn(err)
 	}
-	return nil
+	return err
 }

@@ -143,14 +143,6 @@ func BuildMobilePolicyCandidate(raw *RawConfig, prepared contract.PreparedContex
 		for _, provider := range cfg.RuleProviders {
 			owned.AddProvider(provider)
 		}
-		if inputs[0].FakeIPState != nil {
-			inputs[0].FakeIPState.SetFailureHandler(func() {
-				cfg.CancelMobilePolicyServices()
-				if cfg.mobilePolicyFailure != nil {
-					cfg.mobilePolicyFailure("POLICY_FAKEIP_STATE_FAILED")
-				}
-			})
-		}
 	}
 	if err != nil {
 		return cfg, err

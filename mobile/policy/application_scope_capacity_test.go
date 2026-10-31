@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/metacubex/mihomo/mobile/policy"
@@ -32,6 +33,9 @@ func TestApplicationScopeCapacityBelongsToPlatform(t *testing.T) {
 				for index := range ids {
 					ids[index] = fmt.Sprintf("org.example.application%d", index)
 				}
+				ids[0] = "com.example.123app"
+				ids[1] = "com." + strings.Repeat("a.", 15) + "last"
+				ids[2] = "platform_identifier"
 				platform.PlatformPolicy.ApplicationIDs = ids
 				if scope == "include" {
 					platform.PlatformPolicy.ApplicationScope = &scope

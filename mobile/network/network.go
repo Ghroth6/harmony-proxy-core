@@ -20,7 +20,7 @@ import (
 )
 
 const ContractVersion = 1
-const MaxInputBytes = 64 * 1024
+const MaxInputBytes = validation.MaxInputBytes // signed C.int at the native ABI
 const MaxOutputBytes = 8 * 1024
 const MaxSafeInteger = 9007199254740991
 
@@ -79,7 +79,7 @@ func decode(input []byte) (platformnetwork.Snapshot, error) {
 	var original map[string]json.RawMessage
 	_ = json.Unmarshal(input, &original)
 	var interfaces []json.RawMessage
-	if json.Unmarshal(original["interfaces"], &interfaces) != nil || len(interfaces) > 32 {
+	if json.Unmarshal(original["interfaces"], &interfaces) != nil {
 		return platformnetwork.Snapshot{}, invalid
 	}
 	for _, raw := range interfaces {
@@ -89,7 +89,7 @@ func decode(input []byte) (platformnetwork.Snapshot, error) {
 		var iface map[string]json.RawMessage
 		_ = json.Unmarshal(raw, &iface)
 		var routes []json.RawMessage
-		if json.Unmarshal(iface["routes"], &routes) != nil || len(routes) > 64 {
+		if json.Unmarshal(iface["routes"], &routes) != nil {
 			return platformnetwork.Snapshot{}, invalid
 		}
 		for _, route := range routes {
@@ -101,11 +101,11 @@ func decode(input []byte) (platformnetwork.Snapshot, error) {
 	var value submitted
 	decoder := json.NewDecoder(bytes.NewReader(input))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&value) != nil || value.SchemaVersion != 1 || value.VPN || value.Generation == 0 || value.Generation > MaxSafeInteger || value.NetworkID < 0 || value.NetworkID > MaxSafeInteger || len(value.DNS) > 16 {
+	if decoder.Decode(&value) != nil || value.SchemaVersion != 1 || value.VPN || value.Generation == 0 || value.Generation > MaxSafeInteger || value.NetworkID < 0 || value.NetworkID > MaxSafeInteger {
 		return platformnetwork.Snapshot{}, invalid
 	}
 	for _, iface := range value.Interfaces {
-		if len(iface.Name) > 256 || len(iface.Addresses) > 64 || len(iface.Routes) > 64 || iface.Index > 0x7fffffff || iface.MTU > 65535 {
+		if iface.Index > 0x7fffffff || iface.MTU > 65535 {
 			return platformnetwork.Snapshot{}, invalid
 		}
 	}

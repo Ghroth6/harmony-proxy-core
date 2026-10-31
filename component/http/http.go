@@ -132,11 +132,7 @@ func HttpRequest(ctx context.Context, url, method string, header map[string][]st
 		// A resource attempt owns a fresh connection, so the transport cannot
 		// replay a GET on a stale reused socket without another attempt receipt.
 		transport.DisableKeepAlives = true
-		for name := range header {
-			opt.resource.declaredHeaders = append(opt.resource.declaredHeaders, name)
-		}
 		client.Transport = &resourceTransport{base: transport, policy: opt.resource}
-		client.CheckRedirect = opt.resource.redirect
 	}
 	if opt.observer != nil {
 		client.Transport = &observedTransport{client.Transport, opt.observer}

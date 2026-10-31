@@ -2,8 +2,6 @@
 // file or network objects, so config and mobile operations share one schema.
 package contract
 
-import "regexp"
-
 const Version = 1
 const ABIVersion = 2
 const PlannerVersion = "mobile-policy-1"
@@ -76,10 +74,10 @@ type PlatformPolicy struct {
 	ApplicationScope *string  `json:"applicationScope,omitempty"`
 }
 
-var applicationID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*){1,15}$`)
-
 // A missing scope is the legacy include mode, never all applications. A pointer
 // retains explicitly supplied empty strings so they cannot become legacy values.
+// Identifiers are opaque platform values; installation naming rules belong to
+// the OS, not to this policy contract.
 func (value PlatformPolicy) ValidApplicationScope() bool {
 	if value.ApplicationIDs == nil {
 		return false
@@ -98,7 +96,7 @@ func (value PlatformPolicy) ValidApplicationScope() bool {
 	}
 	seen := map[string]bool{}
 	for _, id := range value.ApplicationIDs {
-		if len(id) > 128 || !applicationID.MatchString(id) || seen[id] {
+		if id == "" || seen[id] {
 			return false
 		}
 		seen[id] = true

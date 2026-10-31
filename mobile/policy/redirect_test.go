@@ -86,14 +86,14 @@ func awaitPublicPeriodicAttempt(t *testing.T, engine *policy.Engine, cfg *config
 	return observed
 }
 
-func TestOriginalResourceRedirectStripsDeclaredHeadersAcrossAndAfterOriginChangeAndCountsEachGET(t *testing.T) {
+func TestOriginalResourceRedirectKeepsUpstreamSameHostHeadersAndCountsEachGET(t *testing.T) {
 	var requests, leaks atomic.Int32
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if r.Method != "GET" {
 			t.Error("resource redirect changed the actual method")
 		}
-		if r.Header.Get("X-Private-Fixture") != "" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
+		if r.Header.Get("X-Private-Fixture") != "documentation-only" || r.Header.Get("Authorization") != "documentation-only" || r.Header.Get("Cookie") != "documentation-only" {
 			leaks.Add(1)
 		}
 		if r.URL.Path == "/cross" {
@@ -118,7 +118,7 @@ func TestOriginalResourceRedirectStripsDeclaredHeadersAcrossAndAfterOriginChange
 	}
 	observed := awaitPublicPeriodicAttempt(t, engine, cfg, ctx, generation)
 	if leaks.Load() != 0 {
-		t.Fatal("declared credentials were forwarded after an origin change")
+		t.Fatal("same-host redirect must retain upstream header behavior even across ports")
 	}
 	if requests.Load() != 3 || observed.ResourceAcquireCount != strconv.FormatUint(baseline+3, 10) {
 		t.Fatal("each actual redirect GET must have its own acquisition attempt count")
@@ -138,7 +138,9 @@ func TestOriginalResourceRedirectLimitAndPartialResponseRetainActualOldStrategy(
 		truncated bool
 	}{
 		{"five-hops", 5, 200, true, 6, false},
-		{"sixth-hop-denied", 6, 200, false, 6, false},
+		{"six-hops", 6, 200, true, 7, false},
+		{"nine-hops", 9, 200, true, 10, false},
+		{"tenth-hop-denied-by-upstream", 10, 200, false, 10, false},
 		{"partial-206-denied", 0, 206, false, 1, false},
 		{"truncated-200-denied", 0, 200, false, 1, true},
 	} {
@@ -257,7 +259,7 @@ func TestOriginalResourceRedirectCancellationJoinsActualPendingBodyAndRetainsOld
 	}
 }
 
-func TestOriginalResourceRedirectCannotDowngradeVerifiedTLS(t *testing.T) {
+func TestOriginalResourceRedirectUsesUpstreamTLSRedirectBehavior(t *testing.T) {
 	var tlsRequests, plainRequests atomic.Int32
 	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		plainRequests.Add(1)
@@ -273,13 +275,13 @@ func TestOriginalResourceRedirectCannotDowngradeVerifiedTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(ca.ResetCertificate)
-	engine, cfg, initial, ctx, generation := publicPeriodicCandidate(t, secure.URL)
+	engine, cfg, _, ctx, generation := publicPeriodicCandidate(t, secure.URL)
 	baseline, _ := strconv.ParseUint(engine.ResourceAcquireCount(), 10, 64)
 	observed := awaitPublicPeriodicAttempt(t, engine, cfg, ctx, generation)
-	if tlsRequests.Load() != 1 || plainRequests.Load() != 0 || observed.ResourceAcquireCount != strconv.FormatUint(baseline+1, 10) {
-		t.Fatal("verified TLS redirect sent an actual plaintext request")
+	if tlsRequests.Load() != 1 || plainRequests.Load() != 1 || observed.ResourceAcquireCount != strconv.FormatUint(baseline+2, 10) {
+		t.Fatal("resource redirect must use the same behavior as the upstream HTTP client")
 	}
-	if len(observed.Adopted) != 1 || observed.Adopted[0].ContentDigest != initial.ContentDigest {
-		t.Fatal("TLS downgrade changed the original provider strategy")
+	if len(observed.Adopted) != 1 || observed.Adopted[0].ContentDigest != contract.Digest([]byte(redirectNew)) {
+		t.Fatal("complete response was not adopted")
 	}
 }

@@ -5,13 +5,16 @@ import (
 	"errors"
 	"net/netip"
 	"os"
-	"sync/atomic"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/metacubex/bbolt"
 	"github.com/metacubex/mihomo/component/fakeip"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/dns"
+	"github.com/metacubex/mihomo/log"
 	D "github.com/miekg/dns"
 )
 
@@ -20,6 +23,99 @@ import (
 type capturedStateFiles struct {
 	*os.Root
 	file *os.File
+}
+
+func TestScopedLegacyDatabaseAbove64MiBReopensWithoutChangingMappings(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "state", "fakeip", strings.Repeat("d", 64)+".db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fixed legacy on-disk format, created independently of ScopedPersistence.
+	err = db.Update(func(tx *bbolt.Tx) error {
+		bucket, err := tx.CreateBucket([]byte("198.18.0.0/16"))
+		if err != nil {
+			return err
+		}
+		for _, name := range []string{"hosts", "addresses", "state"} {
+			if _, err = bucket.CreateBucket([]byte(name)); err != nil {
+				return err
+			}
+		}
+		if err = bucket.Bucket([]byte("hosts")).Put([]byte("\x00legacy.example"), []byte("198.18.0.4")); err != nil {
+			return err
+		}
+		if err = bucket.Bucket([]byte("addresses")).Put([]byte("198.18.0.4"), []byte("\x00legacy.example")); err != nil {
+			return err
+		}
+		return bucket.Bucket([]byte("state")).Put([]byte("offset"), []byte("198.18.0.4"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Truncate(path, (64<<20)+4096); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	state, _ := fakeip.NewScopedPersistence(root, "sha256:"+strings.Repeat("d", 64))
+	pool, err := fakeip.New(fakeip.Options{IPNet: netip.MustParsePrefix("198.18.0.1/16"), Persistence: true, ScopedPersistence: state})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	if address := pool.Lookup("legacy.example"); address.String() != "198.18.0.4" {
+		t.Fatal(address)
+	}
+	if host, ok := pool.LookBack(netip.MustParseAddr("198.18.0.4")); !ok || host != "legacy.example" {
+		t.Fatal(host, ok)
+	}
+	if address := pool.Lookup("next.example"); address.String() != "198.18.0.5" {
+		t.Fatal(address)
+	}
+	if err = state.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type unavailableStateFiles struct{ *os.Root }
+
+func (f unavailableStateFiles) OpenFile(string, int, os.FileMode) (*os.File, error) {
+	return nil, os.ErrPermission
+}
+
+func TestScopedUnavailableDatabaseDoesNotPreventDNSAllocation(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	state, _ := fakeip.NewScopedPersistence(unavailableStateFiles{root}, "sha256:"+strings.Repeat("e", 64))
+	pool, err := fakeip.New(fakeip.Options{IPNet: netip.MustParsePrefix("198.18.0.1/16"), Persistence: true, ScopedPersistence: state})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	if address, err := pool.LookupWithError("unavailable.example"); err != nil || !address.IsValid() {
+		t.Fatal(address, err)
+	}
+	if err = state.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestScopedRootDNSQuestionKeepsLegacyAAndAAAAAnswersWithoutStateFailure(t *testing.T) {
@@ -32,8 +128,6 @@ func TestScopedRootDNSQuestionKeepsLegacyAAndAAAAAnswersWithoutStateFailure(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	var failures atomic.Int32
-	state.SetFailureHandler(func() { failures.Add(1) })
 	newService := func(persistent bool) (*dns.Service, *dns.ResolverEnhancer) {
 		var store *fakeip.ScopedPersistence
 		if persistent {
@@ -95,9 +189,6 @@ func TestScopedRootDNSQuestionKeepsLegacyAAndAAAAAnswersWithoutStateFailure(t *t
 		expected[kind] = original.Answer[0].String()
 		checkRoot(scoped, mapper, kind)
 	}
-	if failures.Load() != 0 || state.Error() != nil {
-		t.Fatal("a legal DNS input must not become a sticky persistence failure")
-	}
 	query := new(D.Msg)
 	query.SetQuestion("documentation-after-root.example.", D.TypeA)
 	reply, err := scoped.ServeMsg(context.Background(), query)
@@ -113,7 +204,6 @@ func TestScopedRootDNSQuestionKeepsLegacyAAndAAAAAnswersWithoutStateFailure(t *t
 		if err != nil {
 			t.Fatal(err)
 		}
-		state.SetFailureHandler(func() { failures.Add(1) })
 		scoped, mapper = newService(true)
 		if err = state.Activate(); err != nil {
 			t.Fatal(err)
@@ -124,9 +214,6 @@ func TestScopedRootDNSQuestionKeepsLegacyAAndAAAAAnswersWithoutStateFailure(t *t
 		if reply, err = scoped.ServeMsg(context.Background(), query); err != nil || reply == nil || len(reply.Answer) != 1 || reply.Answer[0].String() != normalAnswer {
 			t.Fatal("root mapping must not collide with a normal host across reopening", err)
 		}
-		if failures.Load() != 0 || state.Error() != nil {
-			t.Fatal("reopening a root mapping must not create a sticky persistence failure")
-		}
 	}
 }
 
@@ -136,7 +223,7 @@ func (f *capturedStateFiles) OpenFile(name string, flags int, mode os.FileMode) 
 	return file, err
 }
 
-func TestScopedStateWriteFailureReturnsNoDNSAnswerAndRetainsActualCloseFailure(t *testing.T) {
+func TestScopedStateWriteFailureWarnsWithoutCancellingDNSAndRetainsActualCloseFailure(t *testing.T) {
 	root, err := os.OpenRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -155,8 +242,6 @@ func TestScopedStateWriteFailureReturnsNoDNSAnswerAndRetainsActualCloseFailure(t
 	resolvers := dns.NewResolver(dns.Config{Owner: owner})
 	mapper := dns.NewEnhancer(dns.EnhancerConfig{EnhancedMode: C.DNSFakeIP, FakeIPPool: pool, FakeIPSkipper: &fakeip.Skipper{}})
 	service := dns.NewService(resolvers, mapper)
-	var failures atomic.Int32
-	state.SetFailureHandler(func() { failures.Add(1); owner.Cancel(); state.Cancel() })
 	if err = state.Activate(); err != nil {
 		t.Fatal(err)
 	}
@@ -171,14 +256,26 @@ func TestScopedStateWriteFailureReturnsNoDNSAnswerAndRetainsActualCloseFailure(t
 	if err = files.file.Close(); err != nil {
 		t.Fatal(err)
 	}
+	warnings := log.Subscribe()
+	defer log.UnSubscribe(warnings)
 	message.SetQuestion("documentation-failed.example.", D.TypeA)
 	answer, err := service.ServeMsg(context.Background(), message)
-	if !errors.Is(err, fakeip.ErrStateFailed) || answer != nil || failures.Load() != 1 || state.Error() == nil {
-		t.Fatalf("failed synchronous commit must return no DNS success: answer=%v err=%v failures=%d", answer != nil, err, failures.Load())
+	if err != nil || answer == nil || len(answer.Answer) != 1 {
+		t.Fatalf("cache write failure must retain upstream DNS behavior: answer=%v err=%v", answer != nil, err)
 	}
-	if answer, err = service.ServeMsg(context.Background(), message); err == nil || answer != nil {
-		t.Fatal("sticky failure must close later request admission")
+	select {
+	case event := <-warnings:
+		if event.LogLevel != log.WARNING || !strings.Contains(event.Payload, "fake-IP state") {
+			t.Fatal(event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("actual persistence failure was not logged")
 	}
+	if answer, err = service.ServeMsg(context.Background(), message); err != nil || answer == nil {
+		t.Fatal("cache failure withdrew later DNS admission")
+	}
+	owner.Cancel()
+	state.Cancel()
 	wait, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err = owner.Wait(wait); err != nil {

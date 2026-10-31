@@ -45,8 +45,8 @@ func (p *Pool) Lookup(host string) netip.Addr {
 	return ip
 }
 
-// LookupWithError makes synchronous scoped persistence failures observable at
-// the DNS reply boundary. Legacy memory/global-cache behavior is unchanged.
+// LookupWithError rejects use outside the scoped owner's lifetime. Persistence
+// failures use the upstream warning policy and do not withdraw DNS admission.
 func (p *Pool) LookupWithError(host string) (netip.Addr, error) {
 	p.mux.Lock()
 	defer p.mux.Unlock()
@@ -54,9 +54,6 @@ func (p *Pool) LookupWithError(host string) (netip.Addr, error) {
 	// RFC4343: DNS Case Insensitive, we SHOULD return result with all cases.
 	host = strings.ToLower(host)
 	if scoped, ok := p.store.(*scopedStore); ok {
-		if len(host) > 253 {
-			return netip.Addr{}, ErrStateFailed
-		}
 		return scoped.lookup(p, host)
 	}
 	if ip, exist := p.store.GetByHost(host); exist {
