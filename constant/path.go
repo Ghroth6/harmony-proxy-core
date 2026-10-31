@@ -164,7 +164,12 @@ func (p *path) ASN() string {
 }
 
 func (p *path) BundleMRS() string {
-	files, err := os.ReadDir(p.homeDir)
+	return BundleMRSIn(p.homeDir)
+}
+
+// BundleMRSIn preserves the official case-insensitive lookup in a captured root.
+func BundleMRSIn(root string) string {
+	files, err := os.ReadDir(root)
 	if err != nil {
 		return ""
 	}
@@ -175,11 +180,11 @@ func (p *path) BundleMRS() string {
 		} else {
 			if strings.EqualFold(fi.Name(), "BundleMRS.7z") {
 				BundleMRSName = fi.Name()
-				return P.Join(p.homeDir, fi.Name())
+				return P.Join(root, fi.Name())
 			}
 		}
 	}
-	return P.Join(p.homeDir, BundleMRSName)
+	return P.Join(root, BundleMRSName)
 }
 
 func (p *path) OldCache() string {

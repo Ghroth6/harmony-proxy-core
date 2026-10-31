@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"path/filepath"
 
 	"github.com/metacubex/mihomo/component/resource"
 	C "github.com/metacubex/mihomo/constant"
@@ -27,7 +26,7 @@ func MakeBundleFileIn(root, path string) resource.BundleFile {
 	if path == "" {
 		return nil
 	}
-	return func() (fs.File, error) { return open(filepath.Join(root, C.BundleMRSName), path) }
+	return func() (fs.File, error) { return open(C.BundleMRSIn(root), path) }
 }
 
 func Open(path string) (fs.File, error) {

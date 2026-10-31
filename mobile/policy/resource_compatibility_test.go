@@ -44,9 +44,9 @@ func TestRuleResourcesUseOfficialCacheBundleFallbackFileWatchAndETag(t *testing.
 		C.SetHomeDir(oldHome)
 	})
 	for name, data := range map[string][]byte{
-		"file.txt":      []byte("DOMAIN-SUFFIX,file-before.example\n"),
-		"cache.txt":     []byte("DOMAIN-SUFFIX,cached.example\n"),
-		C.BundleMRSName: publicRuleBundle,
+		"file.txt":     []byte("DOMAIN-SUFFIX,file-before.example\n"),
+		"cache.txt":    []byte("DOMAIN-SUFFIX,cached.example\n"),
+		"bundlemrs.7z": publicRuleBundle,
 	} {
 		if err := os.WriteFile(filepath.Join(root, name), data, 0600); err != nil {
 			t.Fatal(err)
