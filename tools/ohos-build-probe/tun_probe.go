@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/metacubex/mihomo/log"
@@ -77,6 +78,9 @@ func cb_probe_tun(original C.int) *C.char {
 		result["duplicateAfterClose"] = fdObservation(duplicate)
 	}
 	result["originalAfter"] = fdObservation(int(original))
+	if failure, ok := result["stackStart"].(string); ok && strings.Contains(failure, "Fstat") {
+		result["packetAdapter"] = probePacketAdapter(int(original))
+	}
 	result["ownership"] = "platform owns original; probe duplicates once; native Tun owns duplicate after successful New"
 	data, _ := json.Marshal(result)
 	return C.CString(string(data))

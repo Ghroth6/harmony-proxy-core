@@ -4,7 +4,8 @@ param(
   [Parameter(Mandatory)][string]$ToolchainReceipt,
   [Parameter(Mandatory)][string]$NativeSdk,
   [Parameter(Mandatory)][string]$RunRoot,
-  [string]$CacheSeedRoot
+  [string]$CacheSeedRoot,
+  [string]$CacheRoot
 )
 $ErrorActionPreference='Stop'
 $core=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
@@ -41,6 +42,10 @@ if (@(git -C $goRoot status --porcelain=v1 --untracked-files=all).Count) { throw
 Copy-Item -LiteralPath $ToolchainReceipt -Destination (Join-Path $run 'toolchain-receipt.json')
 $env:GOOS='linux'; $env:GOARCH='arm64'; $env:CGO_ENABLED='1'; $env:GOMAXPROCS='4'
 $env:GOMODCACHE=Join-Path $run 'modcache'; $env:GOCACHE=Join-Path $run 'buildcache'
+if ($CacheRoot) {
+  $env:GOMODCACHE=(Resolve-Path -LiteralPath (Join-Path $CacheRoot 'modcache')).Path
+  $env:GOCACHE=(Resolve-Path -LiteralPath (Join-Path $CacheRoot 'buildcache')).Path
+}
 $env:GOTMPDIR=Join-Path $run 'tmp'; $env:TMP=$env:GOTMPDIR; $env:TEMP=$env:GOTMPDIR
 $env:GOPROXY='https://proxy.golang.org'; $env:GOSUMDB='sum.golang.org'
 $env:CC=Join-Path $sdk 'llvm/bin/clang.exe'; $env:CXX=Join-Path $sdk 'llvm/bin/clang++.exe'
