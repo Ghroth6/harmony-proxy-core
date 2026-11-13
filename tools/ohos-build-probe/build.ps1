@@ -68,7 +68,7 @@ Copy-Item -LiteralPath (Join-Path $core 'go.sum') -Destination (Join-Path $run '
 $tags='ohos foss with_gvisor cmfa'
 $arguments=@('build','-p=4','-buildvcs=false','-mod=mod','-tlsmodegd','-buildmode=c-shared','-tags',$tags,'-o','libfixed_core_probe.so','github.com/metacubex/mihomo/tools/ohos-build-probe')
 $inputs=[ordered]@{
-  issue='https://github.com/Ghroth6/clashbox-meta/issues/85'; fixedCore=$fixed; probeRevision=$revision; cacheSeedRoot=$CacheSeedRoot
+  issue='https://github.com/Ghroth6/clashbox-meta/issues/86'; fixedCore=$fixed; probeRevision=$revision; cacheSeedRoot=$CacheSeedRoot
   sourceRoot=$core; upstreamChanges=$upstreamChanges; goRoot=$goRoot; goVersion=(& $go version)
   goSourceRevision=(git -C $goRoot rev-parse HEAD); goHash=$goHash; toolHashes=$toolHashes
   toolchainReceiptHash=(Get-FileHash -LiteralPath $ToolchainReceipt).Hash; sdk=(Get-Content -Raw (Join-Path $sdk 'oh-uni-package.json') | ConvertFrom-Json)
@@ -97,3 +97,4 @@ if ($buildExit -eq 0) {
   ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $run 'result.json') -Encoding utf8NoBOM
 Write-Output $run
 Get-Content -LiteralPath (Join-Path $run 'result.json')
+
