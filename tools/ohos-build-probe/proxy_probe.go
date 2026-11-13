@@ -30,7 +30,7 @@ var proxyProbe struct {
 }
 
 // Decision probe: use upstream HTTP/SOCKS parsing and DIRECT forwarding.
-// No executor.ApplyConfig, TUN, providers, periodic probes or background heartbeat.
+// No executor.ApplyConfig, TUN, remote providers, periodic probes or heartbeat.
 // The synthetic target and proxy bind only device loopback.
 //
 //export cb_probe_proxy_start
@@ -77,7 +77,8 @@ func cb_probe_proxy_start() *C.char {
 	return C.CString(fmt.Sprintf("started pid=%d mixed=%s target=%s TUN=false", os.Getpid(), listener.Address(), target.Addr()))
 }
 
-// Stop is called before stopVpnExtensionAbility, and synchronously onDestroy.
+// Stop is called synchronously from extension onDestroy after start completes.
+// If destroy races start, the start completion callback owns cleanup.
 // It reports listener/server closure; process exit is observed separately.
 //
 //export cb_probe_proxy_stop
