@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/listener/mixed"
 	"github.com/metacubex/mihomo/tunnel"
@@ -50,6 +51,10 @@ func cb_probe_proxy_start() *C.char {
 	tunnel.UpdateProxies(cfg.Proxies, cfg.Providers)
 	tunnel.UpdateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
 	tunnel.SetMode(tunnel.Direct)
+	// Same admission initialization as executor.updateListeners. Without it,
+	// the default listener rejects every peer before HTTP/SOCKS negotiation.
+	inbound.SetAllowedIPs(cfg.General.LanAllowedIPs)
+	inbound.SetDisAllowedIPs(cfg.General.LanDisAllowedIPs)
 	tunnel.OnRunning()
 	listener, err := mixed.New("127.0.0.1:18686", tunnel.Tunnel)
 	if err != nil {
