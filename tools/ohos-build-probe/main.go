@@ -11,6 +11,9 @@ import (
 
 	"github.com/metacubex/mihomo/config"
 	CPath "github.com/metacubex/mihomo/constant"
+	// config.ParseRawConfig calls an upstream go:linkname defined by executor.
+	// Without this import c-shared links, but device RTLD_NOW rejects the DSO.
+	_ "github.com/metacubex/mihomo/hub/executor"
 )
 
 //export cb_probe_init

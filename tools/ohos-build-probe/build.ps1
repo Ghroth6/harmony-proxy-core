@@ -3,7 +3,8 @@ param(
   [Parameter(Mandatory)][string]$OHOSGo,
   [Parameter(Mandatory)][string]$ToolchainReceipt,
   [Parameter(Mandatory)][string]$NativeSdk,
-  [Parameter(Mandatory)][string]$RunRoot
+  [Parameter(Mandatory)][string]$RunRoot,
+  [string]$CacheSeedRoot
 )
 $ErrorActionPreference='Stop'
 $core=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
@@ -17,6 +18,11 @@ if ($upstreamChanges.Count) { throw 'Upstream source must remain unchanged' }
 $run=[IO.Path]::GetFullPath($RunRoot)
 if (Test-Path -LiteralPath $run) { throw 'Use a new run directory to preserve original evidence' }
 New-Item -ItemType Directory -Path $run,(Join-Path $run 'tmp'),(Join-Path $run 'modcache'),(Join-Path $run 'buildcache') | Out-Null
+if ($CacheSeedRoot) {
+  foreach ($name in @('modcache','buildcache')) {
+    Get-ChildItem -LiteralPath (Join-Path $CacheSeedRoot $name) -Force | Copy-Item -Destination (Join-Path $run $name) -Recurse -Force
+  }
+}
 $go=(Resolve-Path -LiteralPath $OHOSGo).Path
 $sdk=(Resolve-Path -LiteralPath $NativeSdk).Path
 $env:GOENV='off'; $env:GOTOOLCHAIN='local'; $env:GOFLAGS=''; $env:GOEXPERIMENT=''; $env:GOWORK='off'
@@ -57,7 +63,7 @@ Copy-Item -LiteralPath (Join-Path $core 'go.sum') -Destination (Join-Path $run '
 $tags='ohos foss with_gvisor cmfa'
 $arguments=@('build','-p=4','-buildvcs=false','-mod=mod','-tlsmodegd','-buildmode=c-shared','-tags',$tags,'-o','libfixed_core_probe.so','github.com/metacubex/mihomo/tools/ohos-build-probe')
 $inputs=[ordered]@{
-  issue='https://github.com/Ghroth6/clashbox-meta/issues/82'; fixedCore=$fixed; probeRevision=$revision
+  issue='https://github.com/Ghroth6/clashbox-meta/issues/85'; fixedCore=$fixed; probeRevision=$revision; cacheSeedRoot=$CacheSeedRoot
   sourceRoot=$core; upstreamChanges=$upstreamChanges; goRoot=$goRoot; goVersion=(& $go version)
   goSourceRevision=(git -C $goRoot rev-parse HEAD); goHash=$goHash; toolHashes=$toolHashes
   toolchainReceiptHash=(Get-FileHash -LiteralPath $ToolchainReceipt).Hash; sdk=(Get-Content -Raw (Join-Path $sdk 'oh-uni-package.json') | ConvertFrom-Json)
