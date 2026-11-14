@@ -277,6 +277,12 @@ func probeIPCapabilities(original int) map[string]any {
 				results = append(results, kernelPing(t[0], t[1], i+1))
 			}
 			r["pings"] = results
+			// A shell client can bind to the observed interface even when this
+			// ordinary app cannot query TUNGETIFF. Its echo is evidence only when
+			// these packet/PrepareConnection/protect receipts show the core path.
+			r["externalClientWindowSeconds"] = 60
+			evidence("external-client-window", "60 seconds; explicit interface binding required")
+			time.Sleep(60 * time.Second)
 		}
 		r["stackClose"] = errorText(server.Close())
 	}
