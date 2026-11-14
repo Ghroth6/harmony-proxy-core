@@ -51,6 +51,11 @@ func fdObservation(fd int) map[string]any {
 
 //export cb_probe_tun
 func cb_probe_tun(original C.int) *C.char {
+	data, _ := json.Marshal(probeIPCapabilities(int(original)))
+	return C.CString(string(data))
+}
+
+func legacyTunProbe(original C.int) *C.char {
 	result := map[string]any{"originalBefore": fdObservation(int(original)), "pid": unix.Getpid()}
 	duplicate, err := unix.FcntlInt(uintptr(original), unix.F_DUPFD_CLOEXEC, 3)
 	result["duplicateResult"] = errorText(err)

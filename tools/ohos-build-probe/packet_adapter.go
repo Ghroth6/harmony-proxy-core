@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -59,6 +60,7 @@ func (d *packetAdapter) Write(p []byte) (int, error) {
 			err = io.ErrShortWrite
 		}
 		if err == nil {
+			evidence("tun-write", hex.EncodeToString(p))
 			d.tx.Add(1)
 		} else {
 			d.failures.Add(1)
@@ -105,6 +107,7 @@ func (d *packetAdapter) start() {
 				continue
 			}
 			packet := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(append([]byte(nil), data[:n]...))})
+			evidence("tun-read", hex.EncodeToString(data[:n]))
 			d.rx.Add(1)
 			d.ep.InjectInbound(protocol, packet)
 			packet.DecRef()

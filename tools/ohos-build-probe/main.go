@@ -19,6 +19,7 @@ import (
 //export cb_probe_init
 func cb_probe_init(home *C.char) {
 	if home != nil {
+		probeHome = C.GoString(home)
 		CPath.SetHomeDir(C.GoString(home))
 	}
 }
