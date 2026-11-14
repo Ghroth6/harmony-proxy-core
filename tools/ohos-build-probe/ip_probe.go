@@ -210,6 +210,11 @@ func probeIPCapabilities(original int) map[string]any {
 	r["tunNameIoctl"] = errorText(ifrErr)
 	if ifrErr == nil {
 		probeTunName = ifr.Name()
+	} else {
+		// Observed with hdc ifconfig during the preceding live create on this
+		// device. Avoid getifaddrs/TUNGETIFF; SO_BINDTODEVICE must itself pass.
+		probeTunName = "vpn-tun"
+		r["tunNameSource"] = "explicit vpn-tun observed by hdc ifconfig; verify current interface snapshot"
 	}
 	r["tunName"] = probeTunName
 	evidence("start", r)
@@ -280,9 +285,9 @@ func probeIPCapabilities(original int) map[string]any {
 			// A shell client can bind to the observed interface even when this
 			// ordinary app cannot query TUNGETIFF. Its echo is evidence only when
 			// these packet/PrepareConnection/protect receipts show the core path.
-			r["externalClientWindowSeconds"] = 60
-			evidence("external-client-window", "60 seconds; explicit interface binding required")
-			time.Sleep(60 * time.Second)
+			r["externalClientWindowSeconds"] = 10
+			evidence("external-client-window", "10 seconds for interface observation")
+			time.Sleep(10 * time.Second)
 		}
 		r["stackClose"] = errorText(server.Close())
 	}
