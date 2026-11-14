@@ -97,4 +97,3 @@ if ($buildExit -eq 0) {
   ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $run 'result.json') -Encoding utf8NoBOM
 Write-Output $run
 Get-Content -LiteralPath (Join-Path $run 'result.json')
-
