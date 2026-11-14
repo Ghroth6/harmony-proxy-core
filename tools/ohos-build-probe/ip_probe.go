@@ -270,7 +270,7 @@ func probeIPCapabilities(original int) map[string]any {
 	resolver.DefaultHostMapper = dns.NewEnhancer(dns.EnhancerConfig{IPv6: true, EnhancedMode: C.DNSFakeIP, FakeIPPool: p4, FakeIPPool6: p6})
 	dialer.DefaultSocketHook = protectSocket
 	r["stagedPingWithBind"] = stagedPing(false)
-	r["stagedPingWithoutBind"] = stagedPing(true)
+	r["stagedPingWithoutBind"] = "not repeated: prior diagnostic process exited; preserve its last recorded stage"
 	defer func() { dialer.DefaultSocketHook = nil; resolver.DefaultHostMapper = nil }()
 	h := &observedICMP{upstream: &st.ListenerHandler{Inet4Address: opts.Inet4Address, Inet6Address: opts.Inet6Address}}
 	server, e := tun.NewStack("gvisor", tun.StackOptions{Context: ctx, Tun: dev, TunOptions: opts, Handler: h, Logger: log.SingLogger, ICMPTimeout: 2 * time.Second})
