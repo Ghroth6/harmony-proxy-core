@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -36,6 +37,8 @@ var probeTunName string
 var evidenceMu sync.Mutex
 var protectMu sync.Mutex
 var protectSequence int
+var injectProtectFailure atomic.Bool
+var injectDrop atomic.Bool
 
 func evidence(kind string, data any) {
 	evidenceMu.Lock()
@@ -52,6 +55,10 @@ func evidence(kind string, data any) {
 // The originating syscall.RawConn.Control stays active until the acknowledgement.
 // No product bridge or upstream source is changed.
 func protectSocket(network, address string, conn syscall.RawConn) error {
+	if injectProtectFailure.Load() {
+		evidence("injected-protect-failure", map[string]any{"network": network, "target": address})
+		return fmt.Errorf("probe-injected protect rejection; not a platform result")
+	}
 	protectMu.Lock()
 	defer protectMu.Unlock()
 	protectSequence++
@@ -139,6 +146,10 @@ func (h *observedICMP) snapshotAndClose(closeNow bool) {
 
 func (h *observedICMP) PrepareConnection(network string, source, dest M.Socksaddr, rc tun.DirectRouteContext, timeout time.Duration) (tun.DirectRouteDestination, error) {
 	evidence("prepare-enter", map[string]any{"network": network, "source": source.String(), "target": dest.String(), "fakeIP": resolver.IsFakeIP(dest.Addr)})
+	if injectDrop.Load() {
+		evidence("injected-drop", dest.String())
+		return nil, tun.ErrDrop
+	}
 	d, e := h.upstream.PrepareConnection(network, source, dest, &observedRoute{rc, dest.String()}, timeout)
 	evidence("prepare-result", map[string]any{"target": dest.String(), "error": errorText(e), "nilDestination": d == nil})
 	if d != nil {
@@ -317,12 +328,20 @@ func probeIPCapabilities(original int) map[string]any {
 				results = append(results, kernelPing(t[0], t[1], i+1))
 			}
 			r["pings"] = results
+			r["burst"] = kernelPingBurst()
 			for i := 0; i < 3; i++ {
 				kernelPing(fmt.Sprintf("ordinary4-repeat-%d", i), "192.168.3.2", 20+i)
 			}
 			time.Sleep(3 * time.Second)
 			h.snapshotAndClose(false)
 			kernelPing("ordinary4-after-idle", "192.168.3.2", 30)
+			time.Sleep(3 * time.Second)
+			injectProtectFailure.Store(true)
+			r["injectedProtectFailure"] = kernelPing("injected-protect-failure", "192.168.3.2", 40)
+			injectProtectFailure.Store(false)
+			injectDrop.Store(true)
+			r["injectedDrop"] = kernelPing("injected-drop", "192.168.3.2", 41)
+			injectDrop.Store(false)
 			// A shell client can bind to the observed interface even when this
 			// ordinary app cannot query TUNGETIFF. Its echo is evidence only when
 			// these packet/PrepareConnection/protect receipts show the core path.
@@ -330,6 +349,7 @@ func probeIPCapabilities(original int) map[string]any {
 			evidence("external-client-window", "10 seconds for interface observation")
 			time.Sleep(10 * time.Second)
 		}
+		kernelPing("ordinary4-before-stop", "192.168.3.2", 50)
 		h.snapshotAndClose(true)
 		r["stackClose"] = errorText(server.Close())
 	}
