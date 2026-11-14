@@ -55,6 +55,20 @@ $env:CGO_CFLAGS="--target=aarch64-linux-ohos --sysroot=$sysroot -D__MUSL__ -fPIC
 $env:CGO_LDFLAGS="--target=aarch64-linux-ohos --sysroot=$sysroot"
 $protobuf=@(Get-Content -LiteralPath (Join-Path $core 'go.mod') | Where-Object { $_ -match '^replace ' })
 if ($protobuf.Count -ne 1 -or $protobuf[0] -notmatch '^replace google\.golang\.org/protobuf =>') { throw 'Review upstream replacements' }
+$originalTun=Join-Path $env:GOMODCACHE 'github.com/metacubex/sing-tun@v0.4.28'
+$originalSocket=Join-Path $originalTun 'ping/socket_unix.go'
+if ((Get-FileHash $originalSocket).Hash -cne '93398DD76A773B7933FCC263FD4CF45AF7E18ECC94F6D36B69FE737A716293F1') { throw 'Unexpected socket source' }
+$patchedTun=Join-Path $run 'sing-tun'
+Copy-Item -LiteralPath $originalTun -Destination $patchedTun -Recurse
+$patchedSocket=Join-Path $patchedTun 'ping/socket_unix.go'
+(Get-Item $patchedSocket).IsReadOnly=$false
+$socketText=[IO.File]::ReadAllText($patchedSocket)
+$before="`terr = unix.Bind(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(bindAddress, 0)))`n`tif err != nil {`n`t`treturn nil, err`n`t}"
+$after="`t// OHOS experiment: implicit bind only for nonprivileged IPv4 ICMP.`n`t// Keep protect, connect, identifier mapping and socket ownership upstream.`n`tif privileged || !destination.Is4() {`n`t`terr = unix.Bind(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(bindAddress, 0)))`n`t`tif err != nil {`n`t`t`treturn nil, err`n`t`t}`n`t}"
+if (!$socketText.Contains($before)) { throw 'Patch preimage mismatch' }
+[IO.File]::WriteAllText($patchedSocket,$socketText.Replace($before,$after),[Text.UTF8Encoding]::new($false))
+git diff --no-index -- $originalSocket $patchedSocket > (Join-Path $run 'socket.patch')
+if ($LASTEXITCODE -ne 1) { throw 'Expected exactly one socket patch' }
 @"
 module fixed-core-build-probe
 
@@ -62,13 +76,15 @@ go 1.24
 
 require github.com/metacubex/mihomo v1.0.0
 replace github.com/metacubex/mihomo => "$($core.Replace('\','/'))"
+replace github.com/metacubex/sing-tun => "$($patchedTun.Replace('\','/'))"
 $($protobuf[0])
 "@ | Set-Content -LiteralPath (Join-Path $run 'go.mod') -Encoding utf8NoBOM
 Copy-Item -LiteralPath (Join-Path $core 'go.sum') -Destination (Join-Path $run 'go.sum')
 $tags='ohos foss with_gvisor cmfa'
 $arguments=@('build','-p=4','-buildvcs=false','-mod=mod','-tlsmodegd','-buildmode=c-shared','-tags',$tags,'-o','libfixed_core_probe.so','github.com/metacubex/mihomo/tools/ohos-build-probe')
 $inputs=[ordered]@{
-  issue='https://github.com/Ghroth6/clashbox-meta/issues/87'; fixedCore=$fixed; probeRevision=$revision; cacheSeedRoot=$CacheSeedRoot
+  issue='https://github.com/Ghroth6/clashbox-meta/issues/88'; fixedCore=$fixed; probeRevision=$revision; cacheSeedRoot=$CacheSeedRoot
+  patchedDependency=$patchedTun; dependencyVersion='v0.4.28'; originalSocketSha256=(Get-FileHash $originalSocket).Hash; patchedSocketSha256=(Get-FileHash $patchedSocket).Hash
   sourceRoot=$core; upstreamChanges=$upstreamChanges; goRoot=$goRoot; goVersion=(& $go version)
   goSourceRevision=(git -C $goRoot rev-parse HEAD); goHash=$goHash; toolHashes=$toolHashes
   toolchainReceiptHash=(Get-FileHash -LiteralPath $ToolchainReceipt).Hash; sdk=(Get-Content -Raw (Join-Path $sdk 'oh-uni-package.json') | ConvertFrom-Json)

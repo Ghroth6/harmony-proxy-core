@@ -23,6 +23,7 @@ import (
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/hysteria/conns/faketcp"
 	tun "github.com/metacubex/sing-tun"
+	"github.com/metacubex/sing/common/buf"
 	M "github.com/metacubex/sing/common/metadata"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
@@ -96,13 +97,57 @@ func protectSocket(network, address string, conn syscall.RawConn) error {
 
 type observedICMP struct {
 	rejectHandler
-	upstream *st.ListenerHandler
+	upstream     *st.ListenerHandler
+	mu           sync.Mutex
+	destinations []*observedDestination
+}
+
+type observedRoute struct {
+	tun.DirectRouteContext
+	target string
+}
+
+func (r *observedRoute) WritePacket(p []byte) error {
+	e := r.DirectRouteContext.WritePacket(p)
+	evidence("physical-reply", map[string]any{"target": r.target, "hex": hex.EncodeToString(p), "writeBack": errorText(e)})
+	return e
+}
+
+type observedDestination struct {
+	tun.DirectRouteDestination
+	target string
+}
+
+func (d *observedDestination) WritePacket(p *buf.Buffer) error {
+	hexPacket := hex.EncodeToString(p.Bytes())
+	e := d.DirectRouteDestination.WritePacket(p)
+	evidence("physical-send", map[string]any{"target": d.target, "hex": hexPacket, "error": errorText(e)})
+	return e
+}
+func (h *observedICMP) snapshotAndClose(closeNow bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, d := range h.destinations {
+		r := map[string]any{"index": i, "target": d.target, "closedBefore": d.IsClosed(), "closeRequested": closeNow}
+		if closeNow {
+			r["closeError"] = errorText(d.Close())
+			r["closedAfter"] = d.IsClosed()
+		}
+		evidence("destination-state", r)
+	}
 }
 
 func (h *observedICMP) PrepareConnection(network string, source, dest M.Socksaddr, rc tun.DirectRouteContext, timeout time.Duration) (tun.DirectRouteDestination, error) {
 	evidence("prepare-enter", map[string]any{"network": network, "source": source.String(), "target": dest.String(), "fakeIP": resolver.IsFakeIP(dest.Addr)})
-	d, e := h.upstream.PrepareConnection(network, source, dest, rc, timeout)
+	d, e := h.upstream.PrepareConnection(network, source, dest, &observedRoute{rc, dest.String()}, timeout)
 	evidence("prepare-result", map[string]any{"target": dest.String(), "error": errorText(e), "nilDestination": d == nil})
+	if d != nil {
+		wrapped := &observedDestination{d, dest.String()}
+		h.mu.Lock()
+		h.destinations = append(h.destinations, wrapped)
+		h.mu.Unlock()
+		return wrapped, e
+	}
 	return d, e
 }
 func (*observedICMP) NewError(_ context.Context, e error) { evidence("handler-error", errorText(e)) }
@@ -150,7 +195,7 @@ func kernelPing(name, target string, seq int) map[string]any {
 	} else {
 		dst = &unix.SockaddrInet4{Addr: ip.As4()}
 	}
-	nonce := fmt.Sprintf("ip87/%d/%d/%s", os.Getpid(), time.Now().UnixNano(), name)
+	nonce := fmt.Sprintf("is88/%d/%d/%s", os.Getpid(), time.Now().UnixNano(), name)
 	r := map[string]any{"name": name, "target": target, "nonce": nonce}
 	fd, e := unix.Socket(af, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, proto)
 	r["socket"] = errorText(e)
@@ -219,18 +264,7 @@ func probeIPCapabilities(original int) map[string]any {
 	}
 	r["tunName"] = probeTunName
 	evidence("start", r)
-	caps := []any{}
-	for _, af := range []int{unix.AF_INET, unix.AF_INET6} {
-		p := unix.IPPROTO_ICMP
-		if af == unix.AF_INET6 {
-			p = unix.IPPROTO_ICMPV6
-		}
-		for _, t := range []int{unix.SOCK_RAW, unix.SOCK_DGRAM} {
-			caps = append(caps, socketCapability(af, t, p))
-		}
-	}
-	r["capabilities"] = caps
-	r["fakeTCP"] = fakeTCPCapability()
+	r["scope"] = "IPv4 implicit-bind candidate through real TUN; no fake-TCP retest"
 	fd, e := unix.FcntlInt(uintptr(original), unix.F_DUPFD_CLOEXEC, 3)
 	r["duplicate"] = errorText(e)
 	if e != nil {
@@ -269,8 +303,6 @@ func probeIPCapabilities(original int) map[string]any {
 	}
 	resolver.DefaultHostMapper = dns.NewEnhancer(dns.EnhancerConfig{IPv6: true, EnhancedMode: C.DNSFakeIP, FakeIPPool: p4, FakeIPPool6: p6})
 	dialer.DefaultSocketHook = protectSocket
-	r["stagedPingWithBind"] = stagedPing(false)
-	r["stagedPingWithoutBind"] = stagedPing(true)
 	defer func() { dialer.DefaultSocketHook = nil; resolver.DefaultHostMapper = nil }()
 	h := &observedICMP{upstream: &st.ListenerHandler{Inet4Address: opts.Inet4Address, Inet6Address: opts.Inet6Address}}
 	server, e := tun.NewStack("gvisor", tun.StackOptions{Context: ctx, Tun: dev, TunOptions: opts, Handler: h, Logger: log.SingLogger, ICMPTimeout: 2 * time.Second})
@@ -285,6 +317,12 @@ func probeIPCapabilities(original int) map[string]any {
 				results = append(results, kernelPing(t[0], t[1], i+1))
 			}
 			r["pings"] = results
+			for i := 0; i < 3; i++ {
+				kernelPing(fmt.Sprintf("ordinary4-repeat-%d", i), "192.168.3.2", 20+i)
+			}
+			time.Sleep(3 * time.Second)
+			h.snapshotAndClose(false)
+			kernelPing("ordinary4-after-idle", "192.168.3.2", 30)
 			// A shell client can bind to the observed interface even when this
 			// ordinary app cannot query TUNGETIFF. Its echo is evidence only when
 			// these packet/PrepareConnection/protect receipts show the core path.
@@ -292,6 +330,7 @@ func probeIPCapabilities(original int) map[string]any {
 			evidence("external-client-window", "10 seconds for interface observation")
 			time.Sleep(10 * time.Second)
 		}
+		h.snapshotAndClose(true)
 		r["stackClose"] = errorText(server.Close())
 	}
 	r["adapterClose"] = errorText(dev.Close())
