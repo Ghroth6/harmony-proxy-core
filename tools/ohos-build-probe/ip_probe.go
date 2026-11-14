@@ -270,7 +270,7 @@ func probeIPCapabilities(original int) map[string]any {
 	resolver.DefaultHostMapper = dns.NewEnhancer(dns.EnhancerConfig{IPv6: true, EnhancedMode: C.DNSFakeIP, FakeIPPool: p4, FakeIPPool6: p6})
 	dialer.DefaultSocketHook = protectSocket
 	r["stagedPingWithBind"] = stagedPing(false)
-	r["stagedPingWithoutBind"] = "not repeated: prior diagnostic process exited; preserve its last recorded stage"
+	r["stagedPingWithoutBind"] = stagedPing(true)
 	defer func() { dialer.DefaultSocketHook = nil; resolver.DefaultHostMapper = nil }()
 	h := &observedICMP{upstream: &st.ListenerHandler{Inet4Address: opts.Inet4Address, Inet6Address: opts.Inet6Address}}
 	server, e := tun.NewStack("gvisor", tun.StackOptions{Context: ctx, Tun: dev, TunOptions: opts, Handler: h, Logger: log.SingLogger, ICMPTimeout: 2 * time.Second})
@@ -343,9 +343,12 @@ func stagedPing(skipBind bool) map[string]any {
 		return r
 	}
 	defer c.Close()
-	r["local"] = c.LocalAddr().String()
-	r["remote"] = c.RemoteAddr().String()
-	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+	r["local"] = fmt.Sprint(c.LocalAddr())
+	r["remote"] = fmt.Sprint(c.RemoteAddr())
+	r["remoteIsNil"] = c.RemoteAddr() == nil
+	if !done("deadline", c.SetDeadline(time.Now().Add(3*time.Second))) {
+		return r
+	}
 	nonce := fmt.Sprintf("ip87-stage/%d/%d", os.Getpid(), time.Now().UnixNano())
 	b, _ := (&icmp.Message{Type: ipv4.ICMPTypeEcho, Body: &icmp.Echo{ID: 87, Seq: 87, Data: []byte(nonce)}}).Marshal(nil)
 	n, e := c.Write(b)
