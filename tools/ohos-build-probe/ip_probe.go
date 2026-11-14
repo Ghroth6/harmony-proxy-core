@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -268,6 +269,8 @@ func probeIPCapabilities(original int) map[string]any {
 	}
 	resolver.DefaultHostMapper = dns.NewEnhancer(dns.EnhancerConfig{IPv6: true, EnhancedMode: C.DNSFakeIP, FakeIPPool: p4, FakeIPPool6: p6})
 	dialer.DefaultSocketHook = protectSocket
+	r["stagedPingWithBind"] = stagedPing(false)
+	r["stagedPingWithoutBind"] = stagedPing(true)
 	defer func() { dialer.DefaultSocketHook = nil; resolver.DefaultHostMapper = nil }()
 	h := &observedICMP{upstream: &st.ListenerHandler{Inet4Address: opts.Inet4Address, Inet6Address: opts.Inet6Address}}
 	server, e := tun.NewStack("gvisor", tun.StackOptions{Context: ctx, Tun: dev, TunOptions: opts, Handler: h, Logger: log.SingLogger, ICMPTimeout: 2 * time.Second})
@@ -300,5 +303,70 @@ func probeIPCapabilities(original int) map[string]any {
 	r["wakeWriteClose"] = wo.receipt()
 	r["originalAfter"] = fdObservation(original)
 	evidence("complete", r)
+	return r
+}
+
+// Diagnostic equivalent of sing-tun ping.connect(false), stage by stage.
+// The second case tests whether the kernel's implicit bind suffices, without
+// changing upstream or claiming an integrated forwarding adaptation.
+func stagedPing(skipBind bool) map[string]any {
+	r := map[string]any{"skipExplicitBind": skipBind, "target": "192.168.3.2"}
+	done := func(stage string, e error) bool {
+		r[stage] = errorText(e)
+		evidence("ping-connect-stage", map[string]any{"skipBind": skipBind, "stage": stage, "error": errorText(e)})
+		return e == nil
+	}
+	fd, e := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_ICMP)
+	if !done("socket", e) {
+		return r
+	}
+	f := os.NewFile(uintptr(fd), "probe datagram ICMP")
+	defer f.Close()
+	raw, e := f.SyscallConn()
+	if !done("syscallConn", e) {
+		return r
+	}
+	if !done("protect", protectSocket("ip4", "192.168.3.2", raw)) {
+		return r
+	}
+	if !done("recvTTL", unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_RECVTTL, 1)) {
+		return r
+	}
+	if !skipBind && !done("bindWildcard", unix.Bind(fd, &unix.SockaddrInet4{})) {
+		return r
+	}
+	if !done("connect", unix.Connect(fd, &unix.SockaddrInet4{Addr: [4]byte{192, 168, 3, 2}})) {
+		return r
+	}
+	c, e := net.FileConn(f)
+	if !done("fileConn", e) {
+		return r
+	}
+	defer c.Close()
+	r["local"] = c.LocalAddr().String()
+	r["remote"] = c.RemoteAddr().String()
+	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+	nonce := fmt.Sprintf("ip87-stage/%d/%d", os.Getpid(), time.Now().UnixNano())
+	b, _ := (&icmp.Message{Type: ipv4.ICMPTypeEcho, Body: &icmp.Echo{ID: 87, Seq: 87, Data: []byte(nonce)}}).Marshal(nil)
+	n, e := c.Write(b)
+	r["sentBytes"] = n
+	if !done("write", e) {
+		return r
+	}
+	reply := make([]byte, 2048)
+	n, e = c.Read(reply)
+	r["receivedBytes"] = n
+	if !done("read", e) {
+		return r
+	}
+	r["replyHex"] = hex.EncodeToString(reply[:n])
+	msg, e := icmp.ParseMessage(unix.IPPROTO_ICMP, reply[:n])
+	if !done("parse", e) {
+		return r
+	}
+	if echo, ok := msg.Body.(*icmp.Echo); ok {
+		r["nonceMatches"] = string(echo.Data) == nonce
+	}
+	r["replyType"] = fmt.Sprint(msg.Type)
 	return r
 }
