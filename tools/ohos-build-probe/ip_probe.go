@@ -30,6 +30,7 @@ import (
 )
 
 var probeHome string
+var probeTunName string
 var evidenceMu sync.Mutex
 var protectMu sync.Mutex
 var protectSequence int
@@ -156,6 +157,17 @@ func kernelPing(name, target string, seq int) map[string]any {
 		return r
 	}
 	defer unix.Close(fd)
+	if probeTunName == "" {
+		r["bindDevice"] = "TUN name unavailable; not sent"
+		return r
+	}
+	e = unix.SetsockoptString(fd, unix.SOL_SOCKET, unix.SO_BINDTODEVICE, probeTunName)
+	r["bindDevice"] = errorText(e)
+	r["device"] = probeTunName
+	if e != nil {
+		evidence("client-bind-failed", r)
+		return r
+	}
 	_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 3})
 	wire, e := (&icmp.Message{Type: kind, Code: 0, Body: &icmp.Echo{ID: 87, Seq: seq, Data: []byte(nonce)}}).Marshal(nil)
 	if e != nil {
@@ -191,6 +203,15 @@ func kernelPing(name, target string, seq int) map[string]any {
 
 func probeIPCapabilities(original int) map[string]any {
 	r := map[string]any{"pid": os.Getpid(), "uid": os.Getuid(), "original": fdObservation(original)}
+	ifr, ifrErr := unix.NewIfreq("")
+	if ifrErr == nil {
+		ifrErr = unix.IoctlIfreq(original, unix.TUNGETIFF, ifr)
+	}
+	r["tunNameIoctl"] = errorText(ifrErr)
+	if ifrErr == nil {
+		probeTunName = ifr.Name()
+	}
+	r["tunName"] = probeTunName
 	evidence("start", r)
 	caps := []any{}
 	for _, af := range []int{unix.AF_INET, unix.AF_INET6} {
